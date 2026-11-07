@@ -3,6 +3,8 @@ import { normalizeGeo } from './canonical.ts'
 import { setupPage } from './landing.ts'
 import * as w from './slurp.gen.ts'
 import type { SourceRow, KeyRow, Result } from './registry.ts'
+import type { CompatHost } from './compat/common.ts'
+import { segmentIngest, segmentRoute } from './compat/segment.ts'
 export { RegistryDO } from './registry.ts'
 export { SourceDO } from './source.ts'
 
@@ -28,6 +30,10 @@ async function authenticate(req: Request, env: Env, allowQueryKey = false): Prom
     // Query credentials are publishable only, even when a valid header is also supplied.
     if (q.length) { if (q.length !== 1 || !q[0].startsWith('slurp_pk_')) return null; token = q[0] }
   }
+  return principalFor(token, env)
+}
+
+async function principalFor(token: string | null, env: Env): Promise<Principal> {
   if (!token) return null
   if (env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN && timingSafeEqual(token, env.ADMIN_TOKEN)) return { kind: 'admin' }
   const hash = await sha256Hex(token)
@@ -226,10 +232,31 @@ async function purge(req: Request, env: Env, ctx: Ctx): Promise<Response> {
   return Response.json({ ok: true, sources: sources.length, archives, strays })
 }
 
+/** Segment-compatible (and later Sentry-compatible) endpoints reuse the same key lookup and ingest path. */
+function compatHost(env: Env): CompatHost {
+  return {
+    async publishable(token) {
+      if (!token?.startsWith('slurp_pk_')) return null
+      const p = await principalFor(token, env)
+      return p?.kind === 'key' && p.scope === 'publishable' ? { source: p.source, geo: p.geo } : null
+    },
+    ingest: (source, body, geo) => sourceDO(env, source).ingest(source, body, geo),
+    geoFor: (req, geo) => (geo ? normalizeGeo((req as Request & { cf?: any }).cf) : null),
+    maxBody: Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY,
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url)
     if (url.pathname === '/v1/events') return ingest(req, env)
+    const segment = segmentRoute(req.method, url.pathname)
+    if (segment) {
+      try { return await segmentIngest(req, segment, compatHost(env)) } catch (e) {
+        console.error('segment ingest failed', e)
+        return jsonError(503, 'unavailable', { 'Retry-After': '5' })
+      }
+    }
     if (url.pathname.startsWith('/v1/objects/')) return download(req, env, url.pathname.slice('/v1/objects/'.length))
     if (url.pathname === '/healthz') return new Response('ok\n')
     if (url.pathname === '/' && (req.method === 'GET' || req.method === 'HEAD'))

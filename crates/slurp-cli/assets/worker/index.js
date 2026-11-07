@@ -20,8 +20,8 @@ function timingSafeEqual(a, b) {
   return d === 0;
 }
 __name(timingSafeEqual, "timingSafeEqual");
-async function gzip(text) {
-  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+async function gzip(text2) {
+  const stream = new Blob([text2]).stream().pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 __name(gzip, "gzip");
@@ -38,8 +38,9 @@ async function retry(fn, attempts = 3) {
 __name(retry, "retry");
 
 // src/canonical.ts
-var MAX_RECORD_BYTES = 32 * 1024;
+var MAX_RECORD_BYTES = 1024 * 1024;
 var MAX_DEPTH = 128;
+var RECORD_TOO_LARGE = "record exceeds 1 MiB";
 var RESERVED = ["received_at", "received_seq", "rt", "rseq", "ts", "props"];
 var MAX_LINES = 1 << 20;
 var Reject = class extends Error {
@@ -213,29 +214,29 @@ function validateRecord(line) {
     if (e instanceof Reject) return { reason: e.message };
     throw e;
   }
-  const text = /* @__PURE__ */ __name((k) => {
+  const text2 = /* @__PURE__ */ __name((k) => {
     const span = sc.members.get(k);
     if (!span || line[span[0]] !== '"') return null;
     const v = JSON.parse(line.slice(span[0], span[1]));
     return v === "" ? null : v;
   }, "text");
   for (const k of RESERVED) if (sc.members.has(k)) return { reason: `reserved or obsolete ${k} field` };
-  const id = text("id");
+  const id = text2("id");
   if (id === null || new TextEncoder().encode(id).length > 256) return { reason: "id must be a string of 1-256 bytes" };
-  const type = text("type");
+  const type = text2("type");
   if (type !== "track" && type !== "identify") return { reason: "type must be track or identify" };
-  const ts = text("timestamp");
+  const ts = text2("timestamp");
   if (ts === null) return { reason: "timestamp is required" };
   if (!validTimestamp(ts)) return { reason: "timestamp must be RFC 3339" };
   const data = sc.members.get("data");
   if (!data || line[data[0]] !== "{") return { reason: "data must be a JSON object" };
   if (type === "track") {
-    const ev = text("event");
+    const ev = text2("event");
     if (ev === null || [...ev].length > 200) return { reason: "track event must be 1-200 characters" };
   }
-  if (type === "identify" && text("user_id") === null) return { reason: "identify requires user_id" };
+  if (type === "identify" && text2("user_id") === null) return { reason: "identify requires user_id" };
   for (const k of ["user_id", "anonymous_id", "session_id"])
-    if (sc.members.has(k) && text(k) === null) return { reason: `${k} must be a nonempty string` };
+    if (sc.members.has(k) && text2(k) === null) return { reason: `${k} must be a nonempty string` };
   const ctx = sc.members.get("context");
   if (ctx) {
     if (line[ctx[0]] !== "{" || !sc.context) return { reason: "context must be a JSON object" };
@@ -284,16 +285,16 @@ function checkBody(body, geo) {
     let stop = body.indexOf(10, start);
     if (stop === -1 || stop > end) stop = end;
     const bytes = body.subarray(start, stop);
-    if (bytes.length > MAX_RECORD_BYTES) return { line: n, reason: "record exceeds 32 KiB" };
-    let text;
+    if (bytes.length > MAX_RECORD_BYTES) return { line: n, reason: RECORD_TOO_LARGE };
+    let text2;
     try {
-      text = decoder.decode(bytes);
+      text2 = decoder.decode(bytes);
     } catch {
       return { line: n, reason: "invalid UTF-8" };
     }
-    const r = validateRecord(text);
+    const r = validateRecord(text2);
     if ("reason" in r) return { line: n, reason: r.reason };
-    lines.push(geo ? spliceGeo(text, r.scanned, geo) : text);
+    lines.push(geo ? spliceGeo(text2, r.scanned, geo) : text2);
     if (stop >= end) break;
     start = stop + 1;
   }
@@ -691,14 +692,14 @@ var webrpcRequestBodyText = /* @__PURE__ */ __name(async (request, skipContentTy
     checkContentType();
     checked = true;
   }
-  const text = await request.text();
-  if (text === "") {
+  const text2 = await request.text();
+  if (text2 === "") {
     return "";
   }
   if (!checked) {
     checkContentType();
   }
-  return text;
+  return text2;
 }, "webrpcRequestBodyText");
 var webrpcParseRequestBody = /* @__PURE__ */ __name((body, typ) => {
   if (typeof body !== "string" || body.trim() === "") {
@@ -1547,6 +1548,212 @@ var UnavailableError = class _UnavailableError extends WebrpcError {
 var WebrpcHeader = "Webrpc";
 var WebrpcHeaderValue = "webrpc@v0.49.0;typescript@v0.49.0;slurp@v0.5.0";
 
+// src/compat/common.ts
+var COMPAT_CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-expose-headers": "Retry-After"
+};
+var json = /* @__PURE__ */ __name((status, body, extra = {}) => Response.json(body, { status, headers: { ...COMPAT_CORS, ...extra } }), "json");
+var preflight = /* @__PURE__ */ __name((allowHeaders) => new Response(null, { status: 204, headers: { ...COMPAT_CORS, "access-control-allow-methods": "POST, GET, OPTIONS", "access-control-allow-headers": allowHeaders, "access-control-max-age": "86400" } }), "preflight");
+var BodyTooLarge = class extends Error {
+  static {
+    __name(this, "BodyTooLarge");
+  }
+};
+async function readBody(req, max) {
+  if (Number(req.headers.get("content-length") ?? 0) > max) throw new BodyTooLarge();
+  const encoding = (req.headers.get("content-encoding") ?? "").toLowerCase().trim();
+  if (!req.body) return new Uint8Array();
+  const source = encoding === "gzip" || encoding === "x-gzip" ? req.body.pipeThrough(new DecompressionStream("gzip")) : req.body;
+  const reader = source.getReader();
+  const chunks = [];
+  let size = 0;
+  for (; ; ) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      throw new BodyTooLarge();
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+__name(readBody, "readBody");
+var ingestFailure = /* @__PURE__ */ __name((res) => json(res.status, { error: res.reason }, res.retryAfter ? { "Retry-After": String(res.retryAfter) } : {}), "ingestFailure");
+
+// src/compat/segment.ts
+var SINGLE = { t: "track", i: "identify", p: "page", s: "screen", g: "group", a: "alias" };
+var ALLOW_HEADERS = "Authorization, Content-Type, X-Retry-Count";
+function segmentRoute(method, path) {
+  let m = /^\/v1\/([tipsga])$/.exec(path);
+  if (m) return { kind: "single", type: SINGLE[m[1]] };
+  if (path === "/v1/b" || path === "/v1/batch") return { kind: "batch" };
+  m = /^\/v1\/projects\/([^/]+)\/settings$/.exec(path);
+  if (m && (method === "GET" || method === "HEAD" || method === "OPTIONS")) return { kind: "settings", key: decodeURIComponent(m[1]) };
+  return null;
+}
+__name(segmentRoute, "segmentRoute");
+var isObject = /* @__PURE__ */ __name((v) => typeof v === "object" && v !== null && !Array.isArray(v), "isObject");
+var text = /* @__PURE__ */ __name((v) => {
+  if (typeof v === "string") return v === "" ? void 0 : v;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return void 0;
+}, "text");
+function timestampOf(msg, sentAt, now) {
+  for (const v of [msg.timestamp, msg.originalTimestamp]) {
+    if (typeof v === "string" || typeof v === "number") {
+      const ms2 = new Date(v).getTime();
+      if (Number.isFinite(ms2)) return new Date(ms2).toISOString();
+    }
+  }
+  const ms = sentAt ? new Date(sentAt).getTime() : NaN;
+  return new Date(Number.isFinite(ms) ? ms : now).toISOString();
+}
+__name(timestampOf, "timestampOf");
+async function translateMessage(raw, type, sentAt, now) {
+  if (!isObject(raw)) return { reason: "message must be an object" };
+  const kind = type ?? (typeof raw.type === "string" ? raw.type : void 0);
+  if (!kind || !["track", "identify", "page", "screen", "group", "alias"].includes(kind)) return { reason: "unknown message type" };
+  const userId = text(raw.userId);
+  const anonymousId = text(raw.anonymousId);
+  const properties = isObject(raw.properties) ? raw.properties : {};
+  const traits = isObject(raw.traits) ? raw.traits : isObject(raw.context?.traits) && kind === "identify" ? raw.context.traits : {};
+  let canonicalType = "track";
+  let event;
+  let data;
+  switch (kind) {
+    case "track":
+      event = text(raw.event);
+      if (!event) return { reason: "track needs an event name" };
+      data = properties;
+      break;
+    case "identify":
+      if (userId) {
+        canonicalType = "identify";
+        data = traits;
+      } else {
+        event = "identify";
+        data = traits;
+      }
+      break;
+    case "page":
+    case "screen":
+      event = kind;
+      data = { ...properties, ...text(raw.name) ? { name: text(raw.name) } : {}, ...text(raw.category) ? { category: text(raw.category) } : {} };
+      break;
+    case "group":
+      event = "group";
+      data = { ...traits, group_id: text(raw.groupId) ?? null };
+      break;
+    default:
+      event = "alias";
+      data = { previous_id: text(raw.previousId) ?? null };
+  }
+  const context = isObject(raw.context) ? { ...raw.context } : {};
+  delete context.geo;
+  if (kind === "identify") delete context.traits;
+  context.compat = "segment";
+  const timestamp = timestampOf(raw, sentAt, now);
+  const id = text(raw.messageId) ?? `segment-${await sha256Hex(JSON.stringify([kind, userId, anonymousId, event, timestamp, data]))}`;
+  const record = { id, type: canonicalType, ...event !== void 0 ? { event } : {}, timestamp };
+  if (userId) record.user_id = userId;
+  if (anonymousId) record.anonymous_id = anonymousId;
+  record.data = data;
+  record.context = context;
+  return { line: JSON.stringify(record) };
+}
+__name(translateMessage, "translateMessage");
+function keyFrom(req, body) {
+  const auth = /^Basic (.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1];
+  if (auth) {
+    try {
+      const user = atob(auth).split(":")[0];
+      if (user) return user;
+    } catch {
+    }
+  }
+  const bearer2 = /^Bearer (.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1];
+  if (bearer2) return bearer2;
+  if (isObject(body) && typeof body.writeKey === "string" && body.writeKey) return body.writeKey;
+  return new URL(req.url).searchParams.get("key");
+}
+__name(keyFrom, "keyFrom");
+async function segmentIngest(req, route, host) {
+  const origin = new URL(req.url).origin;
+  if (route.kind === "settings") return settings(req, route.key, origin, host);
+  if (req.method === "OPTIONS") return preflight(ALLOW_HEADERS);
+  if (req.method !== "POST") return json(405, { error: "method not allowed" }, { Allow: "POST, OPTIONS" });
+  let bytes;
+  try {
+    bytes = await readBody(req, host.maxBody);
+  } catch (e) {
+    if (e instanceof BodyTooLarge) return json(413, { error: "body too large" });
+    return json(400, { error: "unreadable body" });
+  }
+  let body;
+  try {
+    body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
+  } catch {
+    return json(400, { error: "body must be JSON" });
+  }
+  const principal = await host.publishable(keyFrom(req, body));
+  if (!principal) return json(401, { error: "invalid write key (use a Slurp publishable key)" });
+  const sentAt = isObject(body) && typeof body.sentAt === "string" ? body.sentAt : void 0;
+  let messages;
+  let type;
+  if (route.kind === "batch") {
+    if (!isObject(body) || !Array.isArray(body.batch)) return json(400, { error: "batch must be an array" });
+    messages = body.batch;
+  } else {
+    messages = [body];
+    type = route.type;
+  }
+  const now = Date.now();
+  const lines = [];
+  let rejected = 0;
+  const encoder2 = new TextEncoder();
+  for (const m of messages) {
+    const t = await translateMessage(m, type, sentAt, now);
+    if ("reason" in t || "reason" in validateRecord(t.line) || encoder2.encode(t.line).length > MAX_RECORD_BYTES) {
+      rejected++;
+      continue;
+    }
+    lines.push(t.line);
+  }
+  if (lines.length === 0) {
+    if (messages.length === 0) return json(200, { success: true, accepted: 0, rejected: 0 });
+    return json(400, { error: "no valid events in the request", rejected });
+  }
+  const res = await host.ingest(principal.source, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
+  if (!res.ok) return ingestFailure(res);
+  return json(200, { success: true, accepted: lines.length, rejected });
+}
+__name(segmentIngest, "segmentIngest");
+async function settings(req, key, origin, host) {
+  if (req.method === "OPTIONS") return preflight(ALLOW_HEADERS);
+  if (!await host.publishable(key)) return json(404, { error: "unknown source" });
+  return json(200, {
+    integrations: { "Segment.io": { apiKey: key, apiHost: `${new URL(origin).host}/v1`, protocol: new URL(origin).protocol === "http:" ? "http" : "https", addBundledMetadata: true, unbundledIntegrations: [] } },
+    plan: { track: { __default: { enabled: true, integrations: {} } }, identify: { __default: { enabled: true } }, group: { __default: { enabled: true } } },
+    edgeFunction: {},
+    analyticsNextEnabled: true,
+    middlewareSettings: {},
+    enabledMiddleware: {},
+    metrics: { sampleRate: 0 },
+    legacyVideoPluginsEnabled: false,
+    remotePlugins: []
+  }, { "cache-control": "public, max-age=60" });
+}
+__name(settings, "settings");
+
 // src/registry.ts
 import { DurableObject } from "cloudflare:workers";
 var UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -1751,7 +1958,7 @@ var SourceDO = class extends DurableObject2 {
   }
   async ingest(source, body, geo) {
     const checked = checkBody(body, geo);
-    if ("reason" in checked) return { ok: false, status: 400, reason: `line ${checked.line}: ${checked.reason}` };
+    if ("reason" in checked) return { ok: false, status: checked.reason === RECORD_TOO_LARGE ? 413 : 400, reason: `line ${checked.line}: ${checked.reason}` };
     if (checked.lines.length === 0) return { ok: true, accepted: 0, duplicate: false, publication: this.publication(await this.ctx.storage.getAlarm()) };
     const hash = await sha256Hex(body);
     const earlier = this.recent.get(hash);
@@ -1789,15 +1996,15 @@ var SourceDO = class extends DurableObject2 {
       let cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
       for (const item of q) {
         for (const line of item.lines) {
-          let text = stampOne(line, cur.id, item.atMs, cur.events);
-          let size = encoder.encode(text).length;
+          let text2 = stampOne(line, cur.id, item.atMs, cur.events);
+          let size = encoder.encode(text2).length;
           if (cur.events > 0 && (cur.bytes + size > ROW_MAX_BYTES || cur.events > MAX_SEQ_PER_ROW)) {
             rows.push(cur);
             cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
-            text = stampOne(line, cur.id, item.atMs, 0);
-            size = encoder.encode(text).length;
+            text2 = stampOne(line, cur.id, item.atMs, 0);
+            size = encoder.encode(text2).length;
           }
-          cur.data += text;
+          cur.data += text2;
           cur.bytes += size;
           cur.events++;
         }
@@ -1856,10 +2063,10 @@ var SourceDO = class extends DurableObject2 {
       return null;
     }
     const rows = this.sql.exec(`SELECT data, events, bytes FROM b_${frozen} ORDER BY id`).toArray();
-    const text = rows.map((r) => r.data).join("");
+    const text2 = rows.map((r) => r.data).join("");
     const events = rows.reduce((n, r) => n + r.events, 0);
     const rawBytes = rows.reduce((n, r) => n + r.bytes, 0);
-    const gz = await gzip(text);
+    const gz = await gzip(text2);
     const sha = await sha256Hex(gz);
     const name = `${pad20(intent.seq)}-${sha}.jsonl.gz`;
     const r2key = `v1/sources/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`;
@@ -1950,6 +2157,10 @@ async function authenticate(req, env, allowQueryKey = false) {
       token = q[0];
     }
   }
+  return principalFor(token, env);
+}
+__name(authenticate, "authenticate");
+async function principalFor(token, env) {
   if (!token) return null;
   if (env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN && timingSafeEqual(token, env.ADMIN_TOKEN)) return { kind: "admin" };
   const hash = await sha256Hex(token);
@@ -1962,7 +2173,7 @@ async function authenticate(req, env, allowQueryKey = false) {
   }
   return v ? { kind: "key", ...v } : null;
 }
-__name(authenticate, "authenticate");
+__name(principalFor, "principalFor");
 var signingSecret = /* @__PURE__ */ __name((env) => hmacHex(env.ADMIN_TOKEN, "slurp-object-url-v1"), "signingSecret");
 var unwrap = /* @__PURE__ */ __name((r) => {
   if (r.ok) return r.value;
@@ -2187,10 +2398,32 @@ async function purge(req, env, ctx) {
   return Response.json({ ok: true, sources: sources.length, archives, strays });
 }
 __name(purge, "purge");
+function compatHost(env) {
+  return {
+    async publishable(token) {
+      if (!token?.startsWith("slurp_pk_")) return null;
+      const p = await principalFor(token, env);
+      return p?.kind === "key" && p.scope === "publishable" ? { source: p.source, geo: p.geo } : null;
+    },
+    ingest: /* @__PURE__ */ __name((source, body, geo) => sourceDO(env, source).ingest(source, body, geo), "ingest"),
+    geoFor: /* @__PURE__ */ __name((req, geo) => geo ? normalizeGeo(req.cf) : null, "geoFor"),
+    maxBody: Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY
+  };
+}
+__name(compatHost, "compatHost");
 var index_default = {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === "/v1/events") return ingest(req, env);
+    const segment = segmentRoute(req.method, url.pathname);
+    if (segment) {
+      try {
+        return await segmentIngest(req, segment, compatHost(env));
+      } catch (e) {
+        console.error("segment ingest failed", e);
+        return jsonError(503, "unavailable", { "Retry-After": "5" });
+      }
+    }
     if (url.pathname.startsWith("/v1/objects/")) return download(req, env, url.pathname.slice("/v1/objects/".length));
     if (url.pathname === "/healthz") return new Response("ok\n");
     if (url.pathname === "/" && (req.method === "GET" || req.method === "HEAD"))

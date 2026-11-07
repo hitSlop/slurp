@@ -764,16 +764,12 @@ async fn wait_until_configured(url: &str) -> Result<()> {
     )
 }
 
-async fn saved_token(backend: &str) -> Result<String> {
-    crate::login::token(backend)
-}
-
 async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
     let receipt = pick_receipt(target.worker.as_deref())?;
     let latest = bundle()?.build;
     let health = health(&receipt.url).await.ok();
     let mut projects = vec![];
-    if let Ok(token) = saved_token(&receipt.url).await {
+    if let Ok(token) = crate::login::token(&receipt.url) {
         let http = slurp_client::http_client()?;
         let client =
             slurp_client::rpc::ProjectClient::new(&receipt.url, http.clone(), Some(token.clone()));
@@ -926,7 +922,7 @@ async fn doctor(target: &WorkerArg, machine: bool) -> Result<u8> {
                     );
                 }
             }
-            match saved_token(&receipt.url).await {
+            match crate::login::token(&receipt.url) {
                 Err(e) => add(
                     "saved connection",
                     false,
@@ -1041,9 +1037,7 @@ async fn destroy(args: &DestroyArgs, ui: &Terminal, machine: bool) -> Result<u8>
     let wrangler = Wrangler::discover()?;
     let tmp = tempfile::tempdir()?;
     let account = receipt.account_id.as_deref();
-    let token = saved_token(&receipt.url)
-        .await
-        .context("destroy needs the saved admin token")?;
+    let token = crate::login::token(&receipt.url).context("destroy needs the saved admin token")?;
     progress.step("Deleting all projects and archives");
     let purge = slurp_client::http_client()?
         .post(format!("{}/v1/admin/purge", receipt.url))

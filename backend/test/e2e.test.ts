@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { after, before, test } from 'node:test'
-import { AlreadyExistsError, ForbiddenError, InvalidArgumentError, NotFoundError, RetentionGapError, UnauthenticatedError, UnavailableError } from '../src/slurp.gen.ts'
-import { ADMIN_TOKEN, admin, debug, evt, newProject, post, readArchives, rpc, startWorker, stats, type Worker } from './harness.ts'
+import { AlreadyExistsError, ForbiddenError, InvalidArgumentError, NotFoundError, UnauthenticatedError } from '../src/slurp.gen.ts'
+import { ADMIN_TOKEN, admin, debug, evt, newProject, post, readArchives, startWorker, stats, type Worker } from './harness.ts'
 
 let w: Worker
 before(async () => { w = await startWorker() })

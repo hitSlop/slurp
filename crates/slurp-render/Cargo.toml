@@ -6,6 +6,9 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 rquickjs = "=0.14.0"
 skrifa = "=0.48.0"

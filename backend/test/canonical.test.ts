@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { checkBody, normalizeGeo, scan, spliceGeo, stampLines, validateRecord } from '../src/canonical.ts'
+import { checkBody, normalizeGeo, scan, spliceGeo, stampOne, validateRecord } from '../src/canonical.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fixture = (name: string) => JSON.parse(readFileSync(join(here, '../fixtures/canonical', `${name}.json`), 'utf8'))
@@ -36,7 +36,7 @@ test('nesting boundary (root -> data -> values nested d arrays)', () => {
 
 test('stamping keeps client bytes verbatim', () => {
   for (const c of fixture('stamp').cases) {
-    const out = stampLines([c.line], c.batchId, c.at, 'ios')
+    const out = stampOne(c.line, c.batchId, c.at, 0, 'ios')
     assert.ok(out.startsWith(c.mustStartWith), out)
     for (const s of c.mustContain) assert.ok(out.includes(s), `${c.name}: ${out}`)
     assert.ok(out.includes('"sender":"ios"'), 'the sending key is stamped')

@@ -1359,8 +1359,8 @@ __name(settings, "settings");
 var ALLOW_HEADERS2 = "X-Sentry-Auth, Content-Type, Sentry-Trace, Baggage, Authorization, Content-Encoding";
 var EXPOSE = { "access-control-expose-headers": "X-Sentry-Rate-Limits, Retry-After" };
 function sentryRoute(path) {
-  const m = /^\/api\/([^/]+)\/(envelope|store)\/?$/.exec(path);
-  return m ? { project: m[1], kind: m[2] } : null;
+  const m = /^\/api\/[^/]+\/(envelope|store)\/?$/.exec(path);
+  return m ? { kind: m[1] } : null;
 }
 __name(sentryRoute, "sentryRoute");
 var publishableKey = /* @__PURE__ */ __name((value) => value?.startsWith("slurp_pk_") ? value : null, "publishableKey");
@@ -1528,7 +1528,6 @@ function validTitle(title) {
   return title === void 0 || new TextEncoder().encode(title).length <= 200;
 }
 __name(validTitle, "validTitle");
-var NAME = { test: validProjectName };
 var RegistryDO = class extends DurableObject {
   static {
     __name(this, "RegistryDO");
@@ -1540,7 +1539,7 @@ var RegistryDO = class extends DurableObject {
   }
   /** The project with this name, creating it first if there is none. Repeating a call returns the same project. */
   claim(a) {
-    if (!NAME.test(a.name) || !validTitle(a.title)) return { ok: false, code: "invalid", message: "invalid project details" };
+    if (!validProjectName(a.name) || !validTitle(a.title)) return { ok: false, code: "invalid", message: "invalid project details" };
     const existing = this.sql.exec("SELECT * FROM projects WHERE name=?", a.name).toArray()[0];
     if (existing) return { ok: true, value: { project: existing, created: false } };
     const id = "prj_" + randomHex(8);
@@ -1557,7 +1556,7 @@ var RegistryDO = class extends DurableObject {
     const s = this.get(ref);
     if (!s) return { ok: false, code: "notfound", message: "project" };
     if (!validTitle(p.title)) return { ok: false, code: "invalid", message: "bad title" };
-    if (p.name !== void 0 && !NAME.test(p.name)) return { ok: false, code: "invalid", message: "bad name" };
+    if (p.name !== void 0 && !validProjectName(p.name)) return { ok: false, code: "invalid", message: "bad name" };
     if (p.name !== void 0 && p.name !== s.name && this.sql.exec("SELECT 1 FROM projects WHERE name=?", p.name).toArray().length) return { ok: false, code: "exists", message: "name exists" };
     this.ctx.storage.transactionSync(() => {
       if (p.name !== void 0) this.sql.exec("UPDATE projects SET name=? WHERE id=?", p.name, s.id);
@@ -1893,10 +1892,15 @@ var ProjectDO = class extends DurableObject2 {
     if (!this.initialized()) return [];
     return this.sql.exec("SELECT * FROM manifest WHERE seq>? ORDER BY seq LIMIT ?", after, limit).toArray();
   }
+  /** Where publication stands, for a coverage read: pending until the buffered events are archived. */
+  async publicationStatus() {
+    return this.publication(await this.ctx.storage.getAlarm());
+  }
   /** Test hook (DEBUG only). */
   async failNextFlush() {
     this.failNext = true;
   }
+  /** Debug statistics (the DEBUG routes only). */
   async stats() {
     if (!this.initialized()) return { pending: false, rows: 0, pendingBytes: 0, queued: 0, gen: 0, sealing: null, manifest: 0, alarm: null };
     return { pending: this.hasBuffered(), rows: this.rows, pendingBytes: this.pendingBytes, queued: this.queue.length, gen: this.gen(), sealing: this.intent(), manifest: this.sql.exec("SELECT COUNT(*) n FROM manifest").one().n, alarm: await this.ctx.storage.getAlarm() };
@@ -2077,9 +2081,7 @@ var archiveService = {
     const s = await archiveAuth(c, r.project);
     const stub = projectDO(c.env, s.id);
     const cov = await stub.coverage();
-    const st = await stub.stats();
-    const publication = { state: st.pending ? "pending" : "idle", observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1e3), ...st.pending && st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {} };
-    return { coverage: cov ? covOut(c, cov) : void 0, publication };
+    return { coverage: cov ? covOut(c, cov) : void 0, publication: await stub.publicationStatus() };
   }
 };
 var authService = {

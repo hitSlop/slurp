@@ -18,11 +18,12 @@ import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody
 const ALLOW_HEADERS = 'X-Sentry-Auth, Content-Type, Sentry-Trace, Baggage, Authorization, Content-Encoding'
 const EXPOSE = { 'access-control-expose-headers': 'X-Sentry-Rate-Limits, Retry-After' }
 
-export type SentryRoute = { project: string; kind: 'envelope' | 'store' }
+/** Sentry puts a project number in the URL; Slurp ignores it (the key says which project). */
+export type SentryRoute = { kind: 'envelope' | 'store' }
 
 export function sentryRoute(path: string): SentryRoute | null {
-  const m = /^\/api\/([^/]+)\/(envelope|store)\/?$/.exec(path)
-  return m ? { project: m[1], kind: m[2] as 'envelope' | 'store' } : null
+  const m = /^\/api\/[^/]+\/(envelope|store)\/?$/.exec(path)
+  return m ? { kind: m[1] as 'envelope' | 'store' } : null
 }
 
 /** The DSN, the X-Sentry-Auth header and the query string all carry the publishable key itself. */

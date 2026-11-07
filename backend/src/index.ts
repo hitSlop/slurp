@@ -1,4 +1,4 @@
-import { type Env, sha256Hex, hmacHex, timingSafeEqual, b64url, fromB64url } from './util.ts'
+import { type Env, hmacHex, timingSafeEqual, b64url, fromB64url } from './util.ts'
 import { normalizeGeo } from './canonical.ts'
 import { setupPage } from './landing.ts'
 import * as w from './slurp.gen.ts'
@@ -161,9 +161,7 @@ const archiveService: w.ArchiveServer<Ctx> = {
     const s = await archiveAuth(c, r.project)
     const stub = projectDO(c.env, s.id)
     const cov = await stub.coverage()
-    const st = await stub.stats()
-    const publication = { state: st.pending ? 'pending' : 'idle', observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1000), ...(st.pending && st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {}) }
-    return { coverage: cov ? covOut(c, cov) : undefined, publication }
+    return { coverage: cov ? covOut(c, cov) : undefined, publication: await stub.publicationStatus() }
   },
 }
 

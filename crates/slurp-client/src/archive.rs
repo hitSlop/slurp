@@ -5,8 +5,6 @@ use std::{
     path::Path,
 };
 
-pub use crate::sync_types::Coverage;
-
 /// Open an archive file for reading. Archives are gzip NDJSON (`.jsonl.gz`): Workers compress gzip natively.
 ///
 /// # Errors

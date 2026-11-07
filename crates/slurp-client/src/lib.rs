@@ -9,7 +9,7 @@ mod http;
 pub use http::http_client;
 
 mod archive;
-pub use archive::{Coverage, Key, open_jsonl, parse_key};
+pub use archive::{Key, open_jsonl, parse_key};
 pub mod protocol;
 pub mod remote;
 pub use rpc::{ArchiveObject as ListedObject, ListObjectsResponse as ListPage};
@@ -26,4 +26,3 @@ pub mod reader;
 pub mod walk;
 
 pub mod publication;
-mod sync_types;

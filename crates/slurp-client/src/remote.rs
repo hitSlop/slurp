@@ -1,5 +1,5 @@
 //! Read-only transports. Authentication is attached only to gateway list requests.
-use crate::{Coverage, ListPage, ListedObject, rpc};
+use crate::{ListPage, ListedObject, protocol, rpc};
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
@@ -128,7 +128,7 @@ impl HttpRemote {
         };
         let mut response = self.rpc_retry(|| self.archive.get_coverage(&req)).await?;
         if let Some(c) = &response.coverage {
-            Coverage::try_from(c)?;
+            protocol::validate_coverage(c)?;
         }
         response.publication = crate::publication::validated(response.publication);
         Ok(response)
@@ -159,11 +159,10 @@ impl HttpRemote {
         }
         unreachable!()
     }
-    fn status(status: reqwest::StatusCode, object: bool) -> RemoteError {
+    /// What an HTTP status from the (signed-link) object download means. The link is the credential, so a refusal means it expired.
+    fn object_status(status: reqwest::StatusCode) -> RemoteError {
         match status.as_u16() {
-            401 if !object => RemoteError::Unauthenticated,
-            403 if !object => RemoteError::PermissionDenied,
-            403 | 404 if object => RemoteError::Expired,
+            403 | 404 => RemoteError::Expired,
             429 | 500..=599 => RemoteError::Transport(format!("HTTP {}", status.as_u16())),
             _ => RemoteError::Protocol(format!("unexpected HTTP {}", status.as_u16())),
         }
@@ -255,7 +254,7 @@ impl Remote for HttpRemote {
                 }
                 Ok(response) => {
                     delay = retry_after(response.headers());
-                    Self::status(response.status(), true)
+                    Self::object_status(response.status())
                 }
                 Err(_) => RemoteError::Transport("object request failed".into()),
             };

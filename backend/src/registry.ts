@@ -16,7 +16,6 @@ export function validProjectName(name: string): boolean {
 export function validTitle(title: string | undefined): boolean {
   return title === undefined || new TextEncoder().encode(title).length <= 200
 }
-const NAME = { test: validProjectName }
 
 export class RegistryDO extends DurableObject<Env> {
   sql = this.ctx.storage.sql
@@ -27,7 +26,7 @@ export class RegistryDO extends DurableObject<Env> {
 
   /** The project with this name, creating it first if there is none. Repeating a call returns the same project. */
   claim(a: { name: string; title?: string }): Result<{ project: ProjectRow; created: boolean }> {
-    if (!NAME.test(a.name) || !validTitle(a.title)) return { ok: false, code: 'invalid', message: 'invalid project details' }
+    if (!validProjectName(a.name) || !validTitle(a.title)) return { ok: false, code: 'invalid', message: 'invalid project details' }
     const existing = this.sql.exec('SELECT * FROM projects WHERE name=?', a.name).toArray()[0] as ProjectRow | undefined
     if (existing) return { ok: true, value: { project: existing, created: false } }
     const id = 'prj_' + randomHex(8)
@@ -41,7 +40,7 @@ export class RegistryDO extends DurableObject<Env> {
   update(ref: string, p: { name?: string; title?: string }): Result<ProjectRow> {
     const s = this.get(ref); if (!s) return { ok: false, code: 'notfound', message: 'project' }
     if (!validTitle(p.title)) return { ok: false, code: 'invalid', message: 'bad title' }
-    if (p.name !== undefined && !NAME.test(p.name)) return { ok: false, code: 'invalid', message: 'bad name' }
+    if (p.name !== undefined && !validProjectName(p.name)) return { ok: false, code: 'invalid', message: 'bad name' }
     if (p.name !== undefined && p.name !== s.name && this.sql.exec('SELECT 1 FROM projects WHERE name=?', p.name).toArray().length) return { ok: false, code: 'exists', message: 'name exists' }
     this.ctx.storage.transactionSync(() => {
       if (p.name !== undefined) this.sql.exec('UPDATE projects SET name=? WHERE id=?', p.name, s.id)

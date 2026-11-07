@@ -241,7 +241,3 @@ export function stampOne(raw: string, batchId: number, atMs: number, n: number, 
   const comma = /^[ \t\r]*\}/.test(rest) ? '' : ','
   return `{"received_at":"${new Date(atMs).toISOString()}","received_seq":"${seq}","sender":${JSON.stringify(sender)}${comma}${rest}\n`
 }
-
-export function stampLines(lines: string[], batchId: number, atMs: number, sender: string, firstN = 0): string {
-  return lines.map((l, k) => stampOne(l, batchId, atMs, firstN + k, sender)).join('')
-}

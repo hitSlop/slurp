@@ -322,8 +322,11 @@ export class ProjectDO extends DurableObject<Env> {
     if (!this.initialized()) return []
     return this.sql.exec('SELECT * FROM manifest WHERE seq>? ORDER BY seq LIMIT ?', after, limit).toArray() as ManifestRow[]
   }
+  /** Where publication stands, for a coverage read: pending until the buffered events are archived. */
+  async publicationStatus(): Promise<Publication> { return this.publication(await this.ctx.storage.getAlarm()) }
   /** Test hook (DEBUG only). */
   async failNextFlush(): Promise<void> { this.failNext = true }
+  /** Debug statistics (the DEBUG routes only). */
   async stats() {
     if (!this.initialized()) return { pending: false, rows: 0, pendingBytes: 0, queued: 0, gen: 0, sealing: null, manifest: 0, alarm: null }
     return { pending: this.hasBuffered(), rows: this.rows, pendingBytes: this.pendingBytes, queued: this.queue.length, gen: this.gen(), sealing: this.intent(), manifest: (this.sql.exec('SELECT COUNT(*) n FROM manifest').one() as { n: number }).n, alarm: await this.ctx.storage.getAlarm() }

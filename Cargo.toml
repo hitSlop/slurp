@@ -17,6 +17,13 @@ sha2 = "0.10"
 hex = "0.4"
 fs2 = "0.4"
 specta = { version = "=2.0.0-rc.27", features = ["derive"] }
+# A small set that catches real leftovers; the full pedantic set is too noisy to be useful.
+[workspace.lints.clippy]
+unused_async = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
 [profile.dev]
 debug = 0
 

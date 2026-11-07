@@ -131,17 +131,13 @@ pub async fn slack(
             .await?;
             return Ok(json!({"ok": true, "target": "slack", "mode": "bot", "file": false}));
         };
-        // The reqwest build here has no form encoder, so build the urlencoded body with the URL type.
-        let mut pairs = reqwest::Url::parse("http://form.invalid/")?;
-        pairs
-            .query_pairs_mut()
-            .append_pair("filename", &file.name)
-            .append_pair("length", &file.bytes.len().to_string());
         let started = http
             .post(format!("{api}/files.getUploadURLExternal"))
             .bearer_auth(token)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(pairs.query().unwrap_or_default().to_owned())
+            .form(&[
+                ("filename", file.name.as_str()),
+                ("length", &file.bytes.len().to_string()),
+            ])
             .send()
             .await?;
         let started = slack_check(started.json::<Value>().await?)?;
@@ -246,21 +242,23 @@ pub async fn discord(config: &Config, text: &str, file: Option<Attachment>) -> R
     let response = match file {
         None => request.json(&json!({"content": text})).send().await?,
         Some(file) => {
-            let boundary = format!("slurp-{}", uuid::Uuid::new_v4().simple());
-            let mut body = Vec::new();
-            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n{}\r\n", json!({"content": text})).as_bytes());
+            // reqwest writes the multipart framing and each part's headers; the name is cleaned first so it cannot break out of its header.
             let name = file.name.replace(['"', '\r', '\n'], "_");
-            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"{name}\"\r\nContent-Type: {}\r\n\r\n", file.content_type()).as_bytes());
-            body.extend_from_slice(&file.bytes);
-            body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-            request
-                .header(
-                    "Content-Type",
-                    format!("multipart/form-data; boundary={boundary}"),
+            let mime = file.content_type();
+            let form = reqwest::multipart::Form::new()
+                .percent_encode_noop()
+                .part(
+                    "payload_json",
+                    reqwest::multipart::Part::text(json!({"content": text}).to_string())
+                        .mime_str("application/json")?,
                 )
-                .body(body)
-                .send()
-                .await?
+                .part(
+                    "files[0]",
+                    reqwest::multipart::Part::bytes(file.bytes)
+                        .file_name(name)
+                        .mime_str(mime)?,
+                );
+            request.multipart(form).send().await?
         }
     };
     if !response.status().is_success() {

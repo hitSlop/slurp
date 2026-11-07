@@ -280,7 +280,7 @@ async fn discord_sends_json_or_a_multipart_file_and_refuses_other_hosts() {
         .unwrap()
         .to_owned();
     assert!(
-        content_type.contains("multipart/form-data; boundary=slurp-"),
+        content_type.contains("multipart/form-data; boundary="),
         "{content_type}"
     );
     let text = String::from_utf8_lossy(&request.body).into_owned();

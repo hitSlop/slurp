@@ -1,0 +1,7 @@
+---
+import Icon from './Icon.astro';
+import type {Connection} from '../lib/connections';
+const {items}=Astro.props as {items:Connection[]};
+const logos=import.meta.glob('../../../../packages/web-shared/logos/*.svg',{eager:true,query:'?url',import:'default'}) as Record<string,string>;
+---
+<div class="connection-grid">{items.map(item=><div class="connection-tile"><span class="connection-icon">{item.logo?<img src={logos[`../../../../packages/web-shared/logos/${item.logo}.svg`]} alt="" width="22" height="22"/>:<Icon name={item.icon}/>}</span><div><strong>{item.name}</strong><p>{item.description}</p>{item.href&&<a href={item.href}>Setup guide ↗</a>}</div><span class:list={['availability',item.status==='Exploring'?'future':'available']}>{item.status}</span></div>)}</div>

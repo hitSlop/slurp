@@ -1,0 +1,61 @@
+{
+  "slug": "page-formats",
+  "title": "Revenue review {year}",
+  "description": "A complete report export.",
+  "params": [
+    {
+      "name": "year",
+      "type": "integer",
+      "default": 2026,
+      "label": "Year",
+      "options": [
+        2025,
+        2026
+      ]
+    }
+  ],
+  "queries": {
+    "q": {
+      "sql": "SELECT 0.1037 AS rate, 1234.5 AS amount, 12345 AS reach, NULL::DOUBLE AS missing, 'North' AS region"
+    }
+  },
+  "blocks": [
+    {
+      "kind": "markdown",
+      "text": "## Notes\n\nMarkdown **text** with a [link](https://example.test). Filter: {year}. Syntax: `{year}` and `{x}`.\n\n- First finding\n- Second finding\n\n<script>unsafe()</script>"
+    },
+    {
+      "kind": "metric",
+      "query": "q",
+      "field": "rate",
+      "format": "percent",
+      "label": "Margin {year}"
+    },
+    {
+      "kind": "metric",
+      "query": "q",
+      "field": "amount",
+      "format": "currency",
+      "label": "Revenue"
+    },
+    {
+      "kind": "metric",
+      "query": "q",
+      "field": "reach",
+      "format": "compact",
+      "label": "Reach"
+    },
+    {
+      "kind": "metric",
+      "query": "q",
+      "field": "missing",
+      "format": "number",
+      "label": "Missing"
+    },
+    {
+      "kind": "table",
+      "query": "q",
+      "title": "Results for {year}"
+    }
+  ]
+}

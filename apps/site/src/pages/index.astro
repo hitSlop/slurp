@@ -1,0 +1,112 @@
+---
+import Icon from '../components/Icon.astro';
+import Connections from '../components/Connections.astro';
+import {current,groups} from '../lib/connections';
+import Page from '../layouts/Page.astro';
+import Code from '../components/Code.astro';
+import DeployButton from '../components/DeployButton.astro';
+import PriceStrip from '../components/PriceStrip.astro';
+import {Image} from 'astro:assets';
+import flagship from '../assets/reports/export-health.png';
+import retention from '../assets/reports/retention.png';
+import releaseCompare from '../assets/reports/release-compare.png';
+import formats from '../assets/reports/formats.png';
+import funnel from '../assets/reports/funnel.png';
+import formatsDark from '../assets/reports/formats-dark.png';
+import byRelease from '../assets/reports/by-release.png';
+import byReleaseSource from '../../../../examples/demo/by-release.md?raw';
+import mascot from '../../../../packages/web-shared/assets/mascot.png';
+import snippets from '../../../../docs/onboarding/snippets.json';
+const sections=[{id:'loop',label:'The loop'},{id:'reports',label:'Reports'},{id:'markdown',label:'Markdown'},{id:'code',label:'In code'},{id:'connections',label:'Connections'},{id:'tools',label:'Your toolkit'}];
+---
+<Page title="Product events for your coding agent" description="Built for coding agents: collect events in your own Cloudflare account, pull them to your machine, and analyze them with DuckDB. About $8 a month at 50 million events." current="home" sections={sections}>
+<header class="hero">
+<ul class="diff" aria-label="What makes Slurp different"><li><Icon name="agent"/>Built for coding agents</li><li><Icon name="sync"/>Your data on your machine</li><li><Icon name="file"/>Analyzed with DuckDB</li></ul>
+<div class="hero-grid">
+<div class="copy">
+<p class="eyebrow">The feedback loop for your coding agent</p>
+<h1>You already have a data expert.<br/><span class="hot">Your coding agent.</span></h1>
+<p class="lede">Slurp collects events in your own Cloudflare account. <code>slurp sync</code> pulls them to your laptop as a DuckDB file. Your agent runs the SQL and writes the report.</p>
+<div class="actions"><DeployButton id="home"/><a class="btn" href="#loop">See the workflow</a></div>
+</div>
+<a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
+<figure><div class="crop"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 420px, 90vw" alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
+</a>
+</div>
+<PriceStrip/>
+</header>
+<section class="section" id="loop">
+<span class="section-number">01 / THE LOOP</span>
+<h2>Instrument once. Ask better questions.</h2>
+<p>Keep your existing coding agent. Give it something real to work with.</p>
+<div class="steps">
+<div><h3><Icon name="code"/><span class="hot">1.</span> Collect</h3><p>Your agent adds events as it builds the feature, with the JavaScript SDK or plain HTTP from any language.</p><code>{"track('export_completed', { format: 'pdf' });"}</code></div>
+<div><h3><Icon name="sync"/><span class="hot">2.</span> Pull</h3><p>Events wait in your Cloudflare account, even while your laptop is off. One command brings the new ones home.</p><code>slurp sync</code></div>
+<div><h3><Icon name="agent"/><span class="hot">3.</span> Analyze</h3><p>Your agent queries the local DuckDB file, finds the pattern and writes the report.</p><code>slurp sql 'SELECT …'</code></div>
+</div>
+</section>
+<section class="section" id="reports">
+<span class="section-number">02 / REPORTS</span>
+<h2>What your agent hands back.</h2>
+<p>Real reports built by Slurp from sample data, through the same pipeline you would use: line and bar charts, heatmaps, donuts, scatter plots, funnels and areas, in any Perspective theme. Open one: each is an ordinary self-contained HTML file.</p>
+<div class="gallery">
+<a href="/reports/export-health/"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export completion by week and by file size, with a table of failure reasons" loading="lazy"/><span><b>Why export completion dropped</b>Line, grouped bars, table</span></a>
+<a href="/reports/retention/"><Image src={retention} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: weekly retention cohort heatmap" loading="lazy"/><span><b>Do new users come back?</b>Cohort heatmap</span></a>
+<a href="/reports/formats/"><Image src={formats} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: donut of export formats, bars of export time and a log scatter of size against time" loading="lazy"/><span><b>What are people exporting?</b>Donut, bars, scatter</span></a>
+<a href="/reports/funnel/"><Image src={funnel} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export funnel, completion by format and weekly activity as overlaid areas" loading="lazy"/><span><b>Where does the flow leak?</b>Funnel, bars, area</span></a>
+<a href="/reports/release-compare/"><Image src={releaseCompare} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: release comparison with failure reasons and weekly sign-ups" loading="lazy"/><span><b>How did each release do?</b>Stacked bars, area, table</span></a>
+<a href="/reports/formats-dark/"><Image src={formatsDark} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: the formats report in the Pro Dark theme" loading="lazy"/><span><b>The same report, Pro Dark</b>Any Perspective theme</span></a>
+</div>
+<p class="fine">Sample data from a fictional app, generated by <code>examples/demo</code> and loaded through a real Worker. Nothing here is customer data.</p>
+</section>
+<section class="section" id="markdown">
+<span class="section-number">03 / MARKDOWN</span>
+<h2>Your agent writes the report in Markdown.</h2>
+<p>A report is a Markdown file with named SQL and a few blocks. The query stays with the finding, so every number can be reproduced. This is the whole source of the chart beside it.</p>
+<div class="source-output">
+<Code label="by-release.md" code={byReleaseSource.trim()}/>
+<figure><Image src={byRelease} width={840} widths={[420,840]} sizes="(min-width: 1100px) 420px, 90vw" alt="The rendered chart: exports completed by release, with v1.2.4 lower than the others" loading="lazy"/><figcaption>What <code>slurp report build</code> makes from it</figcaption></figure>
+</div>
+<ul class="points"><li><b>Markdown is the source of truth.</b> Diffable, reviewable, sanitized.</li><li><b>HTML is the main output.</b> One self-contained file with its charts and fonts.</li><li><b>PNG and PDF come from the same source.</b> Ready for Slack, email and slides.</li><li><b>Your agent already knows how.</b> <code>slurp agent setup</code> installs the skill.</li></ul>
+<Code label="Terminal" code={`slurp report check report.md
+slurp report build report.md --out ./report --png --pdf
+slurp report open ./report`}/>
+</section>
+<section class="section" id="code">
+<span class="section-number">04 / IN CODE</span>
+<h2>A few lines. Real events.</h2>
+<p>A publishable key sends events. Your read key brings them home.</p>
+<Code label="JavaScript / Node" code={snippets.sdk}/>
+<p class="fine">The SDK is private until published. The <a href="/docs/#capture">quickstart</a> includes installation from source.</p>
+</section>
+<section class="section" id="connections"><span class="section-number">05 / CONNECTIONS</span><h2>Bring more of your stack.</h2><p>Start with SDK capture, HTTP, and your coding agent. Explore what could come next.</p><Connections items={[...current.slice(0,2),...groups.find(g=>g.id==='business')!.items,...groups.find(g=>g.id==='errors')!.items.slice(0,1)]}/><a class="btn" href="/connections/">All connections and ideas ↗</a></section><section class="section" id="tools"><span class="section-number">06 / YOUR TOOLKIT</span><h2>Your data. Your machine. Your agent.</h2><div class="steps"><div><h3>DuckDB</h3><p>Query your local events with SQL. Keep the data you have already synced.</p></div><div><h3>Your coding agent</h3><p>Install Slurp’s skills for instrumentation, analysis, and product improvement.</p></div><div><h3>Reports</h3><p>Save SQL and Markdown. Build self-contained HTML, PNG, and PDF output.</p></div></div><div class="actions"><a class="btn btn-primary" href="/docs/">Start the feedback loop ↗</a></div></section>
+</Page>
+<style>
+.hero{padding-bottom:6px}
+.diff{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0 0 22px;padding:0}
+.diff li{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border:1px solid var(--rule);border-radius:999px;font:650 12px var(--body);letter-spacing:.01em;background:#fff}
+.diff li :global(.icon){width:15px;height:15px;color:var(--red)}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:28px;align-items:center}
+.hero h1{font-size:clamp(38px,4.4vw,60px);margin-bottom:16px}
+.hero .lede{font-size:clamp(16px,1.35vw,18px);max-width:520px;margin-bottom:20px}
+.hero .actions{margin:0}
+.snapshot{display:block;text-decoration:none;color:inherit}
+.snapshot figure{margin:0;border:1px solid var(--rule);border-radius:12px;background:#fff;box-shadow:0 14px 40px #17191c1f;overflow:hidden;transition:transform .2s,box-shadow .2s}
+.snapshot:hover figure{transform:translateY(-2px);box-shadow:0 18px 48px #17191c2e}
+.crop{height:clamp(250px,24vw,330px);overflow:hidden;background:#f4f4f4}
+.crop :global(img){display:block;width:100%;height:auto;margin-top:-4.3%}
+.snapshot figcaption{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:9px 14px;font:600 11.5px var(--body);color:var(--muted);border-top:1px solid var(--rule)}
+.snapshot figcaption span:last-child{color:var(--red)}
+.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:22px 0 10px}
+.gallery a{display:flex;flex-direction:column;border:1px solid var(--rule);border-radius:10px;overflow:hidden;text-decoration:none;background:#fff;transition:transform .2s,box-shadow .2s}
+.gallery a:hover{transform:translateY(-2px);box-shadow:0 12px 32px #17191c24}
+.gallery :global(img){display:block;width:100%;height:auto;aspect-ratio:840/700;object-fit:cover;object-position:top;margin-top:-4.3%;border-bottom:1px solid var(--rule);background:#f4f4f4}
+.gallery span{display:flex;flex-direction:column;gap:2px;padding:12px 14px;font-size:13px;color:var(--muted)}
+.gallery b{font-size:14px;color:var(--ink)}
+.source-output{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:18px;align-items:start;margin:20px 0}
+.source-output figure{margin:0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:#fff}
+.source-output figure :global(img){display:block;width:100%;height:auto}
+.source-output figcaption{padding:9px 14px;font:600 11.5px var(--body);color:var(--muted);border-top:1px solid var(--rule)}
+.points{padding-left:18px;margin:8px 0 18px}.points li{margin:4px 0}
+@media(max-width:1000px){.hero-grid,.source-output{grid-template-columns:1fr}.gallery{grid-template-columns:1fr}}
+</style>

@@ -1,0 +1,61 @@
+{{- define "errors" -}}
+#[derive(Debug, Clone, PartialEq)]
+pub enum Error {
+{{range .Errors}}    {{.Name}} { message: String, cause: String },
+{{end}}    Webrpc { code: i64, name: String, message: String, cause: String, status: u16 },
+    Transport(String),
+    Decode { status: u16, detail: String },
+}
+
+impl Error {
+    pub fn code(&self) -> Option<i64> {
+        match self {
+{{range .Errors}}            Self::{{.Name}} { .. } => Some({{.Code}}),
+{{end}}            Self::Webrpc { code, .. } => Some(*code),
+            Self::Transport(_) | Self::Decode { .. } => None,
+        }
+    }
+
+    pub fn status(&self) -> Option<u16> {
+        match self {
+{{range .Errors}}            Self::{{.Name}} { .. } => Some({{.HTTPStatus}}),
+{{end}}            Self::Webrpc { status, .. } | Self::Decode { status, .. } => Some(*status),
+            Self::Transport(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+{{range .Errors}}            Self::{{.Name}} { message, cause } => write!(f, "{{.Name}}: {message} ({cause})"),
+{{end}}            Self::Webrpc { code, name, message, cause, status } => write!(f, "{name} ({code}, HTTP {status}): {message} ({cause})"),
+            Self::Transport(detail) => write!(f, "transport: {detail}"),
+            Self::Decode { status, detail } => write!(f, "decode (HTTP {status}): {detail}"),
+        }
+    }
+}
+impl std::error::Error for Error {}
+
+#[derive(serde::Deserialize)]
+struct RpcErrorBody {
+    code: i64,
+    #[serde(rename = "error")]
+    name: String,
+    #[serde(rename = "msg")]
+    message: String,
+    #[serde(default)]
+    cause: String,
+    status: u16,
+}
+
+impl RpcErrorBody {
+    fn into_error(self) -> Error {
+        let Self { code, name, message, cause, status } = self;
+        match code {
+{{range .Errors}}            {{.Code}} => Error::{{.Name}} { message, cause },
+{{end}}            _ => Error::Webrpc { code, name, message, cause, status },
+        }
+    }
+}
+{{- end -}}

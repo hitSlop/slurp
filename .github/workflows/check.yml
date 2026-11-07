@@ -1,0 +1,89 @@
+name: check
+on: [push, pull_request]
+
+jobs:
+  rust:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux credential-store dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install test DuckDB
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then asset=osx-universal; else asset=linux-amd64; fi
+          curl -fL "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-$asset.tar.gz" -o "$RUNNER_TEMP/duckdb.tar.gz"
+          mkdir -p "$RUNNER_TEMP/duckdb-bin"
+          tar -xzf "$RUNNER_TEMP/duckdb.tar.gz" -C "$RUNNER_TEMP/duckdb-bin"
+          echo "SLURP_TEST_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
+          echo "SLURP_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo doc --workspace --no-deps
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Linux credential-store dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install test DuckDB
+        run: |
+          curl -fL "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz" -o "$RUNNER_TEMP/duckdb.tar.gz"
+          mkdir -p "$RUNNER_TEMP/duckdb-bin"
+          tar -xzf "$RUNNER_TEMP/duckdb.tar.gz" -C "$RUNNER_TEMP/duckdb-bin"
+          echo "SLURP_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
+      - name: Generated webrpc clients are current
+        run: sh backend/api/generate.sh --check
+      - run: npm ci
+        working-directory: backend
+      - name: The Worker embedded in the CLI is current
+        run: node scripts/bundle.mjs --check
+        working-directory: backend
+      - run: cargo build -p slurp-cli
+      - run: npm run typecheck
+        working-directory: backend
+      - name: Worker tests (wrangler dev, local R2 and Durable Objects, real CLI)
+        run: npm test
+        working-directory: backend
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: SDK tests against the Worker
+        run: node --test test/*.test.ts
+        working-directory: packages/sdk-js
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter slurp-setup check
+      - run: pnpm --filter slurp-setup build
+      - name: The CLI's embedded quickstart page is current
+        run: git diff --exit-code -- crates/slurp-cli/assets/setup.html
+      - run: pnpm --filter slurp-site check
+      - run: pnpm --filter slurp-site build
+      - run: pnpm --filter @slurp/sdk typecheck

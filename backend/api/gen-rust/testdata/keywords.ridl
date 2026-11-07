@@ -1,0 +1,30 @@
+webrpc = v1
+name = generator_test
+version = v1
+basepath = /rpc
+
+type Seq: string
+# A request with Rust keyword fields and required collections.
+struct Request
+  - type: Seq
+  - match?: string
+  - abstract: bool
+  - async: bool
+  # Null lists are empty.
+  - gen: []Seq
+  - renamed: string
+    + json = wireName
+  - goRenamed: string
+    + go.tag.json = goWireName,omitempty
+  - defaultGoName: string
+    + go.tag.json = ,omitempty
+  - omitted: string
+    + json = -
+  # Null maps are empty.
+  - nested: map<string,[]map<string,Seq>>
+struct Response
+  - value: any
+# A documented service.
+service Test
+  # Call the documented method.
+  - Call(Request) => (Response)

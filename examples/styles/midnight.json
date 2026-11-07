@@ -1,0 +1,6 @@
+{
+  "extends": "pro-dark",
+  "name": "Midnight",
+  "bg": "#0b1020",
+  "accent": "#7dd3fc"
+}

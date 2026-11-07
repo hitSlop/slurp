@@ -1,0 +1,1738 @@
+{
+  "report": {
+    "kind": "report",
+    "slug": "customer-growth",
+    "id": "obj_01m68056y0p6wrtatxp5cq0dgd",
+    "project": "prj_01m680560xk3swdyev8hcftkgy",
+    "title": "Customer growth",
+    "description": "How the customer base grew, where customers are, and who they are.",
+    "params": [
+      {
+        "name": "since",
+        "type": "date",
+        "default": "2020-01-01",
+        "label": "Since"
+      }
+    ],
+    "queries": {
+      "kpis": {
+        "sql": "WITH m AS (\n  SELECT date_trunc('month', subscription_date) AS month, count(*) AS signups\n  FROM customers\n  WHERE subscription_date >= $since\n  GROUP BY 1\n),\nt AS (\n  SELECT count(*) AS customers, count(DISTINCT country) AS countries\n  FROM customers\n  WHERE subscription_date >= $since\n)\nSELECT t.customers,\n       t.countries,\n       (SELECT round(avg(signups)) FROM m) AS avg_monthly_signups,\n       (SELECT strftime(month, '%B %Y') FROM m ORDER BY signups DESC, month LIMIT 1) AS peak_month,\n       (SELECT max(signups) FROM m) AS peak_month_signups\nFROM t\n"
+      },
+      "monthly": {
+        "sql": "WITH m AS (\n  SELECT CAST(date_trunc('month', subscription_date) AS DATE) AS month, count(*) AS signups\n  FROM customers\n  WHERE subscription_date >= $since\n  GROUP BY 1\n),\nx AS (SELECT month, signups, (month - DATE '2000-01-01') AS d FROM m)\nSELECT month,\n       signups,\n       round(regr_intercept(signups, d) OVER () + regr_slope(signups, d) OVER () * d) AS trend\nFROM x\nORDER BY month\n"
+      },
+      "top_countries": {
+        "sql": "SELECT country,\n       count(*) AS customers,\n       round(100.0 * count(*) / sum(count(*)) OVER (), 2) AS share_pct,\n       round(100.0 * sum(count(*)) OVER (ORDER BY count(*) DESC, country) / sum(count(*)) OVER (), 2) AS cumulative_pct\nFROM customers\nWHERE subscription_date >= $since\nGROUP BY 1\nORDER BY customers DESC, country\nLIMIT 15\n"
+      },
+      "weekday_month": {
+        "sql": "SELECT month(subscription_date) AS month_num,\n       strftime(subscription_date, '%b') AS month,\n       isodow(subscription_date) AS dow_num,\n       strftime(subscription_date, '%a') AS weekday,\n       round(count(*) * 1.0 / count(DISTINCT subscription_date), 1) AS avg_signups_per_day,\n       count(*) AS signups\nFROM customers\nWHERE subscription_date >= $since\nGROUP BY 1, 2, 3, 4\nORDER BY 1, 3\n"
+      },
+      "email_tld": {
+        "sql": "WITH t AS (\n  SELECT split_part(split_part(email, '@', 2), '.', -1) AS tld, count(*) AS customers\n  FROM customers\n  WHERE subscription_date >= $since\n  GROUP BY 1\n),\nr AS (SELECT tld, customers, row_number() OVER (ORDER BY customers DESC, tld) AS rk FROM t)\nSELECT CASE WHEN rk <= 8 THEN tld ELSE 'Other' END AS tld,\n       sum(customers) AS customers,\n       min(CASE WHEN rk <= 8 THEN rk ELSE 9 END) AS slice_order\nFROM r\nGROUP BY 1\nORDER BY slice_order\n"
+      },
+      "legal_form": {
+        "sql": "SELECT CASE\n         WHEN company LIKE '% LLC' THEN 'LLC'\n         WHEN company LIKE '% Ltd' THEN 'Ltd'\n         WHEN company LIKE '% PLC' THEN 'PLC'\n         WHEN company LIKE '% Inc' THEN 'Inc'\n         WHEN company LIKE '% and Sons' THEN 'and Sons'\n         WHEN company LIKE '% Group' THEN 'Group'\n         ELSE 'Other'\n       END AS legal_form,\n       count(*) AS customers\nFROM customers\nWHERE subscription_date >= $since\nGROUP BY 1\nORDER BY customers DESC\n"
+      }
+    },
+    "blocks": [
+      {
+        "kind": "markdown",
+        "text": "## Customer growth\n\nA look at the 500,000-customer CRM sample: how many people signed up each\nmonth, where they live, what their email addresses and company names look\nlike. Use the **Since** filter to restrict everything to sign-ups on or\nafter a date.\n"
+      },
+      {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "customers",
+        "label": "Total customers",
+        "format": "number"
+      },
+      {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "countries",
+        "label": "Countries",
+        "format": "number"
+      },
+      {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "avg_monthly_signups",
+        "label": "Avg monthly sign-ups",
+        "format": "number"
+      },
+      {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "peak_month",
+        "label": "Peak sign-up month"
+      },
+      {
+        "kind": "chart",
+        "query": "monthly",
+        "title": "Monthly sign-ups",
+        "spec": {
+          "layer": [
+            {
+              "mark": {
+                "type": "area",
+                "line": true,
+                "opacity": 0.35
+              },
+              "encoding": {
+                "x": {
+                  "field": "month",
+                  "type": "temporal",
+                  "title": null
+                },
+                "y": {
+                  "field": "signups",
+                  "type": "quantitative",
+                  "title": "Sign-ups"
+                }
+              }
+            },
+            {
+              "mark": {
+                "type": "line",
+                "color": "#e45756",
+                "strokeDash": [
+                  6,
+                  4
+                ]
+              },
+              "encoding": {
+                "x": {
+                  "field": "month",
+                  "type": "temporal"
+                },
+                "y": {
+                  "field": "trend",
+                  "type": "quantitative"
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "chart",
+        "query": "top_countries",
+        "title": "Top 15 countries by customers",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "y": {
+              "field": "country",
+              "type": "nominal",
+              "sort": "-x",
+              "title": null
+            },
+            "x": {
+              "field": "customers",
+              "type": "quantitative",
+              "title": "Customers"
+            },
+            "tooltip": [
+              {
+                "field": "country",
+                "type": "nominal"
+              },
+              {
+                "field": "customers",
+                "type": "quantitative",
+                "format": ","
+              },
+              {
+                "field": "share_pct",
+                "type": "quantitative",
+                "title": "Share %"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "table",
+        "query": "top_countries",
+        "title": "Top countries and share of total",
+        "limit": 15
+      },
+      {
+        "kind": "chart",
+        "query": "weekday_month",
+        "title": "Average sign-ups per day by weekday and month of year",
+        "spec": {
+          "mark": "rect",
+          "encoding": {
+            "x": {
+              "field": "month",
+              "type": "ordinal",
+              "title": "Month of year",
+              "sort": [
+                "Jan",
+                "Feb",
+                "Mar",
+                "Apr",
+                "May",
+                "Jun",
+                "Jul",
+                "Aug",
+                "Sep",
+                "Oct",
+                "Nov",
+                "Dec"
+              ]
+            },
+            "y": {
+              "field": "weekday",
+              "type": "ordinal",
+              "title": null,
+              "sort": [
+                "Mon",
+                "Tue",
+                "Wed",
+                "Thu",
+                "Fri",
+                "Sat",
+                "Sun"
+              ]
+            },
+            "color": {
+              "field": "avg_signups_per_day",
+              "type": "quantitative",
+              "title": "Sign-ups per day",
+              "scale": {
+                "zero": false
+              }
+            },
+            "tooltip": [
+              {
+                "field": "month",
+                "type": "ordinal"
+              },
+              {
+                "field": "weekday",
+                "type": "ordinal"
+              },
+              {
+                "field": "avg_signups_per_day",
+                "type": "quantitative",
+                "title": "Avg per day"
+              },
+              {
+                "field": "signups",
+                "type": "quantitative",
+                "title": "Total sign-ups",
+                "format": ","
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "chart",
+        "query": "email_tld",
+        "title": "Email top-level domains",
+        "spec": {
+          "mark": {
+            "type": "arc",
+            "innerRadius": 60
+          },
+          "encoding": {
+            "theta": {
+              "field": "customers",
+              "type": "quantitative"
+            },
+            "color": {
+              "field": "tld",
+              "type": "nominal",
+              "title": "TLD",
+              "sort": {
+                "field": "slice_order",
+                "op": "min"
+              }
+            },
+            "order": {
+              "field": "slice_order",
+              "type": "quantitative"
+            },
+            "tooltip": [
+              {
+                "field": "tld",
+                "type": "nominal"
+              },
+              {
+                "field": "customers",
+                "type": "quantitative",
+                "format": ","
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "chart",
+        "query": "legal_form",
+        "title": "Company legal form (from name suffix)",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "legal_form",
+              "type": "nominal",
+              "sort": "-y",
+              "title": null
+            },
+            "y": {
+              "field": "customers",
+              "type": "quantitative",
+              "title": "Customers"
+            }
+          }
+        }
+      },
+      {
+        "kind": "markdown",
+        "text": "### Data-quality note\n\n**This data looks synthetic** (it resembles a Faker-style generated\ncustomer file), for these reasons:\n\n- **Flat sign-ups.** Every one of the 880 days from 2020-01-01 to\n  2022-05-29 has sign-ups, at an almost constant ~570 a day. The\n  month-to-month differences mostly reflect month length, not growth. The\n  trend line is nearly flat, and so is the weekday by month heatmap.\n  The peak month is simply a long month, not a real peak. The last month\n  (May 2022) is cut off at the 29th.\n- **Uniform categories.** Four of the five email TLDs (org, net, biz, info)\n  hold ~10% each and .com holds 60%. The 243 \"countries\" (including\n  Antarctica and Christmas Island) each get ~2,100 customers (about 0.43%);\n  only Korea and Congo have double that, probably because the source\n  country list has two entries for each.\n- **Company names** follow three templates in equal thirds: \"Surname Suffix\"\n  (LLC, Ltd, PLC, Inc, Group, \"and Sons\"), hyphenated surnames, and\n  \"A, B and C\". The last two have no legal form, so they fall in *Other*\n  (two thirds of customers).\n- **Emails are unrelated to people.** Only about 0.3% of addresses contain the\n  person's last name, and the email domain rarely matches the website.\n  71 rows repeat an email address already used by another customer.\n\nTreat the shape of this report as a demo of the tooling, not as business insight.\n"
+      }
+    ],
+    "revision": 1,
+    "updated_at": "2026-10-31T03:30:52.527Z",
+    "updated_by": "restore"
+  },
+  "params": {
+    "since": "2020-01-01"
+  },
+  "queries": {
+    "kpis": {
+      "columns": [
+        {
+          "name": "customers",
+          "type": "BIGINT"
+        },
+        {
+          "name": "countries",
+          "type": "BIGINT"
+        },
+        {
+          "name": "avg_monthly_signups",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "peak_month",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "peak_month_signups",
+          "type": "BIGINT"
+        }
+      ],
+      "rows": [
+        [
+          "500000",
+          "243",
+          17241.0,
+          "January 2021",
+          "17852"
+        ]
+      ],
+      "row_count": 1,
+      "truncated": false,
+      "elapsed_ms": 65.5
+    },
+    "monthly": {
+      "columns": [
+        {
+          "name": "month",
+          "type": "DATE"
+        },
+        {
+          "name": "signups",
+          "type": "BIGINT"
+        },
+        {
+          "name": "trend",
+          "type": "DOUBLE"
+        }
+      ],
+      "rows": [
+        [
+          "2020-01-01",
+          "17621",
+          17433.0
+        ],
+        [
+          "2020-02-01",
+          "16431",
+          17419.0
+        ],
+        [
+          "2020-03-01",
+          "17812",
+          17406.0
+        ],
+        [
+          "2020-04-01",
+          "17084",
+          17392.0
+        ],
+        [
+          "2020-05-01",
+          "17781",
+          17378.0
+        ],
+        [
+          "2020-06-01",
+          "16976",
+          17364.0
+        ],
+        [
+          "2020-07-01",
+          "17566",
+          17351.0
+        ],
+        [
+          "2020-08-01",
+          "17475",
+          17337.0
+        ],
+        [
+          "2020-09-01",
+          "17042",
+          17323.0
+        ],
+        [
+          "2020-10-01",
+          "17639",
+          17310.0
+        ],
+        [
+          "2020-11-01",
+          "17377",
+          17296.0
+        ],
+        [
+          "2020-12-01",
+          "17667",
+          17282.0
+        ],
+        [
+          "2021-01-01",
+          "17852",
+          17268.0
+        ],
+        [
+          "2021-02-01",
+          "15948",
+          17254.0
+        ],
+        [
+          "2021-03-01",
+          "17458",
+          17242.0
+        ],
+        [
+          "2021-04-01",
+          "16951",
+          17228.0
+        ],
+        [
+          "2021-05-01",
+          "17564",
+          17214.0
+        ],
+        [
+          "2021-06-01",
+          "16900",
+          17201.0
+        ],
+        [
+          "2021-07-01",
+          "17547",
+          17187.0
+        ],
+        [
+          "2021-08-01",
+          "17585",
+          17173.0
+        ],
+        [
+          "2021-09-01",
+          "17028",
+          17159.0
+        ],
+        [
+          "2021-10-01",
+          "17747",
+          17146.0
+        ],
+        [
+          "2021-11-01",
+          "17080",
+          17132.0
+        ],
+        [
+          "2021-12-01",
+          "17445",
+          17118.0
+        ],
+        [
+          "2022-01-01",
+          "17620",
+          17105.0
+        ],
+        [
+          "2022-02-01",
+          "15975",
+          17091.0
+        ],
+        [
+          "2022-03-01",
+          "17589",
+          17078.0
+        ],
+        [
+          "2022-04-01",
+          "16849",
+          17064.0
+        ],
+        [
+          "2022-05-01",
+          "16391",
+          17051.0
+        ]
+      ],
+      "row_count": 29,
+      "truncated": false,
+      "elapsed_ms": 33.6
+    },
+    "top_countries": {
+      "columns": [
+        {
+          "name": "country",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "customers",
+          "type": "BIGINT"
+        },
+        {
+          "name": "share_pct",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "cumulative_pct",
+          "type": "DOUBLE"
+        }
+      ],
+      "rows": [
+        [
+          "Korea",
+          "4126",
+          0.83,
+          0.83
+        ],
+        [
+          "Congo",
+          "4058",
+          0.81,
+          1.64
+        ],
+        [
+          "American Samoa",
+          "2160",
+          0.43,
+          2.07
+        ],
+        [
+          "Madagascar",
+          "2158",
+          0.43,
+          2.5
+        ],
+        [
+          "Christmas Island",
+          "2146",
+          0.43,
+          2.93
+        ],
+        [
+          "Hong Kong",
+          "2142",
+          0.43,
+          3.36
+        ],
+        [
+          "Bosnia and Herzegovina",
+          "2138",
+          0.43,
+          3.79
+        ],
+        [
+          "Antarctica (the territory South of 60 deg S)",
+          "2135",
+          0.43,
+          4.21
+        ],
+        [
+          "El Salvador",
+          "2134",
+          0.43,
+          4.64
+        ],
+        [
+          "India",
+          "2134",
+          0.43,
+          5.07
+        ],
+        [
+          "Honduras",
+          "2129",
+          0.43,
+          5.49
+        ],
+        [
+          "Finland",
+          "2126",
+          0.43,
+          5.92
+        ],
+        [
+          "United Arab Emirates",
+          "2123",
+          0.42,
+          6.34
+        ],
+        [
+          "Japan",
+          "2121",
+          0.42,
+          6.77
+        ],
+        [
+          "Kuwait",
+          "2120",
+          0.42,
+          7.19
+        ]
+      ],
+      "row_count": 15,
+      "truncated": false,
+      "elapsed_ms": 39.6
+    },
+    "weekday_month": {
+      "columns": [
+        {
+          "name": "month_num",
+          "type": "BIGINT"
+        },
+        {
+          "name": "month",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "dow_num",
+          "type": "BIGINT"
+        },
+        {
+          "name": "weekday",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "avg_signups_per_day",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "signups",
+          "type": "BIGINT"
+        }
+      ],
+      "rows": [
+        [
+          "1",
+          "Jan",
+          "1",
+          "Mon",
+          573.5,
+          "7455"
+        ],
+        [
+          "1",
+          "Jan",
+          "2",
+          "Tue",
+          575.2,
+          "6902"
+        ],
+        [
+          "1",
+          "Jan",
+          "3",
+          "Wed",
+          572.8,
+          "7447"
+        ],
+        [
+          "1",
+          "Jan",
+          "4",
+          "Thu",
+          569.5,
+          "7404"
+        ],
+        [
+          "1",
+          "Jan",
+          "5",
+          "Fri",
+          575.8,
+          "8061"
+        ],
+        [
+          "1",
+          "Jan",
+          "6",
+          "Sat",
+          561.1,
+          "7856"
+        ],
+        [
+          "1",
+          "Jan",
+          "7",
+          "Sun",
+          569.1,
+          "7968"
+        ],
+        [
+          "2",
+          "Feb",
+          "1",
+          "Mon",
+          576.0,
+          "6912"
+        ],
+        [
+          "2",
+          "Feb",
+          "2",
+          "Tue",
+          569.4,
+          "6833"
+        ],
+        [
+          "2",
+          "Feb",
+          "3",
+          "Wed",
+          557.3,
+          "6688"
+        ],
+        [
+          "2",
+          "Feb",
+          "4",
+          "Thu",
+          568.6,
+          "6823"
+        ],
+        [
+          "2",
+          "Feb",
+          "5",
+          "Fri",
+          571.0,
+          "6852"
+        ],
+        [
+          "2",
+          "Feb",
+          "6",
+          "Sat",
+          559.4,
+          "7272"
+        ],
+        [
+          "2",
+          "Feb",
+          "7",
+          "Sun",
+          581.2,
+          "6974"
+        ],
+        [
+          "3",
+          "Mar",
+          "1",
+          "Mon",
+          563.9,
+          "7894"
+        ],
+        [
+          "3",
+          "Mar",
+          "2",
+          "Tue",
+          562.1,
+          "8432"
+        ],
+        [
+          "3",
+          "Mar",
+          "3",
+          "Wed",
+          571.5,
+          "8001"
+        ],
+        [
+          "3",
+          "Mar",
+          "4",
+          "Thu",
+          566.2,
+          "7360"
+        ],
+        [
+          "3",
+          "Mar",
+          "5",
+          "Fri",
+          566.3,
+          "6795"
+        ],
+        [
+          "3",
+          "Mar",
+          "6",
+          "Sat",
+          579.2,
+          "6950"
+        ],
+        [
+          "3",
+          "Mar",
+          "7",
+          "Sun",
+          571.3,
+          "7427"
+        ],
+        [
+          "4",
+          "Apr",
+          "1",
+          "Mon",
+          570.1,
+          "6841"
+        ],
+        [
+          "4",
+          "Apr",
+          "2",
+          "Tue",
+          558.5,
+          "6702"
+        ],
+        [
+          "4",
+          "Apr",
+          "3",
+          "Wed",
+          567.4,
+          "7376"
+        ],
+        [
+          "4",
+          "Apr",
+          "4",
+          "Thu",
+          565.6,
+          "7919"
+        ],
+        [
+          "4",
+          "Apr",
+          "5",
+          "Fri",
+          562.8,
+          "7879"
+        ],
+        [
+          "4",
+          "Apr",
+          "6",
+          "Sat",
+          561.3,
+          "7297"
+        ],
+        [
+          "4",
+          "Apr",
+          "7",
+          "Sun",
+          572.5,
+          "6870"
+        ],
+        [
+          "5",
+          "May",
+          "1",
+          "Mon",
+          574.9,
+          "7474"
+        ],
+        [
+          "5",
+          "May",
+          "2",
+          "Tue",
+          570.9,
+          "6851"
+        ],
+        [
+          "5",
+          "May",
+          "3",
+          "Wed",
+          558.8,
+          "6706"
+        ],
+        [
+          "5",
+          "May",
+          "4",
+          "Thu",
+          561.3,
+          "6735"
+        ],
+        [
+          "5",
+          "May",
+          "5",
+          "Fri",
+          568.9,
+          "7396"
+        ],
+        [
+          "5",
+          "May",
+          "6",
+          "Sat",
+          574.1,
+          "8037"
+        ],
+        [
+          "5",
+          "May",
+          "7",
+          "Sun",
+          569.1,
+          "8537"
+        ],
+        [
+          "6",
+          "Jun",
+          "1",
+          "Mon",
+          561.3,
+          "5052"
+        ],
+        [
+          "6",
+          "Jun",
+          "2",
+          "Tue",
+          555.2,
+          "5552"
+        ],
+        [
+          "6",
+          "Jun",
+          "3",
+          "Wed",
+          582.2,
+          "5240"
+        ],
+        [
+          "6",
+          "Jun",
+          "4",
+          "Thu",
+          558.3,
+          "4466"
+        ],
+        [
+          "6",
+          "Jun",
+          "5",
+          "Fri",
+          557.5,
+          "4460"
+        ],
+        [
+          "6",
+          "Jun",
+          "6",
+          "Sat",
+          568.3,
+          "4546"
+        ],
+        [
+          "6",
+          "Jun",
+          "7",
+          "Sun",
+          570.0,
+          "4560"
+        ],
+        [
+          "7",
+          "Jul",
+          "1",
+          "Mon",
+          560.3,
+          "4482"
+        ],
+        [
+          "7",
+          "Jul",
+          "2",
+          "Tue",
+          571.4,
+          "4571"
+        ],
+        [
+          "7",
+          "Jul",
+          "3",
+          "Wed",
+          569.1,
+          "5122"
+        ],
+        [
+          "7",
+          "Jul",
+          "4",
+          "Thu",
+          575.0,
+          "5750"
+        ],
+        [
+          "7",
+          "Jul",
+          "5",
+          "Fri",
+          557.9,
+          "5579"
+        ],
+        [
+          "7",
+          "Jul",
+          "6",
+          "Sat",
+          562.8,
+          "5065"
+        ],
+        [
+          "7",
+          "Jul",
+          "7",
+          "Sun",
+          568.0,
+          "4544"
+        ],
+        [
+          "8",
+          "Aug",
+          "1",
+          "Mon",
+          572.3,
+          "5723"
+        ],
+        [
+          "8",
+          "Aug",
+          "2",
+          "Tue",
+          556.6,
+          "5009"
+        ],
+        [
+          "8",
+          "Aug",
+          "3",
+          "Wed",
+          551.0,
+          "4408"
+        ],
+        [
+          "8",
+          "Aug",
+          "4",
+          "Thu",
+          567.9,
+          "4543"
+        ],
+        [
+          "8",
+          "Aug",
+          "5",
+          "Fri",
+          577.1,
+          "4617"
+        ],
+        [
+          "8",
+          "Aug",
+          "6",
+          "Sat",
+          572.9,
+          "5156"
+        ],
+        [
+          "8",
+          "Aug",
+          "7",
+          "Sun",
+          560.4,
+          "5604"
+        ],
+        [
+          "9",
+          "Sep",
+          "1",
+          "Mon",
+          562.1,
+          "4497"
+        ],
+        [
+          "9",
+          "Sep",
+          "2",
+          "Tue",
+          576.3,
+          "5187"
+        ],
+        [
+          "9",
+          "Sep",
+          "3",
+          "Wed",
+          578.9,
+          "5789"
+        ],
+        [
+          "9",
+          "Sep",
+          "4",
+          "Thu",
+          571.3,
+          "5142"
+        ],
+        [
+          "9",
+          "Sep",
+          "5",
+          "Fri",
+          557.0,
+          "4456"
+        ],
+        [
+          "9",
+          "Sep",
+          "6",
+          "Sat",
+          565.3,
+          "4522"
+        ],
+        [
+          "9",
+          "Sep",
+          "7",
+          "Sun",
+          559.6,
+          "4477"
+        ],
+        [
+          "10",
+          "Oct",
+          "1",
+          "Mon",
+          563.8,
+          "4510"
+        ],
+        [
+          "10",
+          "Oct",
+          "2",
+          "Tue",
+          571.5,
+          "4572"
+        ],
+        [
+          "10",
+          "Oct",
+          "3",
+          "Wed",
+          566.5,
+          "4532"
+        ],
+        [
+          "10",
+          "Oct",
+          "4",
+          "Thu",
+          566.7,
+          "5100"
+        ],
+        [
+          "10",
+          "Oct",
+          "5",
+          "Fri",
+          575.1,
+          "5751"
+        ],
+        [
+          "10",
+          "Oct",
+          "6",
+          "Sat",
+          573.3,
+          "5733"
+        ],
+        [
+          "10",
+          "Oct",
+          "7",
+          "Sun",
+          576.4,
+          "5188"
+        ],
+        [
+          "11",
+          "Nov",
+          "1",
+          "Mon",
+          574.0,
+          "5740"
+        ],
+        [
+          "11",
+          "Nov",
+          "2",
+          "Tue",
+          564.7,
+          "5082"
+        ],
+        [
+          "11",
+          "Nov",
+          "3",
+          "Wed",
+          585.0,
+          "4680"
+        ],
+        [
+          "11",
+          "Nov",
+          "4",
+          "Thu",
+          564.6,
+          "4517"
+        ],
+        [
+          "11",
+          "Nov",
+          "5",
+          "Fri",
+          565.1,
+          "4521"
+        ],
+        [
+          "11",
+          "Nov",
+          "6",
+          "Sat",
+          589.5,
+          "4716"
+        ],
+        [
+          "11",
+          "Nov",
+          "7",
+          "Sun",
+          577.9,
+          "5201"
+        ],
+        [
+          "12",
+          "Dec",
+          "1",
+          "Mon",
+          583.0,
+          "4664"
+        ],
+        [
+          "12",
+          "Dec",
+          "2",
+          "Tue",
+          563.0,
+          "5067"
+        ],
+        [
+          "12",
+          "Dec",
+          "3",
+          "Wed",
+          561.7,
+          "5617"
+        ],
+        [
+          "12",
+          "Dec",
+          "4",
+          "Thu",
+          567.9,
+          "5679"
+        ],
+        [
+          "12",
+          "Dec",
+          "5",
+          "Fri",
+          563.2,
+          "5069"
+        ],
+        [
+          "12",
+          "Dec",
+          "6",
+          "Sat",
+          563.1,
+          "4505"
+        ],
+        [
+          "12",
+          "Dec",
+          "7",
+          "Sun",
+          563.9,
+          "4511"
+        ]
+      ],
+      "row_count": 84,
+      "truncated": false,
+      "elapsed_ms": 45.7
+    },
+    "email_tld": {
+      "columns": [
+        {
+          "name": "tld",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "customers",
+          "type": "HUGEINT"
+        },
+        {
+          "name": "slice_order",
+          "type": "BIGINT"
+        }
+      ],
+      "rows": [
+        [
+          "com",
+          "300218",
+          "1"
+        ],
+        [
+          "org",
+          "50213",
+          "2"
+        ],
+        [
+          "net",
+          "50191",
+          "3"
+        ],
+        [
+          "biz",
+          "49740",
+          "4"
+        ],
+        [
+          "info",
+          "49638",
+          "5"
+        ]
+      ],
+      "row_count": 5,
+      "truncated": false,
+      "elapsed_ms": 123.7
+    },
+    "legal_form": {
+      "columns": [
+        {
+          "name": "legal_form",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "customers",
+          "type": "BIGINT"
+        }
+      ],
+      "rows": [
+        [
+          "Other",
+          "333417"
+        ],
+        [
+          "PLC",
+          "28107"
+        ],
+        [
+          "LLC",
+          "27860"
+        ],
+        [
+          "Inc",
+          "27785"
+        ],
+        [
+          "and Sons",
+          "27723"
+        ],
+        [
+          "Group",
+          "27634"
+        ],
+        [
+          "Ltd",
+          "27474"
+        ]
+      ],
+      "row_count": 7,
+      "truncated": false,
+      "elapsed_ms": 101.9
+    }
+  },
+  "errors": {},
+  "ran_at": "2026-10-31T03:46:52Z",
+  "title": "Customer growth",
+  "blocks": [
+    {
+      "id": "markdown-1",
+      "block": {
+        "kind": "markdown",
+        "text": "## Customer growth\n\nA look at the 500,000-customer CRM sample: how many people signed up each\nmonth, where they live, what their email addresses and company names look\nlike. Use the **Since** filter to restrict everything to sign-ups on or\nafter a date.\n"
+      },
+      "html": "<h2>Customer growth</h2>\n<p>A look at the 500,000-customer CRM sample: how many people signed up each\nmonth, where they live, what their email addresses and company names look\nlike. Use the <strong>Since</strong> filter to restrict everything to sign-ups on or\nafter a date.</p>\n"
+    },
+    {
+      "id": "kpis",
+      "block": {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "customers",
+        "label": "Total customers",
+        "format": "number"
+      },
+      "display": "Total customers",
+      "row": 1
+    },
+    {
+      "id": "kpis-metric",
+      "block": {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "countries",
+        "label": "Countries",
+        "format": "number"
+      },
+      "display": "Countries",
+      "row": 1
+    },
+    {
+      "id": "kpis-metric-2",
+      "block": {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "avg_monthly_signups",
+        "label": "Avg monthly sign-ups",
+        "format": "number"
+      },
+      "display": "Avg monthly sign-ups",
+      "row": 1
+    },
+    {
+      "id": "kpis-metric-3",
+      "block": {
+        "kind": "metric",
+        "query": "kpis",
+        "field": "peak_month",
+        "label": "Peak sign-up month"
+      },
+      "display": "Peak sign-up month",
+      "row": 1
+    },
+    {
+      "id": "monthly",
+      "block": {
+        "kind": "chart",
+        "query": "monthly",
+        "title": "Monthly sign-ups",
+        "spec": {
+          "layer": [
+            {
+              "mark": {
+                "type": "area",
+                "line": true,
+                "opacity": 0.35
+              },
+              "encoding": {
+                "x": {
+                  "field": "month",
+                  "type": "temporal",
+                  "title": null
+                },
+                "y": {
+                  "field": "signups",
+                  "type": "quantitative",
+                  "title": "Sign-ups"
+                }
+              }
+            },
+            {
+              "mark": {
+                "type": "line",
+                "color": "#e45756",
+                "strokeDash": [
+                  6,
+                  4
+                ]
+              },
+              "encoding": {
+                "x": {
+                  "field": "month",
+                  "type": "temporal"
+                },
+                "y": {
+                  "field": "trend",
+                  "type": "quantitative"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "display": "Monthly sign-ups"
+    },
+    {
+      "id": "top-countries",
+      "block": {
+        "kind": "chart",
+        "query": "top_countries",
+        "title": "Top 15 countries by customers",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "y": {
+              "field": "country",
+              "type": "nominal",
+              "sort": "-x",
+              "title": null
+            },
+            "x": {
+              "field": "customers",
+              "type": "quantitative",
+              "title": "Customers"
+            },
+            "tooltip": [
+              {
+                "field": "country",
+                "type": "nominal"
+              },
+              {
+                "field": "customers",
+                "type": "quantitative",
+                "format": ","
+              },
+              {
+                "field": "share_pct",
+                "type": "quantitative",
+                "title": "Share %"
+              }
+            ]
+          }
+        }
+      },
+      "display": "Top 15 countries by customers"
+    },
+    {
+      "id": "top-countries-table",
+      "block": {
+        "kind": "table",
+        "query": "top_countries",
+        "title": "Top countries and share of total",
+        "limit": 15
+      },
+      "display": "Top countries and share of total"
+    },
+    {
+      "id": "weekday-month",
+      "block": {
+        "kind": "chart",
+        "query": "weekday_month",
+        "title": "Average sign-ups per day by weekday and month of year",
+        "spec": {
+          "mark": "rect",
+          "encoding": {
+            "x": {
+              "field": "month",
+              "type": "ordinal",
+              "title": "Month of year",
+              "sort": [
+                "Jan",
+                "Feb",
+                "Mar",
+                "Apr",
+                "May",
+                "Jun",
+                "Jul",
+                "Aug",
+                "Sep",
+                "Oct",
+                "Nov",
+                "Dec"
+              ]
+            },
+            "y": {
+              "field": "weekday",
+              "type": "ordinal",
+              "title": null,
+              "sort": [
+                "Mon",
+                "Tue",
+                "Wed",
+                "Thu",
+                "Fri",
+                "Sat",
+                "Sun"
+              ]
+            },
+            "color": {
+              "field": "avg_signups_per_day",
+              "type": "quantitative",
+              "title": "Sign-ups per day",
+              "scale": {
+                "zero": false
+              }
+            },
+            "tooltip": [
+              {
+                "field": "month",
+                "type": "ordinal"
+              },
+              {
+                "field": "weekday",
+                "type": "ordinal"
+              },
+              {
+                "field": "avg_signups_per_day",
+                "type": "quantitative",
+                "title": "Avg per day"
+              },
+              {
+                "field": "signups",
+                "type": "quantitative",
+                "title": "Total sign-ups",
+                "format": ","
+              }
+            ]
+          }
+        }
+      },
+      "display": "Average sign-ups per day by weekday and month of year"
+    },
+    {
+      "id": "email-tld",
+      "block": {
+        "kind": "chart",
+        "query": "email_tld",
+        "title": "Email top-level domains",
+        "spec": {
+          "mark": {
+            "type": "arc",
+            "innerRadius": 60
+          },
+          "encoding": {
+            "theta": {
+              "field": "customers",
+              "type": "quantitative"
+            },
+            "color": {
+              "field": "tld",
+              "type": "nominal",
+              "title": "TLD",
+              "sort": {
+                "field": "slice_order",
+                "op": "min"
+              }
+            },
+            "order": {
+              "field": "slice_order",
+              "type": "quantitative"
+            },
+            "tooltip": [
+              {
+                "field": "tld",
+                "type": "nominal"
+              },
+              {
+                "field": "customers",
+                "type": "quantitative",
+                "format": ","
+              }
+            ]
+          }
+        }
+      },
+      "display": "Email top-level domains"
+    },
+    {
+      "id": "legal-form",
+      "block": {
+        "kind": "chart",
+        "query": "legal_form",
+        "title": "Company legal form (from name suffix)",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "legal_form",
+              "type": "nominal",
+              "sort": "-y",
+              "title": null
+            },
+            "y": {
+              "field": "customers",
+              "type": "quantitative",
+              "title": "Customers"
+            }
+          }
+        }
+      },
+      "display": "Company legal form (from name suffix)"
+    },
+    {
+      "id": "markdown-2",
+      "block": {
+        "kind": "markdown",
+        "text": "### Data-quality note\n\n**This data looks synthetic** (it resembles a Faker-style generated\ncustomer file), for these reasons:\n\n- **Flat sign-ups.** Every one of the 880 days from 2020-01-01 to\n  2022-05-29 has sign-ups, at an almost constant ~570 a day. The\n  month-to-month differences mostly reflect month length, not growth. The\n  trend line is nearly flat, and so is the weekday by month heatmap.\n  The peak month is simply a long month, not a real peak. The last month\n  (May 2022) is cut off at the 29th.\n- **Uniform categories.** Four of the five email TLDs (org, net, biz, info)\n  hold ~10% each and .com holds 60%. The 243 \"countries\" (including\n  Antarctica and Christmas Island) each get ~2,100 customers (about 0.43%);\n  only Korea and Congo have double that, probably because the source\n  country list has two entries for each.\n- **Company names** follow three templates in equal thirds: \"Surname Suffix\"\n  (LLC, Ltd, PLC, Inc, Group, \"and Sons\"), hyphenated surnames, and\n  \"A, B and C\". The last two have no legal form, so they fall in *Other*\n  (two thirds of customers).\n- **Emails are unrelated to people.** Only about 0.3% of addresses contain the\n  person's last name, and the email domain rarely matches the website.\n  71 rows repeat an email address already used by another customer.\n\nTreat the shape of this report as a demo of the tooling, not as business insight.\n"
+      },
+      "html": "<h3>Data-quality note</h3>\n<p><strong>This data looks synthetic</strong> (it resembles a Faker-style generated\ncustomer file), for these reasons:</p>\n<ul>\n<li><strong>Flat sign-ups.</strong> Every one of the 880 days from 2020-01-01 to\n2022-05-29 has sign-ups, at an almost constant ~570 a day. The\nmonth-to-month differences mostly reflect month length, not growth. The\ntrend line is nearly flat, and so is the weekday by month heatmap.\nThe peak month is simply a long month, not a real peak. The last month\n(May 2022) is cut off at the 29th.</li>\n<li><strong>Uniform categories.</strong> Four of the five email TLDs (org, net, biz, info)\nhold ~10% each and .com holds 60%. The 243 \"countries\" (including\nAntarctica and Christmas Island) each get ~2,100 customers (about 0.43%);\nonly Korea and Congo have double that, probably because the source\ncountry list has two entries for each.</li>\n<li><strong>Company names</strong> follow three templates in equal thirds: \"Surname Suffix\"\n(LLC, Ltd, PLC, Inc, Group, \"and Sons\"), hyphenated surnames, and\n\"A, B and C\". The last two have no legal form, so they fall in <em>Other</em>\n(two thirds of customers).</li>\n<li><strong>Emails are unrelated to people.</strong> Only about 0.3% of addresses contain the\nperson's last name, and the email domain rarely matches the website.\n71 rows repeat an email address already used by another customer.</li>\n</ul>\n<p>Treat the shape of this report as a demo of the tooling, not as business insight.</p>\n"
+    }
+  ]
+}

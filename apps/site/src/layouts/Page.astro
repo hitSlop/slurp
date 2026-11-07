@@ -1,0 +1,26 @@
+---
+import '../../../../packages/web-shared/styles.css';
+import Icon from '../components/Icon.astro';
+import archivo from '../../../../packages/web-shared/assets/Archivo-wdth.woff2?url';
+import mascot from '../../../../packages/web-shared/assets/mascot.png';
+import logo from '../../../../packages/web-shared/assets/logo.png';
+import {cloudflareCost,headlineVolume,count} from '../lib/pricing.mjs';
+const pill=`$${Math.round(cloudflareCost(headlineVolume))}`;
+const {title,description,current,sections=[]}=Astro.props;
+---
+<!doctype html><html lang="en"><head><link rel="icon" type="image/png" href="/favicon.png"/><meta charset="utf-8"/><meta name="viewport" content="width=device-width"/><meta name="description" content={description}/><meta name="referrer" content="no-referrer"/>
+<link rel="preload" href={archivo} as="font" type="font/woff2" crossorigin/><title>{title} · Slurp</title></head><body><a class="skip" href="#main">Skip to content</a><div class="shell"><aside class="rail"><a class="brand" href="/" aria-label="Slurp home"><img src={logo.src} width="100" height="48" alt="Slurp"/></a><a class="price-pill" href="/self-host/#cost" aria-label={`Pricing: ${count(headlineVolume)} events a month is about ${pill} of Cloudflare costs`}><span>{count(headlineVolume)} events</span><strong>≈ {pill}/mo</strong></a><nav class="primary-nav" aria-label="Main">{[{id:'home',href:'/',label:'Home',icon:'home'},{id:'docs',href:'/docs/',label:'Docs',icon:'docs'},{id:'connections',href:'/connections/',label:'Connections',icon:'connections'},{id:'self-host',href:'/self-host/',label:'Self-host',icon:'pricing'}].map(item=><a href={item.href} aria-current={current===item.id?'page':undefined}><Icon name={item.icon}/><span>{item.label}</span></a>)}</nav><details class="section-index" open><summary>Sections</summary><nav class="toc" aria-label="On this page">{sections.map((s: {id:string,label:string},i:number)=><a href={'#'+s.id}>{String(i+1).padStart(2,'0')} · {s.label}</a>)}</nav></details><div class="rail-help"><img src={mascot.src} alt="" width="40" height="28"/><strong>Need a hand?</strong><a href="/docs/">Read the setup guide ↗</a><p>Your data. Your agent.</p></div></aside><main id="main" class="content"><slot/><footer><a class="brand" href="/" aria-label="Slurp home"><img src={logo.src} alt="Slurp"/></a><span>The feedback loop for your coding agent.</span><a href="/docs/">Get started ↗</a></footer></main></div></body></html>
+
+<script>
+import {trackSections} from '../../../../packages/web-shared/rail.js';
+const rail=document.querySelector('.rail');
+trackSections(rail);
+const index=rail?.querySelector('details');
+if(index && matchMedia('(max-width:900px)').matches) index.open=false;
+</script>
+<style is:global>
+.price-pill{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:-6px 0 4px;padding:8px 12px;border-radius:9px;background:#fff;border:1.5px solid var(--red);text-decoration:none;color:var(--ink);font:650 12px var(--body);box-shadow:0 4px 14px #e8002a1a}
+.price-pill strong{font:800 17px/1 var(--display);font-stretch:75%;color:var(--red);white-space:nowrap}
+.price-pill:hover{background:#fff5f6}
+@media(max-width:900px){.price-pill{margin:0;padding:6px 10px}.price-pill span{display:none}}
+</style>

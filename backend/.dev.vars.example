@@ -1,0 +1,3 @@
+# Bearer token for the Slurp control plane (create sources, keys, read archives). Use a long random value:
+#   openssl rand -base64 32
+ADMIN_TOKEN=

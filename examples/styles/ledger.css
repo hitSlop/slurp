@@ -1,0 +1,31 @@
+/* slurp-template
+   font: mono
+   chart-widths: 716 340 216
+   default-theme: pro-light
+*/
+*{box-sizing:border-box}
+body{margin:0;background:%BG%;color:%FG%;font-family:%FONT%;font-size:12px}
+main{width:840px;padding:34px 40px 40px;display:flex;flex-direction:column}
+.bar{width:100%;display:flex;flex-direction:row;align-items:center;gap:14px;margin-bottom:18px;padding-bottom:8px;border-bottom:3px double %FG%;font-size:10.5px}
+.brand{display:flex;flex-direction:row;align-items:center;gap:8px}
+.brand img{width:20px;height:20px}
+.brand b{color:%BRAND%;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
+.purpose{flex:1;font-style:italic}
+.date{font-weight:600}
+.text{width:100%;padding-bottom:10px}
+.text h1{margin:0 0 12px;font-size:25px;line-height:1.15;letter-spacing:-.02em}
+.text p{margin:0;line-height:1.8}
+section{width:100%;padding:14px 0 12px;border-top:1px dotted %MUTED%}
+.row{width:100%;display:flex;flex-direction:row;gap:24px}
+.row section{flex:1;width:auto}
+header{display:flex;flex-direction:row;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+h2{margin:0;font-size:13px;font-weight:700}
+.n{margin-right:9px;color:%ACCENT%}
+.q{color:%MUTED%;font-size:10px;font-style:italic}
+.label{margin:0 0 4px;color:%MUTED%;font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.value{display:block;padding-bottom:4px;border-bottom:1px solid %FG%;font-size:30px;font-weight:700;line-height:1.1;letter-spacing:-.03em}
+table{width:100%;border-collapse:collapse}
+th{padding:5px 6px;text-align:left;font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;border-bottom:1px solid %FG%}
+td{padding:5px 6px;border-bottom:1px dotted %MUTED%}
+th.num,td.num{text-align:right}
+svg{max-width:100%}

@@ -1,0 +1,2200 @@
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+
+// src/util.ts
+var enc = new TextEncoder();
+var bytesToHex = /* @__PURE__ */ __name((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join(""), "bytesToHex");
+var sha256Hex = /* @__PURE__ */ __name(async (d) => bytesToHex(await crypto.subtle.digest("SHA-256", typeof d === "string" ? enc.encode(d) : d)), "sha256Hex");
+var randomHex = /* @__PURE__ */ __name((bytes) => bytesToHex(crypto.getRandomValues(new Uint8Array(bytes)).buffer), "randomHex");
+var b64url = /* @__PURE__ */ __name((b) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""), "b64url");
+var fromB64url = /* @__PURE__ */ __name((s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)), "fromB64url");
+async function hmacHex(secret, msg) {
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToHex(await crypto.subtle.sign("HMAC", key, enc.encode(msg)));
+}
+__name(hmacHex, "hmacHex");
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+__name(timingSafeEqual, "timingSafeEqual");
+async function gzip(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+__name(gzip, "gzip");
+async function retry(fn, attempts = 3) {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= attempts) throw e;
+      await new Promise((r) => setTimeout(r, 50 * i));
+    }
+  }
+}
+__name(retry, "retry");
+
+// src/canonical.ts
+var MAX_RECORD_BYTES = 32 * 1024;
+var MAX_DEPTH = 128;
+var RESERVED = ["received_at", "received_seq", "rt", "rseq", "ts", "props"];
+var MAX_LINES = 1 << 20;
+var Reject = class extends Error {
+  static {
+    __name(this, "Reject");
+  }
+};
+var NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+function scan(s) {
+  let i = 0;
+  const n = s.length;
+  const members = /* @__PURE__ */ new Map();
+  let context;
+  const fail = /* @__PURE__ */ __name((m) => {
+    throw new Reject(m);
+  }, "fail");
+  const ws = /* @__PURE__ */ __name(() => {
+    while (i < n) {
+      const c = s.charCodeAt(i);
+      if (c === 32 || c === 9 || c === 10 || c === 13) i++;
+      else break;
+    }
+  }, "ws");
+  const hex4 = /* @__PURE__ */ __name((at) => {
+    if (at + 4 > n) return fail("invalid escape");
+    const h = s.slice(at, at + 4);
+    return /^[0-9a-fA-F]{4}$/.test(h) ? parseInt(h, 16) : fail("invalid escape");
+  }, "hex4");
+  function str() {
+    i++;
+    for (; ; ) {
+      if (i >= n) fail("unterminated string");
+      const c = s.charCodeAt(i);
+      if (c === 34) {
+        i++;
+        return;
+      }
+      if (c < 32) fail("control character in string");
+      if (c !== 92) {
+        i++;
+        continue;
+      }
+      const e = s[i + 1];
+      if (e === "u") {
+        const u = hex4(i + 2);
+        i += 6;
+        if (u >= 55296 && u <= 56319) {
+          if (s[i] !== "\\" || s[i + 1] !== "u") fail("invalid surrogate");
+          const lo = hex4(i + 2);
+          if (lo < 56320 || lo > 57343) fail("invalid surrogate");
+          i += 6;
+        } else if (u >= 56320 && u <= 57343) fail("invalid surrogate");
+      } else if (e !== void 0 && '"\\/bfnrt'.includes(e)) i += 2;
+      else fail("invalid escape");
+    }
+  }
+  __name(str, "str");
+  function value(depth) {
+    ws();
+    if (i >= n) return fail("unexpected end");
+    const c = s[i];
+    if (c === "{") return obj(depth + 1);
+    if (c === "[") {
+      arr(depth + 1);
+      return void 0;
+    }
+    if (c === '"') {
+      str();
+      return void 0;
+    }
+    for (const lit of ["true", "false", "null"]) if (s.startsWith(lit, i)) {
+      i += lit.length;
+      return void 0;
+    }
+    NUMBER.lastIndex = i;
+    const m = NUMBER.exec(s);
+    if (!m) return fail("invalid value");
+    i += m[0].length;
+    return void 0;
+  }
+  __name(value, "value");
+  function arr(depth) {
+    if (depth > MAX_DEPTH) fail("nesting too deep");
+    i++;
+    ws();
+    if (s[i] === "]") {
+      i++;
+      return;
+    }
+    for (; ; ) {
+      value(depth);
+      ws();
+      if (s[i] === ",") {
+        i++;
+        continue;
+      }
+      if (s[i] === "]") {
+        i++;
+        return;
+      }
+      fail("expected , or ]");
+    }
+  }
+  __name(arr, "arr");
+  function obj(depth) {
+    if (depth > MAX_DEPTH) fail("nesting too deep");
+    const open = i;
+    i++;
+    const keys = /* @__PURE__ */ new Set();
+    ws();
+    if (s[i] === "}") {
+      i++;
+      return { keys, open, close: i - 1 };
+    }
+    for (; ; ) {
+      ws();
+      if (s[i] !== '"') fail("expected string key");
+      const ks = i;
+      str();
+      const raw = s.slice(ks, i);
+      const key = raw.includes("\\") ? JSON.parse(raw) : raw.slice(1, -1);
+      if (keys.has(key)) fail("duplicate name");
+      keys.add(key);
+      ws();
+      if (s[i] !== ":") fail("expected :");
+      i++;
+      ws();
+      const vs = i;
+      const child = value(depth);
+      if (depth === 1) {
+        members.set(key, [vs, i]);
+        if (key === "context") context = child;
+      }
+      ws();
+      if (s[i] === ",") {
+        i++;
+        continue;
+      }
+      if (s[i] === "}") {
+        i++;
+        return { keys, open, close: i - 1 };
+      }
+      fail("expected , or }");
+    }
+  }
+  __name(obj, "obj");
+  ws();
+  if (s[i] !== "{") fail("expected a JSON object");
+  const top = obj(1);
+  ws();
+  if (i !== n) fail("expected one JSON object");
+  return { members, top, context };
+}
+__name(scan, "scan");
+var TS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+function validTimestamp(v) {
+  const m = TS.exec(v);
+  if (!m) return false;
+  const [y, mo, d, h, mi, se] = [1, 2, 3, 4, 5, 6].map((k) => Number(m[k]));
+  if (mo < 1 || mo > 12 || h > 23 || mi > 59 || se > 59) return false;
+  if (m[7] !== void 0 && (Number(m[7]) > 23 || Number(m[8]) > 59)) return false;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+__name(validTimestamp, "validTimestamp");
+function validateRecord(line) {
+  let sc;
+  try {
+    sc = scan(line);
+  } catch (e) {
+    if (e instanceof Reject) return { reason: e.message };
+    throw e;
+  }
+  const text = /* @__PURE__ */ __name((k) => {
+    const span = sc.members.get(k);
+    if (!span || line[span[0]] !== '"') return null;
+    const v = JSON.parse(line.slice(span[0], span[1]));
+    return v === "" ? null : v;
+  }, "text");
+  for (const k of RESERVED) if (sc.members.has(k)) return { reason: `reserved or obsolete ${k} field` };
+  const id = text("id");
+  if (id === null || new TextEncoder().encode(id).length > 256) return { reason: "id must be a string of 1-256 bytes" };
+  const type = text("type");
+  if (type !== "track" && type !== "identify") return { reason: "type must be track or identify" };
+  const ts = text("timestamp");
+  if (ts === null) return { reason: "timestamp is required" };
+  if (!validTimestamp(ts)) return { reason: "timestamp must be RFC 3339" };
+  const data = sc.members.get("data");
+  if (!data || line[data[0]] !== "{") return { reason: "data must be a JSON object" };
+  if (type === "track") {
+    const ev = text("event");
+    if (ev === null || [...ev].length > 200) return { reason: "track event must be 1-200 characters" };
+  }
+  if (type === "identify" && text("user_id") === null) return { reason: "identify requires user_id" };
+  for (const k of ["user_id", "anonymous_id", "session_id"])
+    if (sc.members.has(k) && text(k) === null) return { reason: `${k} must be a nonempty string` };
+  const ctx = sc.members.get("context");
+  if (ctx) {
+    if (line[ctx[0]] !== "{" || !sc.context) return { reason: "context must be a JSON object" };
+    if (sc.context.keys.has("geo")) return { reason: "context.geo is reserved for server enrichment" };
+  }
+  return { scanned: sc };
+}
+__name(validateRecord, "validateRecord");
+function normalizeGeo(cf) {
+  if (!cf) return null;
+  const geo = {};
+  for (const f of ["city", "country", "region"]) {
+    const v = typeof cf[f] === "string" ? cf[f].trim() : "";
+    if (v !== "" && v.length <= 256) geo[f] = v;
+  }
+  if (geo.country !== void 0) {
+    const c = geo.country.toUpperCase();
+    if (/^[A-Z]{2}$/.test(c) && c !== "XX" && c !== "T1") geo.country = c;
+    else delete geo.country;
+  }
+  if (Object.keys(geo).length === 0) return null;
+  geo.provider = "cloudflare";
+  geo.basis = "request_ip";
+  return Object.fromEntries(Object.entries(geo).sort(([a], [b]) => a < b ? -1 : 1));
+}
+__name(normalizeGeo, "normalizeGeo");
+function spliceGeo(line, sc, geo) {
+  const g = JSON.stringify(geo);
+  if (sc.context) {
+    const at2 = sc.context.close;
+    return line.slice(0, at2) + (sc.context.keys.size ? "," : "") + `"geo":${g}` + line.slice(at2);
+  }
+  const at = sc.top.close;
+  return line.slice(0, at) + `,"context":{"geo":${g}}` + line.slice(at);
+}
+__name(spliceGeo, "spliceGeo");
+function checkBody(body, geo) {
+  let end = body.length;
+  while (end > 0 && (body[end - 1] === 10 || body[end - 1] === 13)) end--;
+  if (end === 0) return { lines: [] };
+  const lines = [];
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  let start = 0;
+  for (let n = 1; ; n++) {
+    if (n > MAX_LINES) return { line: n, reason: "too many lines" };
+    let stop = body.indexOf(10, start);
+    if (stop === -1 || stop > end) stop = end;
+    const bytes = body.subarray(start, stop);
+    if (bytes.length > MAX_RECORD_BYTES) return { line: n, reason: "record exceeds 32 KiB" };
+    let text;
+    try {
+      text = decoder.decode(bytes);
+    } catch {
+      return { line: n, reason: "invalid UTF-8" };
+    }
+    const r = validateRecord(text);
+    if ("reason" in r) return { line: n, reason: r.reason };
+    lines.push(geo ? spliceGeo(text, r.scanned, geo) : text);
+    if (stop >= end) break;
+    start = stop + 1;
+  }
+  return { lines };
+}
+__name(checkBody, "checkBody");
+function stampOne(raw, batchId, atMs, n) {
+  const line = raw.replace(/^[ \t\r]+/, "");
+  const rest = line.slice(1);
+  const seq = (BigInt(batchId) << 20n | BigInt(n)).toString();
+  const comma = /^[ \t\r]*\}/.test(rest) ? "" : ",";
+  return `{"received_at":"${new Date(atMs).toISOString()}","received_seq":"${seq}"${comma}${rest}
+`;
+}
+__name(stampOne, "stampOne");
+
+// src/landing.ts
+var esc = /* @__PURE__ */ __name((s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]), "esc");
+function setupPage(origin, configured) {
+  const o = esc(origin);
+  const setup = configured ? "" : `<p class="warn"><strong>Not finished.</strong> The <code>ADMIN_TOKEN</code> secret is missing or too short (20 characters minimum). Set it in the Cloudflare dashboard under this Worker's Settings, Variables and Secrets, or run <code>npx wrangler secret put ADMIN_TOKEN</code>. Then reload this page.</p>`;
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Slurp is running</title>
+<style>
+:root{--bg:#fff;--fg:#17191c;--muted:#535c66;--rule:#e4e7eb;--code:#f6f9fc;--accent:#e8002a}
+@media(prefers-color-scheme:dark){:root{--bg:#101215;--fg:#eceff2;--muted:#9aa4af;--rule:#262b31;--code:#171b20}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:56px 20px}
+h1{font-size:28px;margin:0 0 8px}p{color:var(--muted)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:${configured ? "#1a9d5c" : "#e8a000"};margin-right:10px}
+pre{background:var(--code);border:1px solid var(--rule);border-radius:7px;padding:14px 16px;overflow:auto;font-size:13px;color:var(--fg)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.warn{border:1px solid var(--rule);border-left:3px solid #e8a000;padding:12px 16px;border-radius:4px}
+ol{padding-left:20px}li{margin:10px 0}a{color:var(--accent)}
+</style></head><body><main>
+<h1><span class="dot"></span>Slurp is running</h1>
+<p>This is your own Slurp Worker. Events you send here are stored in your Cloudflare account and nowhere else.</p>
+${setup}
+<h2>Connect your computer</h2>
+<ol>
+<li>Install the Slurp CLI.</li>
+<li>Connect it to this Worker with the <code>ADMIN_TOKEN</code> you chose when you deployed. The token is read from standard input, so it never shows up in your shell history:
+<pre><code>slurp connect ${o} --token-stdin</code></pre></li>
+<li>In your app's folder, create a source and get the SDK snippet:
+<pre><code>slurp setup
+slurp init --name "My app"</code></pre></li>
+</ol>
+<p>Your SDK sends events to <code>${o}/v1/events</code> with a publishable key. <code>slurp init</code> prints both for you.</p>
+<p><a href="https://github.com/hitSlop/slurp/blob/main/docs/self-hosting.md">Self-hosting guide</a> \xB7 <a href="${o}/v1/health">Health</a></p>
+</main></body></html>`;
+}
+__name(setupPage, "setupPage");
+
+// src/slurp.gen.ts
+var WebrpcVersion = "v1";
+var WebrpcSchemaVersion = "v0.5.0";
+var serveArchiveRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/rpc/Archive/")) return null;
+  const method = pathname.slice("/rpc/Archive/".length);
+  if (method === "" || method.includes("/")) return null;
+  if (request.method !== "POST") {
+    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
+  }
+  try {
+    return await dispatchArchiveRequest(service, ctx, method, request);
+  } catch (err) {
+    return webrpcErrorResponse(err);
+  }
+}, "serveArchiveRpc");
+var dispatchArchiveRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
+  switch (method) {
+    case "ListObjects": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "ListObjectsRequest");
+      if (payload && !validateType(payload, "ListObjectsRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: listObjectsRequest" });
+      }
+      const result = await service.listObjects(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "GetCoverage": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "GetCoverageRequest");
+      if (payload && !validateType(payload, "GetCoverageRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: getCoverageRequest" });
+      }
+      const result = await service.getCoverage(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    default:
+      throw new WebrpcBadRouteError({ cause: "method not found" });
+  }
+}, "dispatchArchiveRequest");
+var serveSourceRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/rpc/Source/")) return null;
+  const method = pathname.slice("/rpc/Source/".length);
+  if (method === "" || method.includes("/")) return null;
+  if (request.method !== "POST") {
+    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
+  }
+  try {
+    return await dispatchSourceRequest(service, ctx, method, request);
+  } catch (err) {
+    return webrpcErrorResponse(err);
+  }
+}, "serveSourceRpc");
+var dispatchSourceRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
+  switch (method) {
+    case "GetSource": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "GetSourceRequest");
+      if (payload && !validateType(payload, "GetSourceRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: getSourceRequest" });
+      }
+      const result = await service.getSource(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "UpdateSource": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "UpdateSourceRequest");
+      if (payload && !validateType(payload, "UpdateSourceRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: updateSourceRequest" });
+      }
+      const result = await service.updateSource(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "AddMember": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "SourceMemberRequest");
+      if (payload && !validateType(payload, "SourceMemberRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: sourceMemberRequest" });
+      }
+      const result = await service.addMember(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "RemoveMember": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "SourceMemberRequest");
+      if (payload && !validateType(payload, "SourceMemberRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: sourceMemberRequest" });
+      }
+      const result = await service.removeMember(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "ListSources": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "ListSourcesRequest");
+      if (payload && !validateType(payload, "ListSourcesRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: listSourcesRequest" });
+      }
+      const result = await service.listSources(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "ListMemberships": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "ListMembershipsRequest");
+      if (payload && !validateType(payload, "ListMembershipsRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: listMembershipsRequest" });
+      }
+      const result = await service.listMemberships(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "CreateSource": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "CreateSourceRequest");
+      if (payload && !validateType(payload, "CreateSourceRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: createSourceRequest" });
+      }
+      const result = await service.createSource(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "CreateKey": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "CreateKeyRequest");
+      if (payload && !validateType(payload, "CreateKeyRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: createKeyRequest" });
+      }
+      const result = await service.createKey(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "ListKeys": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "ListKeysRequest");
+      if (payload && !validateType(payload, "ListKeysRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: listKeysRequest" });
+      }
+      const result = await service.listKeys(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "RevokeKey": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "RevokeKeyRequest");
+      if (payload && !validateType(payload, "RevokeKeyRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: revokeKeyRequest" });
+      }
+      const result = await service.revokeKey(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    default:
+      throw new WebrpcBadRouteError({ cause: "method not found" });
+  }
+}, "dispatchSourceRequest");
+var serveHealthRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/rpc/Health/")) return null;
+  const method = pathname.slice("/rpc/Health/".length);
+  if (method === "" || method.includes("/")) return null;
+  if (request.method !== "POST") {
+    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
+  }
+  try {
+    return await dispatchHealthRequest(service, ctx, method, request);
+  } catch (err) {
+    return webrpcErrorResponse(err);
+  }
+}, "serveHealthRpc");
+var dispatchHealthRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
+  switch (method) {
+    case "Version": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "VersionRequest");
+      if (payload && !validateType(payload, "VersionRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: versionRequest" });
+      }
+      const result = await service.version(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    default:
+      throw new WebrpcBadRouteError({ cause: "method not found" });
+  }
+}, "dispatchHealthRequest");
+var serveAuthRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/rpc/Auth/")) return null;
+  const method = pathname.slice("/rpc/Auth/".length);
+  if (method === "" || method.includes("/")) return null;
+  if (request.method !== "POST") {
+    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
+  }
+  try {
+    return await dispatchAuthRequest(service, ctx, method, request);
+  } catch (err) {
+    return webrpcErrorResponse(err);
+  }
+}, "serveAuthRpc");
+var dispatchAuthRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
+  switch (method) {
+    case "BeginLogin": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BeginLoginRequest");
+      if (payload && !validateType(payload, "BeginLoginRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: beginLoginRequest" });
+      }
+      const result = await service.beginLogin(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "PollLogin": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "PollLoginRequest");
+      if (payload && !validateType(payload, "PollLoginRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: pollLoginRequest" });
+      }
+      const result = await service.pollLogin(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "Refresh": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "RefreshRequest");
+      if (payload && !validateType(payload, "RefreshRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: refreshRequest" });
+      }
+      const result = await service.refresh(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "Logout": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "LogoutRequest");
+      if (payload && !validateType(payload, "LogoutRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: logoutRequest" });
+      }
+      const result = await service.logout(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "CurrentUser": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "CurrentUserRequest");
+      if (payload && !validateType(payload, "CurrentUserRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: currentUserRequest" });
+      }
+      const result = await service.currentUser(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    default:
+      throw new WebrpcBadRouteError({ cause: "method not found" });
+  }
+}, "dispatchAuthRequest");
+var serveUsageRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/rpc/Usage/")) return null;
+  const method = pathname.slice("/rpc/Usage/".length);
+  if (method === "" || method.includes("/")) return null;
+  if (request.method !== "POST") {
+    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
+  }
+  try {
+    return await dispatchUsageRequest(service, ctx, method, request);
+  } catch (err) {
+    return webrpcErrorResponse(err);
+  }
+}, "serveUsageRpc");
+var dispatchUsageRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
+  switch (method) {
+    case "GetUsage": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "GetUsageRequest");
+      if (payload && !validateType(payload, "GetUsageRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: getUsageRequest" });
+      }
+      const result = await service.getUsage(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    default:
+      throw new WebrpcBadRouteError({ cause: "method not found" });
+  }
+}, "dispatchUsageRequest");
+var serveBillingRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/rpc/Billing/")) return null;
+  const method = pathname.slice("/rpc/Billing/".length);
+  if (method === "" || method.includes("/")) return null;
+  if (request.method !== "POST") {
+    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
+  }
+  try {
+    return await dispatchBillingRequest(service, ctx, method, request);
+  } catch (err) {
+    return webrpcErrorResponse(err);
+  }
+}, "serveBillingRpc");
+var dispatchBillingRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
+  switch (method) {
+    case "GetStatus": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingStatusRequest");
+      if (payload && !validateType(payload, "BillingStatusRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: billingStatusRequest" });
+      }
+      const result = await service.getStatus(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "CreateCheckout": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingCheckoutRequest");
+      if (payload && !validateType(payload, "BillingCheckoutRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: billingCheckoutRequest" });
+      }
+      const result = await service.createCheckout(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "CreatePortal": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingPortalRequest");
+      if (payload && !validateType(payload, "BillingPortalRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: billingPortalRequest" });
+      }
+      const result = await service.createPortal(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "SetLimit": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingLimitRequest");
+      if (payload && !validateType(payload, "BillingLimitRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: billingLimitRequest" });
+      }
+      const result = await service.setLimit(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    default:
+      throw new WebrpcBadRouteError({ cause: "method not found" });
+  }
+}, "dispatchBillingRequest");
+var webrpcRequestBodyText = /* @__PURE__ */ __name(async (request, skipContentTypeCheck = false) => {
+  const contentType = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  const checkContentType = /* @__PURE__ */ __name(() => {
+    if (contentType !== "application/json" && !skipContentTypeCheck) {
+      throw new WebrpcBadRequestError({ cause: `unsupported Content-Type '${request.headers.get("Content-Type") || ""}' (only application/json is allowed)` });
+    }
+  }, "checkContentType");
+  let checked = false;
+  const contentLength = parseInt(request.headers.get("Content-Length") || "0", 10);
+  if (!skipContentTypeCheck && contentLength > 0) {
+    checkContentType();
+    checked = true;
+  }
+  const text = await request.text();
+  if (text === "") {
+    return "";
+  }
+  if (!checked) {
+    checkContentType();
+  }
+  return text;
+}, "webrpcRequestBodyText");
+var webrpcParseRequestBody = /* @__PURE__ */ __name((body, typ) => {
+  if (typeof body !== "string" || body.trim() === "") {
+    return {};
+  }
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch (err) {
+    throw new WebrpcBadRequestError({ cause: `failed to unmarshal request data: ${err instanceof Error ? err.message : String(err)}` });
+  }
+  try {
+    return JsonDecode(data, typ) ?? {};
+  } catch (err) {
+    throw new WebrpcBadRequestError({ cause: `failed to unmarshal request data: ${err instanceof WebrpcError ? String(err.cause ?? err.message) : err instanceof Error ? err.message : String(err)}` });
+  }
+}, "webrpcParseRequestBody");
+var webrpcJsonResponse = /* @__PURE__ */ __name((data, status = 200) => {
+  return new Response(JsonEncode(data), {
+    status,
+    headers: { [WebrpcHeader]: WebrpcHeaderValue, "Content-Type": "application/json" }
+  });
+}, "webrpcJsonResponse");
+var webrpcSuccessResponse = /* @__PURE__ */ __name((data, status = 200) => {
+  if (status === 204 || status === 205) {
+    return new Response(null, { status, headers: { [WebrpcHeader]: WebrpcHeaderValue } });
+  }
+  return webrpcJsonResponse(data, status);
+}, "webrpcSuccessResponse");
+var webrpcStatusKey = /* @__PURE__ */ Symbol("webrpcStatus");
+var webrpcTaggedStatus = /* @__PURE__ */ __name((result) => result !== null && typeof result === "object" && webrpcStatusKey in result ? { status: result[webrpcStatusKey], result: result.result } : null, "webrpcTaggedStatus");
+var webrpcErrorResponse = /* @__PURE__ */ __name((err, headers) => {
+  const rpcErr = err instanceof WebrpcError ? err : new WebrpcEndpointError({ cause: err instanceof Error ? err.message : String(err) });
+  const body = { error: rpcErr.name, code: rpcErr.code, msg: rpcErr.message, status: rpcErr.status };
+  if (rpcErr.cause !== void 0) {
+    body["cause"] = String(rpcErr.cause);
+  }
+  return new Response(JSON.stringify(body), {
+    status: rpcErr.status || 400,
+    headers: { ...headers, [WebrpcHeader]: WebrpcHeaderValue, "Content-Type": "application/json" }
+  });
+}, "webrpcErrorResponse");
+var JS_TYPES = [
+  "bigint",
+  "boolean",
+  "function",
+  "number",
+  "object",
+  "string",
+  "symbol",
+  "undefined"
+];
+var validateSeq = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateSeq");
+var validateCoverage = /* @__PURE__ */ __name((value) => {
+  if (!("archiveId" in value) || !validateType(value["archiveId"], "string")) {
+    return false;
+  }
+  if (!("firstRetained" in value) || !validateType(value["firstRetained"], "Seq")) {
+    return false;
+  }
+  if ("latestPublished" in value && !validateType(value["latestPublished"], "Seq")) {
+    return false;
+  }
+  if ("latestPublishedAt" in value && !validateType(value["latestPublishedAt"], "string")) {
+    return false;
+  }
+  if (!("retentionSeconds" in value) || !validateType(value["retentionSeconds"], "number")) {
+    return false;
+  }
+  return true;
+}, "validateCoverage");
+var validateArchiveObject = /* @__PURE__ */ __name((value) => {
+  if (!("seq" in value) || !validateType(value["seq"], "Seq")) {
+    return false;
+  }
+  if (!("name" in value) || !validateType(value["name"], "string")) {
+    return false;
+  }
+  if (!("size" in value) || !validateType(value["size"], "number")) {
+    return false;
+  }
+  if (!("sha256" in value) || !validateType(value["sha256"], "string")) {
+    return false;
+  }
+  if (!("url" in value) || !validateType(value["url"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateArchiveObject");
+var validateListObjectsRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if ("after" in value && !validateType(value["after"], "Seq")) {
+    return false;
+  }
+  if ("limit" in value && !validateType(value["limit"], "number")) {
+    return false;
+  }
+  return true;
+}, "validateListObjectsRequest");
+var validateListObjectsResponse = /* @__PURE__ */ __name((value) => {
+  if ("coverage" in value && !validateType(value["coverage"], "Coverage")) {
+    return false;
+  }
+  if (!("objects" in value) || !validateType(value["objects"], "ArchiveObject[]")) {
+    return false;
+  }
+  if ("nextAfter" in value && !validateType(value["nextAfter"], "Seq")) {
+    return false;
+  }
+  if ("expiresAt" in value && !validateType(value["expiresAt"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateListObjectsResponse");
+var validateGetCoverageRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetCoverageRequest");
+var validatePublicationStatus = /* @__PURE__ */ __name((value) => {
+  if (!("state" in value) || !validateType(value["state"], "string")) {
+    return false;
+  }
+  if (!("observedAt" in value) || !validateType(value["observedAt"], "string")) {
+    return false;
+  }
+  if (!("intervalSeconds" in value) || !validateType(value["intervalSeconds"], "number")) {
+    return false;
+  }
+  if ("estimatedAt" in value && !validateType(value["estimatedAt"], "string")) {
+    return false;
+  }
+  return true;
+}, "validatePublicationStatus");
+var validateGetCoverageResponse = /* @__PURE__ */ __name((value) => {
+  if ("coverage" in value && !validateType(value["coverage"], "Coverage")) {
+    return false;
+  }
+  if ("publication" in value && !validateType(value["publication"], "PublicationStatus")) {
+    return false;
+  }
+  return true;
+}, "validateGetCoverageResponse");
+var validateSourceInfo = /* @__PURE__ */ __name((value) => {
+  if (!("id" in value) || !validateType(value["id"], "string")) {
+    return false;
+  }
+  if (!("name" in value) || !validateType(value["name"], "string")) {
+    return false;
+  }
+  if ("title" in value && !validateType(value["title"], "string")) {
+    return false;
+  }
+  if (!("ownerId" in value) || !validateType(value["ownerId"], "string")) {
+    return false;
+  }
+  if (!("createdAt" in value) || !validateType(value["createdAt"], "string")) {
+    return false;
+  }
+  if (!("geoEnabled" in value) || !validateType(value["geoEnabled"], "boolean")) {
+    return false;
+  }
+  if (!("role" in value) || !validateType(value["role"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateSourceInfo");
+var validateMembership = /* @__PURE__ */ __name((value) => {
+  if (!("userId" in value) || !validateType(value["userId"], "string")) {
+    return false;
+  }
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if (!("role" in value) || !validateType(value["role"], "string")) {
+    return false;
+  }
+  if (!("createdAt" in value) || !validateType(value["createdAt"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateMembership");
+var validateApiKey = /* @__PURE__ */ __name((value) => {
+  if (!("keyId" in value) || !validateType(value["keyId"], "string")) {
+    return false;
+  }
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if (!("scope" in value) || !validateType(value["scope"], "string")) {
+    return false;
+  }
+  if (!("name" in value) || !validateType(value["name"], "string")) {
+    return false;
+  }
+  if (!("createdAt" in value) || !validateType(value["createdAt"], "string")) {
+    return false;
+  }
+  if ("revokedAt" in value && !validateType(value["revokedAt"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateApiKey");
+var validateListMembershipsRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateListMembershipsRequest");
+var validateListMembershipsResponse = /* @__PURE__ */ __name((value) => {
+  if (!("memberships" in value) || !validateType(value["memberships"], "Membership[]")) {
+    return false;
+  }
+  return true;
+}, "validateListMembershipsResponse");
+var validateListSourcesRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateListSourcesRequest");
+var validateListSourcesResponse = /* @__PURE__ */ __name((value) => {
+  if (!("sources" in value) || !validateType(value["sources"], "SourceInfo[]")) {
+    return false;
+  }
+  return true;
+}, "validateListSourcesResponse");
+var validateCreateSourceRequest = /* @__PURE__ */ __name((value) => {
+  if ("title" in value && !validateType(value["title"], "string")) {
+    return false;
+  }
+  if ("geoEnabled" in value && !validateType(value["geoEnabled"], "boolean")) {
+    return false;
+  }
+  if (!("name" in value) || !validateType(value["name"], "string")) {
+    return false;
+  }
+  if (!("requestId" in value) || !validateType(value["requestId"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateCreateSourceRequest");
+var validateGetSourceRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetSourceRequest");
+var validateGetSourceResponse = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "SourceInfo")) {
+    return false;
+  }
+  if (!("ingestUrl" in value) || !validateType(value["ingestUrl"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetSourceResponse");
+var validateUpdateSourceRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if ("name" in value && !validateType(value["name"], "string")) {
+    return false;
+  }
+  if ("title" in value && !validateType(value["title"], "string")) {
+    return false;
+  }
+  if ("geoEnabled" in value && !validateType(value["geoEnabled"], "boolean")) {
+    return false;
+  }
+  return true;
+}, "validateUpdateSourceRequest");
+var validateUpdateSourceResponse = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "SourceInfo")) {
+    return false;
+  }
+  return true;
+}, "validateUpdateSourceResponse");
+var validateSourceMemberRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if (!("userId" in value) || !validateType(value["userId"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateSourceMemberRequest");
+var validateCreateSourceResponse = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "SourceInfo")) {
+    return false;
+  }
+  if (!("publishableKey" in value) || !validateType(value["publishableKey"], "string")) {
+    return false;
+  }
+  if (!("ingestUrl" in value) || !validateType(value["ingestUrl"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateCreateSourceResponse");
+var validateCreateKeyRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if (!("scope" in value) || !validateType(value["scope"], "string")) {
+    return false;
+  }
+  if ("name" in value && !validateType(value["name"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateCreateKeyRequest");
+var validateCreateKeyResponse = /* @__PURE__ */ __name((value) => {
+  if (!("keyId" in value) || !validateType(value["keyId"], "string")) {
+    return false;
+  }
+  if (!("key" in value) || !validateType(value["key"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateCreateKeyResponse");
+var validateListKeysRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if ("scope" in value && !validateType(value["scope"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateListKeysRequest");
+var validateListKeysResponse = /* @__PURE__ */ __name((value) => {
+  if (!("keys" in value) || !validateType(value["keys"], "ApiKey[]")) {
+    return false;
+  }
+  return true;
+}, "validateListKeysResponse");
+var validateRevokeKeyRequest = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if (!("keyId" in value) || !validateType(value["keyId"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateRevokeKeyRequest");
+var validateRevokeKeyResponse = /* @__PURE__ */ __name((value) => {
+  if (!("key" in value) || !validateType(value["key"], "ApiKey")) {
+    return false;
+  }
+  return true;
+}, "validateRevokeKeyResponse");
+var validateVersionRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateVersionRequest");
+var validateVersionResponse = /* @__PURE__ */ __name((value) => {
+  if (!("server" in value) || !validateType(value["server"], "string")) {
+    return false;
+  }
+  if (!("schema" in value) || !validateType(value["schema"], "string")) {
+    return false;
+  }
+  if (!("webrpc" in value) || !validateType(value["webrpc"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateVersionResponse");
+var validateBeginLoginRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateBeginLoginRequest");
+var validateBeginLoginResponse = /* @__PURE__ */ __name((value) => {
+  if (!("deviceCode" in value) || !validateType(value["deviceCode"], "string")) {
+    return false;
+  }
+  if (!("userCode" in value) || !validateType(value["userCode"], "string")) {
+    return false;
+  }
+  if (!("verificationUrl" in value) || !validateType(value["verificationUrl"], "string")) {
+    return false;
+  }
+  if ("verificationUrlComplete" in value && !validateType(value["verificationUrlComplete"], "string")) {
+    return false;
+  }
+  if (!("expiresInSeconds" in value) || !validateType(value["expiresInSeconds"], "number")) {
+    return false;
+  }
+  if (!("intervalSeconds" in value) || !validateType(value["intervalSeconds"], "number")) {
+    return false;
+  }
+  return true;
+}, "validateBeginLoginResponse");
+var validatePollLoginRequest = /* @__PURE__ */ __name((value) => {
+  if (!("deviceCode" in value) || !validateType(value["deviceCode"], "string")) {
+    return false;
+  }
+  return true;
+}, "validatePollLoginRequest");
+var validateAuthUser = /* @__PURE__ */ __name((value) => {
+  if (!("id" in value) || !validateType(value["id"], "string")) {
+    return false;
+  }
+  if (!("email" in value) || !validateType(value["email"], "string")) {
+    return false;
+  }
+  if ("firstName" in value && !validateType(value["firstName"], "string")) {
+    return false;
+  }
+  if ("lastName" in value && !validateType(value["lastName"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateAuthUser");
+var validateAuthCredentials = /* @__PURE__ */ __name((value) => {
+  if (!("user" in value) || !validateType(value["user"], "AuthUser")) {
+    return false;
+  }
+  if (!("accessToken" in value) || !validateType(value["accessToken"], "string")) {
+    return false;
+  }
+  if (!("refreshToken" in value) || !validateType(value["refreshToken"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateAuthCredentials");
+var validatePollLoginResponse = /* @__PURE__ */ __name((value) => {
+  if (!("status" in value) || !validateType(value["status"], "string")) {
+    return false;
+  }
+  if ("credentials" in value && !validateType(value["credentials"], "AuthCredentials")) {
+    return false;
+  }
+  return true;
+}, "validatePollLoginResponse");
+var validateRefreshRequest = /* @__PURE__ */ __name((value) => {
+  if (!("refreshToken" in value) || !validateType(value["refreshToken"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateRefreshRequest");
+var validateRefreshResponse = /* @__PURE__ */ __name((value) => {
+  if (!("credentials" in value) || !validateType(value["credentials"], "AuthCredentials")) {
+    return false;
+  }
+  return true;
+}, "validateRefreshResponse");
+var validateLogoutRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateLogoutRequest");
+var validateLogoutResponse = /* @__PURE__ */ __name((value) => {
+  if (!("ok" in value) || !validateType(value["ok"], "boolean")) {
+    return false;
+  }
+  return true;
+}, "validateLogoutResponse");
+var validateCurrentUserRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateCurrentUserRequest");
+var validateCurrentUserResponse = /* @__PURE__ */ __name((value) => {
+  if (!("user" in value) || !validateType(value["user"], "AuthUser")) {
+    return false;
+  }
+  return true;
+}, "validateCurrentUserResponse");
+var validateUsageEntry = /* @__PURE__ */ __name((value) => {
+  if (!("source" in value) || !validateType(value["source"], "string")) {
+    return false;
+  }
+  if ("sourceName" in value && !validateType(value["sourceName"], "string")) {
+    return false;
+  }
+  if ("sourceTitle" in value && !validateType(value["sourceTitle"], "string")) {
+    return false;
+  }
+  if (!("day" in value) || !validateType(value["day"], "string")) {
+    return false;
+  }
+  if (!("events" in value) || !validateType(value["events"], "string")) {
+    return false;
+  }
+  if (!("rawBytes" in value) || !validateType(value["rawBytes"], "string")) {
+    return false;
+  }
+  if (!("compressedBytes" in value) || !validateType(value["compressedBytes"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateUsageEntry");
+var validateGetUsageRequest = /* @__PURE__ */ __name((value) => {
+  if ("month" in value && !validateType(value["month"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetUsageRequest");
+var validateGetUsageResponse = /* @__PURE__ */ __name((value) => {
+  if (!("month" in value) || !validateType(value["month"], "string")) {
+    return false;
+  }
+  if (!("asOf" in value) || !validateType(value["asOf"], "string")) {
+    return false;
+  }
+  if (!("entries" in value) || !validateType(value["entries"], "UsageEntry[]")) {
+    return false;
+  }
+  if (!("retainedBytes" in value) || !validateType(value["retainedBytes"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetUsageResponse");
+var validateBillingStatusRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateBillingStatusRequest");
+var validateBillingStatusResponse = /* @__PURE__ */ __name((value) => {
+  if (!("environment" in value) || !validateType(value["environment"], "string")) {
+    return false;
+  }
+  if (!("state" in value) || !validateType(value["state"], "string")) {
+    return false;
+  }
+  if (!("period" in value) || !validateType(value["period"], "string")) {
+    return false;
+  }
+  if ("startsAt" in value && !validateType(value["startsAt"], "string")) {
+    return false;
+  }
+  if ("endsAt" in value && !validateType(value["endsAt"], "string")) {
+    return false;
+  }
+  if (!("acceptedBytes" in value) || !validateType(value["acceptedBytes"], "string")) {
+    return false;
+  }
+  if (!("forgivenBytes" in value) || !validateType(value["forgivenBytes"], "string")) {
+    return false;
+  }
+  if (!("includedBytes" in value) || !validateType(value["includedBytes"], "string")) {
+    return false;
+  }
+  if (!("estimatedCents" in value) || !validateType(value["estimatedCents"], "string")) {
+    return false;
+  }
+  if (!("spendLimitCents" in value) || !validateType(value["spendLimitCents"], "string")) {
+    return false;
+  }
+  if (!("currency" in value) || !validateType(value["currency"], "string")) {
+    return false;
+  }
+  if (!("reporting" in value) || !validateType(value["reporting"], "string")) {
+    return false;
+  }
+  if (!("asOf" in value) || !validateType(value["asOf"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateBillingStatusResponse");
+var validateBillingCheckoutRequest = /* @__PURE__ */ __name((value) => {
+  if (!("requestId" in value) || !validateType(value["requestId"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateBillingCheckoutRequest");
+var validateBillingUrlResponse = /* @__PURE__ */ __name((value) => {
+  if (!("url" in value) || !validateType(value["url"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateBillingUrlResponse");
+var validateBillingPortalRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateBillingPortalRequest");
+var validateBillingLimitRequest = /* @__PURE__ */ __name((value) => {
+  if (!("cents" in value) || !validateType(value["cents"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateBillingLimitRequest");
+var TYPE_VALIDATORS = {
+  Seq: validateSeq,
+  Coverage: validateCoverage,
+  ArchiveObject: validateArchiveObject,
+  ListObjectsRequest: validateListObjectsRequest,
+  ListObjectsResponse: validateListObjectsResponse,
+  GetCoverageRequest: validateGetCoverageRequest,
+  PublicationStatus: validatePublicationStatus,
+  GetCoverageResponse: validateGetCoverageResponse,
+  SourceInfo: validateSourceInfo,
+  Membership: validateMembership,
+  ApiKey: validateApiKey,
+  ListMembershipsRequest: validateListMembershipsRequest,
+  ListMembershipsResponse: validateListMembershipsResponse,
+  ListSourcesRequest: validateListSourcesRequest,
+  ListSourcesResponse: validateListSourcesResponse,
+  CreateSourceRequest: validateCreateSourceRequest,
+  GetSourceRequest: validateGetSourceRequest,
+  GetSourceResponse: validateGetSourceResponse,
+  UpdateSourceRequest: validateUpdateSourceRequest,
+  UpdateSourceResponse: validateUpdateSourceResponse,
+  SourceMemberRequest: validateSourceMemberRequest,
+  CreateSourceResponse: validateCreateSourceResponse,
+  CreateKeyRequest: validateCreateKeyRequest,
+  CreateKeyResponse: validateCreateKeyResponse,
+  ListKeysRequest: validateListKeysRequest,
+  ListKeysResponse: validateListKeysResponse,
+  RevokeKeyRequest: validateRevokeKeyRequest,
+  RevokeKeyResponse: validateRevokeKeyResponse,
+  VersionRequest: validateVersionRequest,
+  VersionResponse: validateVersionResponse,
+  BeginLoginRequest: validateBeginLoginRequest,
+  BeginLoginResponse: validateBeginLoginResponse,
+  PollLoginRequest: validatePollLoginRequest,
+  AuthUser: validateAuthUser,
+  AuthCredentials: validateAuthCredentials,
+  PollLoginResponse: validatePollLoginResponse,
+  RefreshRequest: validateRefreshRequest,
+  RefreshResponse: validateRefreshResponse,
+  LogoutRequest: validateLogoutRequest,
+  LogoutResponse: validateLogoutResponse,
+  CurrentUserRequest: validateCurrentUserRequest,
+  CurrentUserResponse: validateCurrentUserResponse,
+  UsageEntry: validateUsageEntry,
+  GetUsageRequest: validateGetUsageRequest,
+  GetUsageResponse: validateGetUsageResponse,
+  BillingStatusRequest: validateBillingStatusRequest,
+  BillingStatusResponse: validateBillingStatusResponse,
+  BillingCheckoutRequest: validateBillingCheckoutRequest,
+  BillingUrlResponse: validateBillingUrlResponse,
+  BillingPortalRequest: validateBillingPortalRequest,
+  BillingLimitRequest: validateBillingLimitRequest
+};
+var validateType = /* @__PURE__ */ __name((value, type) => {
+  if (type === "any") {
+    return true;
+  }
+  if (type.endsWith("[]")) {
+    const elemType = type.slice(0, -2);
+    return Array.isArray(value) && value.every((elem) => validateType(elem, elemType));
+  }
+  if (JS_TYPES.indexOf(type) > -1) {
+    return typeof value === type;
+  }
+  const validator = TYPE_VALIDATORS[type];
+  if (!validator) {
+    return false;
+  }
+  return validator(value);
+}, "validateType");
+var JsonEncode = /* @__PURE__ */ __name((obj) => {
+  return JSON.stringify(obj);
+}, "JsonEncode");
+var JsonDecode = /* @__PURE__ */ __name((data, _typ = "") => {
+  let parsed = data;
+  if (typeof data === "string") {
+    try {
+      parsed = JSON.parse(data);
+    } catch (err) {
+      throw WebrpcBadResponseError.new({ cause: `JsonDecode: JSON.parse failed: ${err.message}` });
+    }
+  }
+  return parsed;
+}, "JsonDecode");
+var WebrpcError = class _WebrpcError extends Error {
+  static {
+    __name(this, "WebrpcError");
+  }
+  code;
+  status;
+  constructor(error = {}) {
+    super(error.message);
+    this.name = error.name || "WebrpcEndpointError";
+    this.code = typeof error.code === "number" ? error.code : 0;
+    this.message = error.message || `endpoint error`;
+    this.status = typeof error.status === "number" ? error.status : 400;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _WebrpcError.prototype);
+  }
+  static new(payload) {
+    return new this({ message: payload.message, code: payload.code, status: payload.status, cause: payload.cause });
+  }
+};
+var WebrpcEndpointError = class _WebrpcEndpointError extends WebrpcError {
+  static {
+    __name(this, "WebrpcEndpointError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "WebrpcEndpoint";
+    this.code = typeof error.code === "number" ? error.code : 0;
+    this.message = error.message || `endpoint error`;
+    this.status = typeof error.status === "number" ? error.status : 400;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _WebrpcEndpointError.prototype);
+  }
+};
+var WebrpcBadRouteError = class _WebrpcBadRouteError extends WebrpcError {
+  static {
+    __name(this, "WebrpcBadRouteError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "WebrpcBadRoute";
+    this.code = typeof error.code === "number" ? error.code : -2;
+    this.message = error.message || `bad route`;
+    this.status = typeof error.status === "number" ? error.status : 404;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _WebrpcBadRouteError.prototype);
+  }
+};
+var WebrpcBadMethodError = class _WebrpcBadMethodError extends WebrpcError {
+  static {
+    __name(this, "WebrpcBadMethodError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "WebrpcBadMethod";
+    this.code = typeof error.code === "number" ? error.code : -3;
+    this.message = error.message || `bad method`;
+    this.status = typeof error.status === "number" ? error.status : 405;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _WebrpcBadMethodError.prototype);
+  }
+};
+var WebrpcBadRequestError = class _WebrpcBadRequestError extends WebrpcError {
+  static {
+    __name(this, "WebrpcBadRequestError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "WebrpcBadRequest";
+    this.code = typeof error.code === "number" ? error.code : -4;
+    this.message = error.message || `bad request`;
+    this.status = typeof error.status === "number" ? error.status : 400;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _WebrpcBadRequestError.prototype);
+  }
+};
+var WebrpcBadResponseError = class _WebrpcBadResponseError extends WebrpcError {
+  static {
+    __name(this, "WebrpcBadResponseError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "WebrpcBadResponse";
+    this.code = typeof error.code === "number" ? error.code : -5;
+    this.message = error.message || `bad response`;
+    this.status = typeof error.status === "number" ? error.status : 500;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _WebrpcBadResponseError.prototype);
+  }
+};
+var UnauthenticatedError = class _UnauthenticatedError extends WebrpcError {
+  static {
+    __name(this, "UnauthenticatedError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "Unauthenticated";
+    this.code = typeof error.code === "number" ? error.code : 1e3;
+    this.message = error.message || `authentication required`;
+    this.status = typeof error.status === "number" ? error.status : 401;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _UnauthenticatedError.prototype);
+  }
+};
+var ForbiddenError = class _ForbiddenError extends WebrpcError {
+  static {
+    __name(this, "ForbiddenError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "Forbidden";
+    this.code = typeof error.code === "number" ? error.code : 1001;
+    this.message = error.message || `not allowed`;
+    this.status = typeof error.status === "number" ? error.status : 403;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _ForbiddenError.prototype);
+  }
+};
+var InvalidArgumentError = class _InvalidArgumentError extends WebrpcError {
+  static {
+    __name(this, "InvalidArgumentError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "InvalidArgument";
+    this.code = typeof error.code === "number" ? error.code : 2e3;
+    this.message = error.message || `invalid argument`;
+    this.status = typeof error.status === "number" ? error.status : 400;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _InvalidArgumentError.prototype);
+  }
+};
+var AlreadyExistsError = class _AlreadyExistsError extends WebrpcError {
+  static {
+    __name(this, "AlreadyExistsError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "AlreadyExists";
+    this.code = typeof error.code === "number" ? error.code : 2001;
+    this.message = error.message || `source name already exists for this owner`;
+    this.status = typeof error.status === "number" ? error.status : 409;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _AlreadyExistsError.prototype);
+  }
+};
+var NotFoundError = class _NotFoundError extends WebrpcError {
+  static {
+    __name(this, "NotFoundError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "NotFound";
+    this.code = typeof error.code === "number" ? error.code : 3e3;
+    this.message = error.message || `not found`;
+    this.status = typeof error.status === "number" ? error.status : 404;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _NotFoundError.prototype);
+  }
+};
+var RetentionGapError = class _RetentionGapError extends WebrpcError {
+  static {
+    __name(this, "RetentionGapError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "RetentionGap";
+    this.code = typeof error.code === "number" ? error.code : 4e3;
+    this.message = error.message || `sequences after the checkpoint are past the retention floor`;
+    this.status = typeof error.status === "number" ? error.status : 410;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _RetentionGapError.prototype);
+  }
+};
+var UnavailableError = class _UnavailableError extends WebrpcError {
+  static {
+    __name(this, "UnavailableError");
+  }
+  constructor(error = {}) {
+    super(error);
+    this.name = error.name || "Unavailable";
+    this.code = typeof error.code === "number" ? error.code : 5e3;
+    this.message = error.message || `temporarily unavailable`;
+    this.status = typeof error.status === "number" ? error.status : 503;
+    if (error.cause !== void 0) this.cause = error.cause;
+    Object.setPrototypeOf(this, _UnavailableError.prototype);
+  }
+};
+var WebrpcHeader = "Webrpc";
+var WebrpcHeaderValue = "webrpc@v0.49.0;typescript@v0.49.0;slurp@v0.5.0";
+
+// src/registry.ts
+import { DurableObject } from "cloudflare:workers";
+var UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+var RESERVED_PREFIXES = ["session_", "src_", "mdl_"];
+var RESERVED_WORDS = new Set("_slurp add all analyse analyze and any array as asc asymmetric both case cast check collate column constraint create default deferrable desc describe distinct do else end except false fetch for foreign from group having in information_schema initially intersect into lake lambda lateral leading limit main memory not null offset on only or order pg_catalog pivot pivot_longer pivot_wider placing primary qualify raw references returning select show some summarize symmetric system table temp then to trailing true union unique unpivot using variadic when where window with".split(" "));
+function validSourceName(name) {
+  return name.length >= 1 && name.length <= 63 && /^[a-z][a-z0-9_]*$/.test(name) && !name.includes("__") && !RESERVED_PREFIXES.some((p) => name.startsWith(p)) && !RESERVED_WORDS.has(name);
+}
+__name(validSourceName, "validSourceName");
+function validTitle(title) {
+  return title === void 0 || new TextEncoder().encode(title).length <= 200;
+}
+__name(validTitle, "validTitle");
+var NAME = { test: validSourceName };
+var RegistryDO = class extends DurableObject {
+  static {
+    __name(this, "RegistryDO");
+  }
+  sql = this.ctx.storage.sql;
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.ensureSchema();
+  }
+  ensureSchema() {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, owner_id TEXT NOT NULL, created_at TEXT NOT NULL, geo_enabled INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS keys(key_id TEXT PRIMARY KEY, source TEXT NOT NULL, scope TEXT NOT NULL, name TEXT NOT NULL, hash TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE IF NOT EXISTS requests(request_id TEXT PRIMARY KEY, source TEXT NOT NULL, key_id TEXT NOT NULL);`);
+  }
+  async mintKey(source, scope, name) {
+    const key = (scope === "publishable" ? "slurp_pk_" : "slurp_sk_") + b64url(crypto.getRandomValues(new Uint8Array(24)));
+    const hash = await sha256Hex(key);
+    const keyId = hash.slice(0, 16);
+    this.sql.exec("INSERT INTO keys VALUES(?,?,?,?,?,?,NULL)", keyId, source, scope, name, hash, (/* @__PURE__ */ new Date()).toISOString());
+    return { key, keyId };
+  }
+  async createSource(a) {
+    const prior = this.sql.exec("SELECT source, key_id FROM requests WHERE request_id=?", a.requestId).toArray()[0];
+    if (prior) {
+      this.sql.exec("UPDATE keys SET revoked_at=COALESCE(revoked_at,?) WHERE key_id=?", (/* @__PURE__ */ new Date()).toISOString(), prior.key_id);
+      const { key: key2, keyId: keyId2 } = await this.mintKey(prior.source, "publishable", "Default");
+      this.sql.exec("UPDATE requests SET key_id=? WHERE request_id=?", keyId2, a.requestId);
+      return { ok: true, value: { source: this.sql.exec("SELECT * FROM sources WHERE id=?", prior.source).one(), key: key2 } };
+    }
+    if (!UUID.test(a.requestId) || !NAME.test(a.name) || !validTitle(a.title)) return { ok: false, code: "invalid", message: "invalid source details" };
+    if (this.sql.exec("SELECT 1 FROM sources WHERE name=?", a.name).toArray().length) return { ok: false, code: "exists", message: "name exists" };
+    const id = "src_" + randomHex(8);
+    this.sql.exec("INSERT INTO sources VALUES(?,?,?,?,?,?)", id, a.name, a.title ?? null, "admin", (/* @__PURE__ */ new Date()).toISOString(), a.geoEnabled ? 1 : 0);
+    const { key, keyId } = await this.mintKey(id, "publishable", "Default");
+    this.sql.exec("INSERT INTO requests VALUES(?,?,?)", a.requestId, id, keyId);
+    return { ok: true, value: { source: this.sql.exec("SELECT * FROM sources WHERE id=?", id).one(), key } };
+  }
+  getSource(ref) {
+    return this.sql.exec("SELECT * FROM sources WHERE id=? OR name=? LIMIT 1", ref, ref).toArray()[0] ?? null;
+  }
+  listSources() {
+    return this.sql.exec("SELECT * FROM sources ORDER BY id").toArray();
+  }
+  updateSource(ref, p) {
+    const s = this.getSource(ref);
+    if (!s) return { ok: false, code: "notfound", message: "source" };
+    if (!validTitle(p.title)) return { ok: false, code: "invalid", message: "bad title" };
+    if (p.name !== void 0) {
+      if (!NAME.test(p.name)) return { ok: false, code: "invalid", message: "bad name" };
+      if (p.name !== s.name && this.sql.exec("SELECT 1 FROM sources WHERE name=?", p.name).toArray().length) return { ok: false, code: "exists", message: "name exists" };
+      this.sql.exec("UPDATE sources SET name=? WHERE id=?", p.name, s.id);
+    }
+    if (p.title !== void 0) this.sql.exec("UPDATE sources SET title=? WHERE id=?", p.title === "" ? null : p.title, s.id);
+    if (p.geoEnabled !== void 0) this.sql.exec("UPDATE sources SET geo_enabled=? WHERE id=?", p.geoEnabled ? 1 : 0, s.id);
+    return { ok: true, value: this.getSource(s.id) };
+  }
+  async createKey(ref, scope, name) {
+    const s = this.getSource(ref);
+    if (!s) return { ok: false, code: "notfound", message: "source" };
+    if (scope !== "publishable" && scope !== "secret") return { ok: false, code: "invalid", message: "scope must be publishable or secret" };
+    if (new TextEncoder().encode(name ?? "").length > 200) return { ok: false, code: "invalid", message: "name too long" };
+    return { ok: true, value: await this.mintKey(s.id, scope, name ?? "") };
+  }
+  listKeys(ref, scope) {
+    const s = this.getSource(ref);
+    if (!s) return null;
+    return this.sql.exec("SELECT * FROM keys WHERE source=? ORDER BY created_at, key_id", s.id).toArray().filter((k) => !scope || k.scope === scope);
+  }
+  revokeKey(ref, keyId) {
+    const s = this.getSource(ref);
+    if (!s) return { ok: false, code: "notfound", message: "source" };
+    const k = this.sql.exec("SELECT * FROM keys WHERE key_id=? AND source=?", keyId, s.id).toArray()[0];
+    if (!k) return { ok: false, code: "notfound", message: "key" };
+    if (!k.revoked_at) this.sql.exec("UPDATE keys SET revoked_at=? WHERE key_id=?", (/* @__PURE__ */ new Date()).toISOString(), keyId);
+    return { ok: true, value: this.sql.exec("SELECT * FROM keys WHERE key_id=?", keyId).one() };
+  }
+  /** Forget every source and key (used by `slurp cloud destroy`). */
+  async purge() {
+    await this.ctx.storage.deleteAll();
+    this.ensureSchema();
+  }
+  /** Resolve a presented key by SHA-256; revoked keys never resolve. */
+  resolveKey(hash) {
+    const r = this.sql.exec("SELECT k.source, k.scope, s.geo_enabled g FROM keys k JOIN sources s ON s.id=k.source WHERE k.hash=? AND k.revoked_at IS NULL", hash).toArray()[0];
+    return r ? { source: r.source, scope: r.scope, geo: !!r.g } : null;
+  }
+};
+
+// src/source.ts
+import { DurableObject as DurableObject2 } from "cloudflare:workers";
+var pad20 = /* @__PURE__ */ __name((n) => String(n).padStart(20, "0"), "pad20");
+var MAX_SEQ_PER_ROW = (1 << 20) - 1;
+var ROW_MAX_BYTES = 15e5;
+var encoder = new TextEncoder();
+var RECENT_HASHES = 1e4;
+var SourceDO = class extends DurableObject2 {
+  static {
+    __name(this, "SourceDO");
+  }
+  sql = this.ctx.storage.sql;
+  pendingBytes = 0;
+  nextBatch = 1;
+  queue = [];
+  queuedBytes = 0;
+  timer = null;
+  recent = /* @__PURE__ */ new Map();
+  /** Rows written by this object since it was last constructed (what Durable Object SQLite bills). */
+  rows = 0;
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS manifest(seq INTEGER PRIMARY KEY, name TEXT NOT NULL, r2key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL);`);
+    this.table(this.gen());
+    let max = Number(this.meta("batch_hwm") ?? 0);
+    let bytes = 0;
+    for (const g of this.liveGens()) {
+      const r = this.sql.exec(`SELECT COALESCE(MAX(id),0) m, COALESCE(SUM(bytes),0) b FROM b_${g}`).one();
+      max = Math.max(max, r.m);
+      bytes += r.b;
+    }
+    this.nextBatch = max + 1;
+    this.pendingBytes = bytes;
+  }
+  num(k, d) {
+    const v = Number(this.env[k]);
+    return Number.isFinite(v) ? v : d;
+  }
+  w(query, ...bindings) {
+    const c = this.sql.exec(query, ...bindings);
+    c.toArray();
+    this.rows += c.rowsWritten;
+    return c;
+  }
+  meta(k) {
+    const r = this.sql.exec("SELECT v FROM meta WHERE k=?", k).toArray()[0];
+    return r ? r.v : null;
+  }
+  setMeta(k, v) {
+    this.w("INSERT INTO meta VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, v);
+  }
+  gen() {
+    return Number(this.meta("gen") ?? 1);
+  }
+  table(g) {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS b_${g}(id INTEGER PRIMARY KEY, data TEXT NOT NULL, events INTEGER NOT NULL, bytes INTEGER NOT NULL)`);
+  }
+  intent() {
+    const v = this.meta("sealing");
+    return v ? JSON.parse(v) : null;
+  }
+  liveGens() {
+    const i = this.intent();
+    return i ? [i.gen, this.gen()] : [this.gen()];
+  }
+  archiveId() {
+    let id = this.meta("archive_id");
+    if (!id) {
+      id = randomHex(8);
+      this.setMeta("archive_id", id);
+    }
+    return id;
+  }
+  publication(alarm) {
+    return { state: alarm === null ? "idle" : "pending", observedAt: (/* @__PURE__ */ new Date()).toISOString(), intervalSeconds: Math.round(this.num("SEAL_INTERVAL_MS", 6e5) / 1e3), ...alarm !== null ? { estimatedAt: new Date(alarm).toISOString() } : {} };
+  }
+  async ingest(source, body, geo) {
+    const checked = checkBody(body, geo);
+    if ("reason" in checked) return { ok: false, status: 400, reason: `line ${checked.line}: ${checked.reason}` };
+    if (checked.lines.length === 0) return { ok: true, accepted: 0, duplicate: false, publication: this.publication(await this.ctx.storage.getAlarm()) };
+    const hash = await sha256Hex(body);
+    if (this.recent.has(hash)) return { ok: true, accepted: checked.lines.length, duplicate: true, publication: this.publication(await this.ctx.storage.getAlarm()) };
+    const cap = this.num("BUFFER_CAP_BYTES", 64 * 1024 * 1024);
+    if (this.pendingBytes + this.queuedBytes + body.length > cap) return { ok: false, status: 429, reason: "buffer full", retryAfter: 10 };
+    this.recent.set(hash, true);
+    if (this.recent.size > RECENT_HASHES) this.recent.delete(this.recent.keys().next().value);
+    const window = this.num("GROUP_COMMIT_MS", 500);
+    const done = new Promise((resolve) => {
+      this.queue.push({ lines: checked.lines, atMs: Date.now(), hash, done: resolve });
+      this.queuedBytes += body.length;
+    });
+    if (window <= 0) await this.flush();
+    else if (!this.timer) this.timer = setTimeout(() => {
+      void this.flush();
+    }, window);
+    return done;
+  }
+  /** Commit queued requests as one row per <=1M records. Acks only after the commit. */
+  async flush() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const q = this.queue;
+    if (q.length === 0) return;
+    this.queue = [];
+    this.queuedBytes = 0;
+    try {
+      const rows = [];
+      let cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
+      for (const item of q) {
+        for (const line of item.lines) {
+          let text = stampOne(line, cur.id, item.atMs, cur.events);
+          let size = encoder.encode(text).length;
+          if (cur.events > 0 && (cur.bytes + size > ROW_MAX_BYTES || cur.events > MAX_SEQ_PER_ROW)) {
+            rows.push(cur);
+            cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
+            text = stampOne(line, cur.id, item.atMs, 0);
+            size = encoder.encode(text).length;
+          }
+          cur.data += text;
+          cur.bytes += size;
+          cur.events++;
+        }
+      }
+      rows.push(cur);
+      let bytes = 0;
+      const g = this.gen();
+      this.ctx.storage.transactionSync(() => {
+        for (const r of rows) {
+          bytes += r.bytes;
+          this.w(`INSERT INTO b_${g} VALUES(?,?,?,?)`, r.id, r.data, r.events, r.bytes);
+        }
+      });
+      this.pendingBytes += bytes;
+      const alarm = await this.ctx.storage.getAlarm();
+      let next = alarm;
+      if (this.pendingBytes >= this.num("SEAL_MAX_BYTES", 8 * 1024 * 1024)) next = Date.now();
+      else if (alarm === null) next = Date.now() + this.num("SEAL_INTERVAL_MS", 6e5);
+      if (next !== alarm) await this.ctx.storage.setAlarm(next);
+      const pub = this.publication(next);
+      for (const item of q) item.done({ ok: true, accepted: item.lines.length, duplicate: false, publication: pub });
+    } catch (e) {
+      for (const item of q) {
+        this.recent.delete(item.hash);
+        item.done({ ok: false, status: 503, reason: "unavailable", retryAfter: 5 });
+      }
+      console.error("flush failed", e);
+    }
+  }
+  async alarm() {
+    await this.flush();
+    await this.seal();
+    await this.sweep();
+    const g = this.gen();
+    const left = this.sql.exec(`SELECT COUNT(*) c FROM b_${g}`).one().c;
+    if (left > 0 && await this.ctx.storage.getAlarm() === null) {
+      const due = this.pendingBytes >= this.num("SEAL_MAX_BYTES", 8 * 1024 * 1024);
+      await this.ctx.storage.setAlarm(Date.now() + (due ? 0 : this.num("SEAL_INTERVAL_MS", 6e5)));
+    }
+  }
+  /**
+   * Seal the buffered batches into one gzip NDJSON archive. Safe to replay: rotation and the intent commit together,
+   * the frozen table is immutable, the R2 key is content-addressed, and finalization is one transaction.
+   */
+  async seal() {
+    const intent = this.intent() ?? this.rotate();
+    if (!intent) return null;
+    const frozen = intent.gen;
+    const exists = this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='b_${frozen}'`).toArray().length > 0;
+    if (!exists) {
+      this.w("DELETE FROM meta WHERE k=?", "sealing");
+      return null;
+    }
+    const rows = this.sql.exec(`SELECT data, events, bytes FROM b_${frozen} ORDER BY id`).toArray();
+    const text = rows.map((r) => r.data).join("");
+    const events = rows.reduce((n, r) => n + r.events, 0);
+    const rawBytes = rows.reduce((n, r) => n + r.bytes, 0);
+    const gz = await gzip(text);
+    const sha = await sha256Hex(gz);
+    const name = `${pad20(intent.seq)}-${sha}.jsonl.gz`;
+    const r2key = `v1/sources/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`;
+    await retry(() => this.env.ARCHIVE.put(r2key, gz, { httpMetadata: { contentType: "application/gzip" } }));
+    const row = { seq: intent.seq, name, r2key, size: gz.length, sha256: sha, events, created_at: Date.now() };
+    this.ctx.storage.transactionSync(() => {
+      this.w("INSERT INTO manifest VALUES(?,?,?,?,?,?,?)", row.seq, row.name, row.r2key, row.size, row.sha256, row.events, row.created_at);
+      this.setMeta("next_seq", String(intent.seq + 1));
+      this.w("DELETE FROM meta WHERE k=?", "sealing");
+      this.w(`DROP TABLE b_${frozen}`);
+    });
+    this.pendingBytes = Math.max(0, this.pendingBytes - rawBytes);
+    const left = this.sql.exec(`SELECT COUNT(*) c FROM b_${this.gen()}`).one().c;
+    if (left === 0 && this.queue.length === 0) await this.ctx.storage.deleteAlarm();
+    return row;
+  }
+  /** Optional retention: drop archives older than RETENTION_DAYS (0 keeps everything). */
+  async sweep() {
+    const days = this.num("RETENTION_DAYS", 0);
+    if (days <= 0) return;
+    const old = this.sql.exec("SELECT seq, r2key FROM manifest WHERE created_at<? ORDER BY seq LIMIT 100", Date.now() - days * 864e5).toArray();
+    if (!old.length) return;
+    await retry(() => this.env.ARCHIVE.delete(old.map((o) => o.r2key)));
+    this.w("DELETE FROM manifest WHERE seq<=?", old[old.length - 1].seq);
+    if (old.length === 100 && await this.ctx.storage.getAlarm() === null) await this.ctx.storage.setAlarm(Date.now() + 1e3);
+  }
+  coverage() {
+    const next = Number(this.meta("next_seq") ?? 1);
+    if (next === 1) return null;
+    const lo = this.sql.exec("SELECT MIN(seq) m FROM manifest").one().m;
+    const at = this.sql.exec("SELECT created_at c FROM manifest ORDER BY seq DESC LIMIT 1").toArray()[0];
+    return { archiveId: this.archiveId(), firstRetained: String(lo ?? next), latestPublished: String(next - 1), latestPublishedAt: at?.c ?? Date.now() };
+  }
+  listObjects(after, limit) {
+    return this.sql.exec("SELECT * FROM manifest WHERE seq>? ORDER BY seq LIMIT ?", after, limit).toArray();
+  }
+  async stats() {
+    return { rows: this.rows, pendingBytes: this.pendingBytes, queued: this.queue.length, gen: this.gen(), sealing: this.intent(), manifest: this.sql.exec("SELECT COUNT(*) n FROM manifest").one().n, alarm: await this.ctx.storage.getAlarm() };
+  }
+  /** Delete every archive object this source wrote and all of its Durable Object storage (used by `slurp cloud destroy`). */
+  async purge() {
+    const rows = this.sql.exec("SELECT r2key FROM manifest").toArray();
+    for (let i = 0; i < rows.length; i += 1e3) await retry(() => this.env.ARCHIVE.delete(rows.slice(i, i + 1e3).map((r) => r.r2key)));
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.queue = [];
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    return { archives: rows.length };
+  }
+  /** Freeze the current generation and persist the seal intent in one transaction. Null when nothing is buffered. */
+  rotate() {
+    const g = this.gen();
+    const top = this.sql.exec(`SELECT COUNT(*) c, COALESCE(MAX(id),0) m FROM b_${g}`).one();
+    if (top.c === 0) return null;
+    const seq = Number(this.meta("next_seq") ?? 1);
+    this.ctx.storage.transactionSync(() => {
+      this.table(g + 1);
+      this.setMeta("gen", String(g + 1));
+      this.setMeta("batch_hwm", String(Math.max(top.m, this.nextBatch - 1)));
+      this.setMeta("sealing", JSON.stringify({ gen: g, seq }));
+    });
+    return { gen: g, seq };
+  }
+};
+
+// src/index.ts
+var MIN_ADMIN_TOKEN = 20;
+var DEFAULT_MAX_BODY = 10 * 1024 * 1024;
+var SIGNED_URL_TTL_S = 3600;
+var RETENTION_FALLBACK_S = 90 * 86400;
+var bearer = /* @__PURE__ */ __name((req) => /^Bearer (.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1] ?? null, "bearer");
+var registry = /* @__PURE__ */ __name((env) => env.REGISTRY.get(env.REGISTRY.idFromName("registry")), "registry");
+var sourceDO = /* @__PURE__ */ __name((env, id) => env.SOURCE.get(env.SOURCE.idFromName(id)), "sourceDO");
+var KEY_CACHE_MS = 5e3;
+var keyCache = /* @__PURE__ */ new Map();
+async function authenticate(req, env, allowQueryKey = false) {
+  let token = bearer(req);
+  if (allowQueryKey) {
+    const q = new URL(req.url).searchParams.getAll("key");
+    if (q.length) {
+      if (q.length !== 1 || !q[0].startsWith("slurp_pk_")) return null;
+      token = q[0];
+    }
+  }
+  if (!token) return null;
+  if (env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN && timingSafeEqual(token, env.ADMIN_TOKEN)) return { kind: "admin" };
+  const hash = await sha256Hex(token);
+  const hit = keyCache.get(hash);
+  let v = hit && hit.exp > Date.now() ? hit.v : void 0;
+  if (v === void 0) {
+    v = await registry(env).resolveKey(hash);
+    keyCache.set(hash, { exp: Date.now() + KEY_CACHE_MS, v });
+    if (keyCache.size > 1e3) keyCache.delete(keyCache.keys().next().value);
+  }
+  return v ? { kind: "key", ...v } : null;
+}
+__name(authenticate, "authenticate");
+var signingSecret = /* @__PURE__ */ __name((env) => hmacHex(env.ADMIN_TOKEN, "slurp-object-url-v1"), "signingSecret");
+var unwrap = /* @__PURE__ */ __name((r) => {
+  if (r.ok) return r.value;
+  if (r.code === "notfound") throw new NotFoundError();
+  if (r.code === "exists") throw new AlreadyExistsError();
+  throw new InvalidArgumentError({ cause: r.message });
+}, "unwrap");
+var needAdmin = /* @__PURE__ */ __name((c) => {
+  if (!c.env.ADMIN_TOKEN || c.env.ADMIN_TOKEN.length < MIN_ADMIN_TOKEN)
+    throw new UnavailableError({ cause: `ADMIN_TOKEN is not configured (needs at least ${MIN_ADMIN_TOKEN} characters)` });
+  if (!c.principal) throw new UnauthenticatedError();
+  if (c.principal.kind !== "admin") throw new ForbiddenError();
+}, "needAdmin");
+var info = /* @__PURE__ */ __name((s) => ({ id: s.id, name: s.name, title: s.title ?? void 0, ownerId: s.owner_id, createdAt: s.created_at, geoEnabled: !!s.geo_enabled, role: "owner" }), "info");
+var keyInfo = /* @__PURE__ */ __name((k) => ({ keyId: k.key_id, source: k.source, scope: k.scope, name: k.name, createdAt: k.created_at, revokedAt: k.revoked_at ?? void 0 }), "keyInfo");
+var ingestUrl = /* @__PURE__ */ __name((c) => `${c.origin}/v1/events`, "ingestUrl");
+async function resolveOrThrow(c, ref) {
+  const s = await registry(c.env).getSource(ref);
+  if (!s) throw new NotFoundError();
+  return s;
+}
+__name(resolveOrThrow, "resolveOrThrow");
+var noMembers = /* @__PURE__ */ __name(() => {
+  throw new ForbiddenError({ cause: "memberships are not used by a self-hosted deployment; the admin token owns every source" });
+}, "noMembers");
+var sourceService = {
+  async getSource(c, r) {
+    needAdmin(c);
+    const s = await resolveOrThrow(c, r.source);
+    return { source: info(s), ingestUrl: ingestUrl(c) };
+  },
+  async updateSource(c, r) {
+    needAdmin(c);
+    return { source: info(unwrap(await registry(c.env).updateSource(r.source, r))) };
+  },
+  async addMember() {
+    return noMembers();
+  },
+  async removeMember() {
+    return noMembers();
+  },
+  async listSources(c) {
+    needAdmin(c);
+    return { sources: (await registry(c.env).listSources()).map(info) };
+  },
+  async listMemberships() {
+    return { memberships: [] };
+  },
+  async createSource(c, r) {
+    needAdmin(c);
+    const v = unwrap(await registry(c.env).createSource(r));
+    return { source: info(v.source), publishableKey: v.key, ingestUrl: ingestUrl(c) };
+  },
+  async createKey(c, r) {
+    needAdmin(c);
+    return unwrap(await registry(c.env).createKey(r.source, r.scope, r.name));
+  },
+  async listKeys(c, r) {
+    needAdmin(c);
+    const ks = await registry(c.env).listKeys(r.source, r.scope);
+    if (!ks) throw new NotFoundError();
+    return { keys: ks.map(keyInfo) };
+  },
+  async revokeKey(c, r) {
+    needAdmin(c);
+    const res = unwrap(await registry(c.env).revokeKey(r.source, r.keyId));
+    keyCache.clear();
+    return { key: keyInfo(res) };
+  }
+};
+var healthService = {
+  async version() {
+    return { server: "slurp-worker", schema: WebrpcSchemaVersion, webrpc: WebrpcVersion };
+  }
+};
+async function signedUrl(c, r2key) {
+  const exp = Math.floor(Date.now() / 1e3) + SIGNED_URL_TTL_S;
+  const sig = await hmacHex(await signingSecret(c.env), `${r2key}
+${exp}`);
+  return { url: `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${sig}`, exp };
+}
+__name(signedUrl, "signedUrl");
+var iso = /* @__PURE__ */ __name((ms) => new Date(ms).toISOString(), "iso");
+async function archiveAuth(c, ref) {
+  if (!c.principal) throw new UnauthenticatedError();
+  const s = await resolveOrThrow(c, ref);
+  if (c.principal.kind === "key" && (c.principal.scope !== "secret" || c.principal.source !== s.id)) throw new ForbiddenError();
+  return s;
+}
+__name(archiveAuth, "archiveAuth");
+var retentionSeconds = /* @__PURE__ */ __name((env) => Number(env.RETENTION_DAYS) > 0 ? Number(env.RETENTION_DAYS) * 86400 : RETENTION_FALLBACK_S, "retentionSeconds");
+var covOut = /* @__PURE__ */ __name((c, cov) => ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) }), "covOut");
+var archiveService = {
+  async listObjects(c, r) {
+    const s = await archiveAuth(c, r.source);
+    const limit = Math.min(Math.max(r.limit ?? 1e3, 1), 5e3);
+    if (r.after != null && !/^\d+$/.test(r.after)) throw new InvalidArgumentError({ cause: "after must be a decimal sequence" });
+    const sd = sourceDO(c.env, s.id);
+    const cov = await sd.coverage();
+    if (!cov) return { objects: [] };
+    if (r.after != null && Number(r.after) + 1 < Number(cov.firstRetained)) throw new RetentionGapError();
+    const after = r.after != null ? Number(r.after) : Number(cov.firstRetained) - 1;
+    const rows = await sd.listObjects(after, limit + 1);
+    const page = rows.slice(0, limit);
+    let expiresAt = 0;
+    const objects = [];
+    for (const m of page) {
+      const { url, exp } = await signedUrl(c, m.r2key);
+      expiresAt = exp * 1e3;
+      objects.push({ seq: String(m.seq), name: m.name, size: m.size, sha256: m.sha256, url });
+    }
+    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: expiresAt ? iso(expiresAt) : void 0 };
+  },
+  async getCoverage(c, r) {
+    const s = await archiveAuth(c, r.source);
+    const stub = sourceDO(c.env, s.id);
+    const cov = await stub.coverage();
+    const st = await stub.stats();
+    const publication = { state: st.alarm === null ? "idle" : "pending", observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1e3), ...st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {} };
+    return { coverage: cov ? covOut(c, cov) : void 0, publication };
+  }
+};
+var selfHosted = /* @__PURE__ */ __name((what) => new UnavailableError({ cause: `${what} is not used by a self-hosted deployment` }), "selfHosted");
+var authService = {
+  async beginLogin() {
+    throw selfHosted("browser login");
+  },
+  async pollLogin() {
+    throw selfHosted("browser login");
+  },
+  async refresh() {
+    throw selfHosted("token refresh");
+  },
+  async logout() {
+    return { ok: true };
+  },
+  async currentUser(c) {
+    needAdmin(c);
+    return { user: { id: "admin", email: "admin@self-hosted" } };
+  }
+};
+var usageService = { async getUsage() {
+  throw selfHosted("usage metering");
+} };
+var billingService = {
+  async getStatus() {
+    throw selfHosted("billing");
+  },
+  async createCheckout() {
+    throw selfHosted("billing");
+  },
+  async createPortal() {
+    throw selfHosted("billing");
+  },
+  async setLimit() {
+    throw selfHosted("billing");
+  }
+};
+var CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Retry-After, Slurp-Duplicate" };
+var jsonError = /* @__PURE__ */ __name((status, error, extra = {}) => Response.json({ error }, { status, headers: { ...CORS, ...extra } }), "jsonError");
+async function ingest(req, env) {
+  if (req.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: { ...CORS, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type", "access-control-max-age": "86400" } });
+  if (req.method !== "POST") return jsonError(405, "method not allowed", { Allow: "POST, OPTIONS" });
+  const p = await authenticate(req, env, true);
+  if (!p) return jsonError(401, "invalid token");
+  if (p.kind !== "key" || p.scope !== "publishable") return jsonError(403, "publishable key required");
+  const max = Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY;
+  const declared = Number(req.headers.get("content-length") ?? 0);
+  if (declared > max) return jsonError(413, "body too large");
+  const body = new Uint8Array(await req.arrayBuffer());
+  if (body.length > max) return jsonError(413, "body too large");
+  const geo = p.geo ? normalizeGeo(req.cf) : null;
+  let res;
+  try {
+    res = await sourceDO(env, p.source).ingest(p.source, body, geo);
+  } catch (e) {
+    console.error("ingest failed", e);
+    return jsonError(503, "unavailable", { "Retry-After": "5" });
+  }
+  if (!res.ok) return jsonError(res.status, res.reason, res.retryAfter ? { "Retry-After": String(res.retryAfter) } : {});
+  return Response.json({ ok: true, publication: res.publication }, { headers: { ...CORS, ...res.duplicate ? { "Slurp-Duplicate": "1" } : {} } });
+}
+__name(ingest, "ingest");
+async function download(req, env, token) {
+  if (req.method !== "GET" && req.method !== "HEAD") return new Response("method not allowed", { status: 405 });
+  const u = new URL(req.url);
+  const exp = Number(u.searchParams.get("exp"));
+  const sig = u.searchParams.get("sig") ?? "";
+  let r2key;
+  try {
+    r2key = new TextDecoder().decode(fromB64url(token));
+  } catch {
+    return new Response("bad token", { status: 400 });
+  }
+  if (!exp || exp < Date.now() / 1e3) return new Response("expired", { status: 403 });
+  if (!timingSafeEqual(sig, await hmacHex(await signingSecret(env), `${r2key}
+${exp}`))) return new Response("bad signature", { status: 403 });
+  const obj = await env.ARCHIVE.get(r2key);
+  if (!obj) return new Response("not found", { status: 404 });
+  return new Response(req.method === "HEAD" ? null : obj.body, { headers: { "content-type": "application/gzip", "content-length": String(obj.size), etag: obj.httpEtag, "cache-control": "private, no-transform" } });
+}
+__name(download, "download");
+async function purge(req, env, ctx) {
+  if (req.method !== "POST") return jsonError(405, "method not allowed", { Allow: "POST" });
+  if (ctx.principal?.kind !== "admin") return jsonError(ctx.principal ? 403 : 401, ctx.principal ? "admin token required" : "invalid token");
+  const body = await req.json().catch(() => ({}));
+  if (body.confirm !== "delete-all-data") return jsonError(400, 'send {"confirm":"delete-all-data"} to confirm');
+  const reg = registry(env);
+  const sources = await reg.listSources();
+  let archives = 0;
+  for (const s of sources) archives += (await sourceDO(env, s.id).purge()).archives;
+  let strays = 0;
+  for (; ; ) {
+    const page = await env.ARCHIVE.list({ limit: 1e3 });
+    if (page.objects.length === 0) break;
+    await env.ARCHIVE.delete(page.objects.map((o) => o.key));
+    strays += page.objects.length;
+  }
+  await reg.purge();
+  keyCache.clear();
+  return Response.json({ ok: true, sources: sources.length, archives, strays });
+}
+__name(purge, "purge");
+var index_default = {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    if (url.pathname === "/v1/events") return ingest(req, env);
+    if (url.pathname.startsWith("/v1/objects/")) return download(req, env, url.pathname.slice("/v1/objects/".length));
+    if (url.pathname === "/healthz") return new Response("ok\n");
+    if (url.pathname === "/" && (req.method === "GET" || req.method === "HEAD"))
+      return new Response(req.method === "HEAD" ? null : setupPage(url.origin, !!env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", "x-content-type-options": "nosniff" }
+      });
+    if (url.pathname === "/v1/health")
+      return Response.json({ ok: true, apiVersion: WebrpcSchemaVersion, capabilities: { sink: "durable-object", archive: "jsonl.gz", geo: true }, configured: !!env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN, build: env.SLURP_BUILD ?? null });
+    const ctx = { env, principal: await authenticate(req, env), origin: url.origin };
+    if (url.pathname === "/v1/admin/purge") return purge(req, env, ctx);
+    if (env.DEBUG === "1" && ctx.principal?.kind === "admin" && url.pathname.startsWith("/__debug/")) {
+      const [, , op, id] = url.pathname.split("/");
+      const stub = sourceDO(env, id);
+      if (op === "flush") {
+        await stub.flush();
+        return Response.json(await stub.stats());
+      }
+      if (op === "seal") {
+        await stub.flush();
+        return Response.json(await stub.seal());
+      }
+      if (op === "rotate") {
+        await stub.flush();
+        return Response.json(await stub.rotate());
+      }
+      if (op === "sweep") {
+        await stub.sweep();
+        return Response.json(await stub.stats());
+      }
+      if (op === "stats") return Response.json(await stub.stats());
+    }
+    return await serveHealthRpc(healthService, ctx, req) ?? await serveSourceRpc(sourceService, ctx, req) ?? await serveArchiveRpc(archiveService, ctx, req) ?? await serveAuthRpc(authService, ctx, req) ?? await serveUsageRpc(usageService, ctx, req) ?? await serveBillingRpc(billingService, ctx, req) ?? new Response("not found", { status: 404 });
+  }
+};
+export {
+  RegistryDO,
+  SourceDO,
+  index_default as default
+};

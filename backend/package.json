@@ -1,0 +1,31 @@
+{
+  "name": "slurp-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted Slurp ingest and archive Worker for Cloudflare (Durable Objects + R2).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "generate": "sh api/generate.sh",
+    "bundle": "node scripts/bundle.mjs",
+    "test": "node --test --experimental-strip-types test/*.test.ts"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_TOKEN": {
+        "description": "Secret bearer token that controls this deployment. Make it long and random (openssl rand -base64 32). You will give it to `slurp cloud connect`."
+      },
+      "ARCHIVE": {
+        "description": "R2 bucket that stores your sealed event archives."
+      }
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261107.1",
+    "@types/node": "26.6.6",
+    "typescript": "5.9.3",
+    "wrangler": "4.158.0"
+  }
+}

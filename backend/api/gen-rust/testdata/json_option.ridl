@@ -1,0 +1,8 @@
+webrpc = v1
+name = generator_test
+version = v1
+basepath = /rpc
+
+struct Request
+  - data: uint64
+    + go.tag.json = data,string

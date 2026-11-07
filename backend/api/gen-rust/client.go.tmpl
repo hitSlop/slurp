@@ -1,0 +1,56 @@
+{{- define "clients" -}}
+fn decode_detail(message: &str, body: &[u8]) -> String {
+    let snippet: String = String::from_utf8_lossy(body).chars().take(200).collect();
+    format!("{message}; body: {snippet}")
+}
+
+async fn rpc_post<T: serde::Serialize + ?Sized, R: serde::de::DeserializeOwned>(
+    http: &reqwest::Client, url: String, bearer: Option<&str>, req: &T,
+) -> Result<R, Error> {
+    let mut request = http.post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(WEBRPC_HEADER, WEBRPC_HEADER_VALUE)
+        .json(req);
+    if let Some(token) = bearer {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await
+        .map_err(|e| Error::Transport(e.without_url().to_string()))?;
+    let status = response.status();
+    let body = response.bytes().await
+        .map_err(|e| Error::Transport(e.without_url().to_string()))?;
+    if status.is_success() {
+        serde_json::from_slice(&body).map_err(|e| Error::Decode { status: status.as_u16(), detail: decode_detail(&e.to_string(), &body) })
+    } else {
+        let error: RpcErrorBody = serde_json::from_slice(&body)
+            .map_err(|e| Error::Decode { status: status.as_u16(), detail: decode_detail(&e.to_string(), &body) })?;
+        if error.name.is_empty() || !(100..=599).contains(&error.status) {
+            return Err(Error::Decode { status: status.as_u16(), detail: decode_detail("invalid webrpc error envelope", &body) });
+        }
+        Err(error.into_error())
+    }
+}
+
+{{range $service := .Services}}
+{{range .Comments}}/// {{.}}
+{{end}}pub struct {{.Name}}Client {
+    base_url: String,
+    http: reqwest::Client,
+    bearer: Option<String>,
+}
+
+impl {{.Name}}Client {
+    pub fn new(base_url: impl Into<String>, http: reqwest::Client, bearer: Option<String>) -> Self {
+        Self { base_url: base_url.into().trim_end_matches('/').to_owned(), http, bearer }
+    }
+{{range .Methods}}
+{{range .Comments}}    /// {{.}}
+{{end}}    pub async fn {{template "ident" .Name}}(&self, req: &{{(index .Inputs 0).Type}}) -> Result<{{(index .Outputs 0).Type}}, Error> {
+        let url = format!("{}{}", self.base_url, {{printf "%q" (printf "%s%s/%s" (default $.BasePath "/") $service.Name .Name)}});
+        rpc_post(&self.http, url, self.bearer.as_deref(), req).await
+    }
+{{end}}
+}
+{{end}}
+{{- end -}}

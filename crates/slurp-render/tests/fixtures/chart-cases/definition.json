@@ -1,0 +1,106 @@
+{
+  "slug": "chart-cases",
+  "title": "Chart data and sizing",
+  "queries": {
+    "q": {
+      "sql": "SELECT fixture"
+    }
+  },
+  "blocks": [
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "BIGINT sort and 19-category auto-height",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "y": {
+            "field": "category",
+            "type": "nominal",
+            "sort": {
+              "field": "rank",
+              "op": "min"
+            }
+          },
+          "x": {
+            "field": "value",
+            "type": "quantitative"
+          },
+          "color": {
+            "field": "rank",
+            "type": "ordinal"
+          },
+          "tooltip": [
+            {
+              "field": "rank",
+              "type": "nominal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "Explicit step height",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "y": {
+            "field": "category",
+            "type": "nominal",
+            "sort": {
+              "field": "rank",
+              "op": "min"
+            }
+          },
+          "x": {
+            "field": "value",
+            "type": "quantitative"
+          },
+          "color": {
+            "field": "rank",
+            "type": "ordinal"
+          },
+          "tooltip": [
+            {
+              "field": "rank",
+              "type": "nominal"
+            }
+          ]
+        },
+        "height": {
+          "step": 28
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "Numeric text and tooltip",
+      "spec": {
+        "mark": "text",
+        "encoding": {
+          "y": {
+            "field": "category",
+            "type": "ordinal",
+            "sort": {
+              "field": "rank",
+              "op": "min"
+            }
+          },
+          "text": {
+            "field": "rank",
+            "type": "nominal"
+          },
+          "tooltip": [
+            {
+              "field": "value",
+              "type": "nominal"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

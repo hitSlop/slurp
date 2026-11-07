@@ -1,0 +1,6 @@
+webrpc = v1
+name = generator_test
+version = v1
+basepath = /rpc
+
+error 1000 Decode "bad" HTTP 400

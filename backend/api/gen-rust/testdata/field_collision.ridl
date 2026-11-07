@@ -1,0 +1,8 @@
+webrpc = v1
+name = generator_test
+version = v1
+basepath = /rpc
+
+struct Request
+  - fooBar: string
+  - foo_bar: string

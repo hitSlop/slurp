@@ -1,0 +1,212 @@
+{
+  "slug": "utc-month",
+  "title": "UTC monthly axes",
+  "queries": {
+    "q": {
+      "sql": "SELECT fixture"
+    }
+  },
+  "blocks": [
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "day yearmonth",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "day",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            },
+            "timeUnit": "yearmonth"
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "day {'unit': 'yearmonth'}",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "day",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            },
+            "timeUnit": {
+              "unit": "yearmonth"
+            }
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "day None",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "day",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            }
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "naive yearmonth",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "naive",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            },
+            "timeUnit": "yearmonth"
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "naive {'unit': 'yearmonth'}",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "naive",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            },
+            "timeUnit": {
+              "unit": "yearmonth"
+            }
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "naive None",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "naive",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            }
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "zoned yearmonth",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "zoned",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            },
+            "timeUnit": "yearmonth"
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "zoned {'unit': 'yearmonth'}",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "zoned",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            },
+            "timeUnit": {
+              "unit": "yearmonth"
+            }
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "q",
+      "title": "zoned None",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "zoned",
+            "type": "temporal",
+            "axis": {
+              "format": "%b %Y"
+            }
+          },
+          "y": {
+            "field": "n",
+            "type": "quantitative"
+          }
+        }
+      }
+    }
+  ]
+}

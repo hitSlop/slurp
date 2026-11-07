@@ -1,0 +1,14 @@
+{
+  "name": "slurp-spike",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "REGISTRY", "class_name": "RegistryDO" },
+      { "name": "SOURCE", "class_name": "SourceDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "SourceDO"] }],
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "slurp-spike-archive" }],
+  "vars": { "SEAL_INTERVAL_MS": "5000", "SEAL_MAX_BYTES": "8388608" }
+}

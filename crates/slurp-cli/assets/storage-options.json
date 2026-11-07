@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "reviewed_at": "2026-11-06",
+  "disclaimer": "Approximate USD reference prices, before tax and shipping. Prices and availability change; check the seller. Buying a drive is optional.",
+  "options": [
+    {
+      "id": "budget",
+      "tier": "Budget",
+      "price_range": "US$50\u2013100",
+      "model": "Transcend ESD310",
+      "capacity": "256GB",
+      "drive_type": "SSD",
+      "reference_price": 75.99,
+      "description": "A lower-cost way to start. Less room for long histories; leave free space for sync and queries.",
+      "manufacturer_url": "https://www.transcend-info.com/product/portable-ssd/esd310",
+      "price_url": "https://www.bhphotovideo.com/c/product/1773661-REG/transcend_ts256gesd310c_esd310c_256gb_portable_ssd.html"
+    },
+    {
+      "id": "starter",
+      "tier": "Starter",
+      "price_range": "US$200\u2013300",
+      "model": "Kingston XS1000",
+      "capacity": "1TB",
+      "drive_type": "SSD",
+      "reference_price": 228.99,
+      "description": "More room for several projects on a compact USB SSD.",
+      "manufacturer_url": "https://www.kingston.com/en/external-ssd/xs1000-external-solid-state-drive",
+      "price_url": "https://www.cdw.com/product/kingston-xs1000-ssd-1-tb-usb-3.2-gen-2/7537876"
+    },
+    {
+      "id": "room",
+      "tier": "More room",
+      "price_range": "US$400\u2013500",
+      "model": "Kingston XS1000",
+      "capacity": "2TB",
+      "drive_type": "SSD",
+      "reference_price": 434.99,
+      "description": "Extra capacity for larger event histories without paying for a premium interface.",
+      "manufacturer_url": "https://www.kingston.com/en/external-ssd/xs1000-external-solid-state-drive",
+      "price_url": "https://www.adorama.com/kingston-xs1000-usb-c-external-ssd-1050mbs/p/owsx1002000g"
+    },
+    {
+      "id": "premium",
+      "tier": "Higher capacity / performance",
+      "price_range": "US$1,200\u20131,300",
+      "model": "OWC Express 1M2",
+      "capacity": "4TB",
+      "drive_type": "USB4 SSD",
+      "reference_price": 1279.99,
+      "description": "A premium option for large workloads. Most projects do not need this to start; peak speed requires a compatible USB4 or Thunderbolt port.",
+      "manufacturer_url": "https://www.owc.com/solutions/express-1m2",
+      "price_url": "https://www.owc.com/solutions/express-1m2?sku=OWCUS4EXP1MT04"
+    }
+  ]
+}

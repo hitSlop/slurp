@@ -1,0 +1,32 @@
+/target/
+**/node_modules/
+**/dist/
+**/.astro/
+**/.wrangler/
+.env
+.env.*
+!.env.example
+!.env.*.example
+.dev.vars
+*.duckdb
+*.duckdb.wal
+.DS_Store
+**/.slurp-home/
+**/.slurp/
+**/__pycache__/
+*.pyc
+*.log
+*.pid
+*.pem
+*.key
+credentials.json
+credentials.lock
+coverage/
+# local spike scratch
+/spikes/**/node_modules/
+
+# demo build scratch
+examples/demo/.work/
+
+# local Claude Code settings
+.claude/settings.local.json

@@ -1,0 +1,29 @@
+---
+import {cloudflareCost,openpanelCost,posthogCost,money,count,headlineVolume,assumptions} from '../lib/pricing.mjs';
+const cf=cloudflareCost(headlineVolume),op=openpanelCost(headlineVolume)!,ph=posthogCost(headlineVolume);
+---
+<section class="price" id="price" aria-labelledby="price-title">
+<div class="lead"><p class="eyebrow">Monthly USD · {count(headlineVolume)} events</p><h2 id="price-title">{count(headlineVolume).replace('M',' million')} events.<br/>About ${Math.round(cf)} a month.<sup>*</sup></h2></div>
+<ul class="tiles">
+<li class="us"><b>Slurp</b><strong>{money(cf)}</strong><span>Estimated bill for your own Cloudflare account</span></li>
+<li><b>OpenPanel Cloud</b><strong>{money(op)}</strong><span>Managed analytics</span></li>
+<li><b>PostHog</b><strong>{money(ph)}</strong><span>Managed product analytics</span></li>
+</ul>
+<p class="fine">*List-price estimate: {assumptions.eventsPerRequest} events per request, {assumptions.retentionMonths} months of archives kept, no Slurp fee. You pay Cloudflare directly. <a href="/self-host/#cost">Assumptions, plus 1B and 10B events →</a></p>
+</section>
+<style>
+.price{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:12px 28px;align-items:center;margin:34px 0 8px;padding:22px 26px;border-radius:12px;background:var(--rail);border:1px solid var(--rail-rule)}
+.price .lead .eyebrow{margin-bottom:8px}
+.price h2{margin:0;font-size:clamp(30px,3.6vw,46px);line-height:.95;color:var(--red)}
+.price sup{font-size:.5em;vertical-align:top;margin-left:2px}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;list-style:none;padding:0;margin:0}
+.tiles li{display:flex;flex-direction:column;gap:3px;padding:12px 14px;border-radius:9px;background:#fff;border:1px solid var(--rule)}
+.tiles li.us{border:2px solid var(--red);box-shadow:0 6px 20px #e8002a1f}
+.tiles b{font:650 12px var(--body);color:var(--muted)}
+.tiles strong{font:800 clamp(22px,2.4vw,30px)/1 var(--display);font-stretch:75%;letter-spacing:-.005em}
+.tiles .us strong{color:var(--red)}
+.tiles span{font-size:12px;line-height:1.35;color:var(--muted)}
+.price .fine{grid-column:1/-1;margin:2px 0 0;font-size:12px}
+@media(max-width:900px){.price{grid-template-columns:1fr;padding:18px}.tiles{grid-template-columns:1fr 1fr 1fr}}
+@media(max-width:560px){.tiles{grid-template-columns:1fr}}
+</style>

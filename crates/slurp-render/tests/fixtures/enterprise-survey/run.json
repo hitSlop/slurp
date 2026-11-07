@@ -1,0 +1,2568 @@
+{
+  "report": {
+    "kind": "report",
+    "slug": "enterprise-survey",
+    "id": "obj_01m680dhey2zktyp64fbtjw6js",
+    "project": "prj_01m6809rp23x0zvhwqs31jfx5h",
+    "title": "NZ enterprise survey",
+    "description": "Annual Enterprise Survey (financial years 2011-2025, provisional) by industry and firm size.",
+    "params": [
+      {
+        "name": "year",
+        "type": "integer",
+        "default": 2025,
+        "label": "Year"
+      },
+      {
+        "name": "variable",
+        "type": "string",
+        "default": "Total income",
+        "label": "Variable"
+      }
+    ],
+    "queries": {
+      "headline": {
+        "sql": "WITH g AS (\n  SELECT year, variable, try_cast(value AS DOUBLE) AS v\n  FROM enterprise_survey\n  WHERE rme_size_grp = 'j_Grand_Total'\n)\nSELECT\n  max(v) FILTER (WHERE variable = 'Total income' AND year = $year) AS total_income,\n  CASE WHEN max(v) FILTER (WHERE variable = 'Total income' AND year = $year - 1) IS NULL THEN 'n/a'\n       ELSE CAST(max(v) FILTER (WHERE variable = 'Total income' AND year = $year)\n         / max(v) FILTER (WHERE variable = 'Total income' AND year = $year - 1) - 1 AS VARCHAR)\n  END AS income_growth,\n  max(v) FILTER (WHERE variable = 'Operating profit before tax' AND year = $year)\n    / max(v) FILTER (WHERE variable = 'Total income' AND year = $year) AS profit_margin,\n  max(v) FILTER (WHERE variable = 'Rolling mean employees' AND year = $year) AS employees,\n  (SELECT count(*) FROM enterprise_survey WHERE value = 'C' AND year = $year) AS suppressed_cells\nFROM g\n"
+      },
+      "trend": {
+        "sql": "WITH t AS (\n  SELECT make_date(CAST(year AS INTEGER), 1, 1) AS period, variable, unit,\n         try_cast(value AS DOUBLE) AS value\n  FROM enterprise_survey\n  WHERE variable = $variable AND rme_size_grp = 'j_Grand_Total'\n)\nSELECT period, variable, unit, value,\n       avg(value) OVER (ORDER BY period ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS avg_3yr\nFROM t ORDER BY period\n"
+      },
+      "by_industry": {
+        "sql": "SELECT industry_name_anzsic AS industry, variable, unit,\n       try_cast(value AS DOUBLE) AS value\nFROM enterprise_survey\nWHERE variable = $variable AND year = $year\n  AND rme_size_grp = 'i_Industry_Total' AND industry_code_anzsic <> 'all'\n  AND try_cast(value AS DOUBLE) IS NOT NULL\nORDER BY value DESC\n"
+      },
+      "by_size": {
+        "sql": "SELECT split_part(rme_size_grp, '_', 2) AS size_group, any_value(unit) AS unit,\n       sum(try_cast(value AS DOUBLE)) AS total,\n       count(*) FILTER (WHERE value = 'C') AS suppressed_cells\nFROM enterprise_survey\nWHERE variable = $variable AND year = $year\n  AND industry_code_anzsic <> 'all'\n  AND rme_size_grp NOT IN ('i_Industry_Total', 'j_Grand_Total')\nGROUP BY rme_size_grp\nHAVING sum(try_cast(value AS DOUBLE)) > 0\nORDER BY rme_size_grp\n"
+      },
+      "margin_grid": {
+        "sql": "WITH p AS (\n  SELECT industry_name_anzsic AS industry,\n         CASE rme_size_grp WHEN 'i_Industry_Total' THEN 'All sizes'\n              ELSE split_part(rme_size_grp, '_', 2) END AS size_group,\n         max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Operating profit before tax') AS profit,\n         max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income') AS income\n  FROM enterprise_survey\n  WHERE year = $year AND industry_code_anzsic <> 'all' AND rme_size_grp <> 'j_Grand_Total'\n  GROUP BY 1, 2\n)\nSELECT industry, size_group, profit, income,\n       round(100.0 * profit / nullif(income, 0), 1) AS margin_pct\nFROM p\nWHERE profit IS NOT NULL\nORDER BY industry, size_group\n"
+      },
+      "industries": {
+        "sql": "SELECT industry_name_anzsic AS industry,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Activity unit') AS business_units,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Rolling mean employees') AS employees,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income') AS income_m,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Operating profit before tax') AS profit_m,\n       round(100.0 * max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Operating profit before tax')\n         / max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income'), 1) AS margin_pct,\n       round(100.0 * max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Salaries and wages paid')\n         / max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income'), 1) AS wages_pct_of_income,\n       round(1000.0 * max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income')\n         / nullif(max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Rolling mean employees'), 0), 0) AS income_per_employee_k\nFROM enterprise_survey\nWHERE year = $year AND rme_size_grp = 'i_Industry_Total' AND industry_code_anzsic <> 'all'\nGROUP BY industry_name_anzsic\nORDER BY income_m DESC\n"
+      },
+      "suppressed": {
+        "sql": "SELECT variable,\n       count(*) AS cells,\n       count(*) FILTER (WHERE value = 'C') AS suppressed_cells,\n       round(100.0 * count(*) FILTER (WHERE value = 'C') / count(*), 1) AS suppressed_pct\nFROM enterprise_survey\nGROUP BY variable\nORDER BY suppressed_cells DESC, variable\n"
+      }
+    },
+    "blocks": [
+      {
+        "kind": "markdown",
+        "text": "## NZ enterprise survey\n\nStatistics NZ's **Annual Enterprise Survey** reports income, costs, profit, assets, wages\nand employment for New Zealand businesses, split by **industry** (ANZSIC, 19 divisions)\nand by **firm size** (rolling mean employee count band, from 0 up to 200+).\nDollar figures are **NZ$ millions**; business and employee figures are counts.\n\nUse the **Year** and **Variable** parameters to change the charts. Variable must be one of:\nActivity unit, Fixed tangible assets, Operating profit before tax, Rolling mean employees,\nSalaries and wages paid, Sales, government funding, grants and subsidies, Total assets,\nTotal expenditure, Total income. The headline numbers always cover all industries for the chosen year.\n"
+      },
+      {
+        "kind": "metric",
+        "query": "headline",
+        "field": "total_income",
+        "label": "Total income, NZ$ millions",
+        "format": "number"
+      },
+      {
+        "kind": "metric",
+        "query": "headline",
+        "field": "income_growth",
+        "label": "Income growth vs previous year",
+        "format": "percent"
+      },
+      {
+        "kind": "metric",
+        "query": "headline",
+        "field": "profit_margin",
+        "label": "Operating profit margin",
+        "format": "percent"
+      },
+      {
+        "kind": "metric",
+        "query": "headline",
+        "field": "employees",
+        "label": "Employees (rolling mean)",
+        "format": "number"
+      },
+      {
+        "kind": "metric",
+        "query": "headline",
+        "field": "suppressed_cells",
+        "label": "Suppressed cells this year",
+        "format": "number"
+      },
+      {
+        "kind": "chart",
+        "query": "trend",
+        "title": "Selected variable, all industries, with 3-year average",
+        "spec": {
+          "encoding": {
+            "x": {
+              "field": "period",
+              "type": "temporal",
+              "axis": {
+                "format": "%Y",
+                "title": "Year"
+              }
+            }
+          },
+          "layer": [
+            {
+              "mark": {
+                "type": "area",
+                "opacity": 0.35,
+                "line": true
+              },
+              "encoding": {
+                "y": {
+                  "field": "value",
+                  "type": "quantitative",
+                  "title": "Value"
+                },
+                "tooltip": [
+                  {
+                    "field": "variable",
+                    "type": "nominal"
+                  },
+                  {
+                    "field": "period",
+                    "type": "temporal",
+                    "format": "%Y",
+                    "title": "Year"
+                  },
+                  {
+                    "field": "value",
+                    "type": "quantitative",
+                    "format": ","
+                  },
+                  {
+                    "field": "unit",
+                    "type": "nominal"
+                  }
+                ]
+              }
+            },
+            {
+              "mark": {
+                "type": "line",
+                "strokeDash": [
+                  6,
+                  4
+                ]
+              },
+              "encoding": {
+                "y": {
+                  "field": "avg_3yr",
+                  "type": "quantitative"
+                },
+                "tooltip": [
+                  {
+                    "field": "avg_3yr",
+                    "type": "quantitative",
+                    "format": ",.0f",
+                    "title": "3-year average"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "chart",
+        "query": "by_industry",
+        "title": "Selected variable by industry (year chosen above)",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "y": {
+              "field": "industry",
+              "type": "nominal",
+              "sort": "-x",
+              "title": null
+            },
+            "x": {
+              "field": "value",
+              "type": "quantitative",
+              "title": "Value"
+            },
+            "tooltip": [
+              {
+                "field": "industry",
+                "type": "nominal"
+              },
+              {
+                "field": "value",
+                "type": "quantitative",
+                "format": ","
+              },
+              {
+                "field": "unit",
+                "type": "nominal"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "chart",
+        "query": "by_size",
+        "title": "Share of selected variable by firm size (employees)",
+        "spec": {
+          "mark": {
+            "type": "arc",
+            "innerRadius": 60
+          },
+          "encoding": {
+            "theta": {
+              "field": "total",
+              "type": "quantitative"
+            },
+            "color": {
+              "field": "size_group",
+              "type": "nominal",
+              "title": "Employees",
+              "sort": [
+                "0",
+                "1-5",
+                "6-9",
+                "10-19",
+                "20-49",
+                "50-99",
+                "100-199",
+                "200+"
+              ]
+            },
+            "tooltip": [
+              {
+                "field": "size_group",
+                "type": "nominal",
+                "title": "Employees"
+              },
+              {
+                "field": "total",
+                "type": "quantitative",
+                "format": ","
+              },
+              {
+                "field": "unit",
+                "type": "nominal"
+              },
+              {
+                "field": "suppressed_cells",
+                "type": "quantitative",
+                "title": "Suppressed cells"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "chart",
+        "query": "margin_grid",
+        "title": "Operating profit margin (%) by industry and firm size",
+        "spec": {
+          "mark": "rect",
+          "encoding": {
+            "x": {
+              "field": "size_group",
+              "type": "ordinal",
+              "title": "Employees",
+              "sort": [
+                "0",
+                "1-5",
+                "6-9",
+                "10-19",
+                "20-49",
+                "50-99",
+                "100-199",
+                "200+",
+                "All sizes"
+              ]
+            },
+            "y": {
+              "field": "industry",
+              "type": "nominal",
+              "title": null
+            },
+            "color": {
+              "field": "margin_pct",
+              "type": "quantitative",
+              "title": "Margin %"
+            },
+            "tooltip": [
+              {
+                "field": "industry",
+                "type": "nominal"
+              },
+              {
+                "field": "size_group",
+                "type": "nominal",
+                "title": "Employees"
+              },
+              {
+                "field": "margin_pct",
+                "type": "quantitative",
+                "title": "Margin %"
+              },
+              {
+                "field": "income",
+                "type": "quantitative",
+                "format": ",",
+                "title": "Income NZ$m"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "table",
+        "query": "industries",
+        "title": "Industries compared",
+        "limit": 25
+      },
+      {
+        "kind": "markdown",
+        "text": "### Data quality\n\n- **The `value` column is text.** Stats NZ publishes some cells as the letter **C** (confidential,\n  suppressed to protect individual businesses) instead of a number. Slurp stores the whole column as\n  text, so every query here converts it with a safe numeric cast; **C cells become empty, are left out\n  of charts, and are not counted as zero.** That is why a few industries are missing for some\n  variables (for example operating profit), why a size-group chart can sum slightly lower than the\n  industry total, and why the margin heatmap has blank cells.\n- Overall about 1.7% of cells (400 of 23,220) are suppressed. Operating profit and fixed tangible\n  assets account for about 60% of them, and the 50+ employee bands are hit hardest (2-4% of their\n  cells). Population counts (business units, employees) are never suppressed. See the table below.\n- **Empty columns.** The import has nine unnamed columns (`col_8` to `col_16`). `col_8` and `col_9`\n  are entirely empty. `col_10` to `col_16` are almost empty: they hold a stray copy of 41 of the\n  suppressed cells plus two stray numbers, a spreadsheet leftover. They add no information and are ignored.\n- Industry totals (size band \"All sizes\") and the all-industries grand total are published rows, not\n  sums calculated here. Provisional figures for the latest year may be revised.\n"
+      },
+      {
+        "kind": "table",
+        "query": "suppressed",
+        "title": "Suppressed (C) cells by variable",
+        "limit": 10
+      }
+    ],
+    "revision": 3,
+    "updated_at": "2026-10-31T03:36:33.042Z",
+    "updated_by": "sonnet-agent-test-2"
+  },
+  "params": {
+    "year": 2025,
+    "variable": "Total income"
+  },
+  "queries": {
+    "headline": {
+      "columns": [
+        {
+          "name": "total_income",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "income_growth",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "profit_margin",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "employees",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "suppressed_cells",
+          "type": "BIGINT"
+        }
+      ],
+      "rows": [
+        [
+          976077.0,
+          "-0.0042753614317717625",
+          0.1037541095630775,
+          1998885.0,
+          "17"
+        ]
+      ],
+      "row_count": 1,
+      "truncated": false,
+      "elapsed_ms": 58.6
+    },
+    "trend": {
+      "columns": [
+        {
+          "name": "period",
+          "type": "DATE"
+        },
+        {
+          "name": "variable",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "unit",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "value",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "avg_3yr",
+          "type": "DOUBLE"
+        }
+      ],
+      "rows": [
+        [
+          "2011-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          510905.0,
+          510905.0
+        ],
+        [
+          "2012-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          547694.0,
+          529299.5
+        ],
+        [
+          "2013-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          541041.0,
+          533213.3333333334
+        ],
+        [
+          "2014-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          573570.0,
+          554101.6666666666
+        ],
+        [
+          "2015-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          591538.0,
+          568716.3333333334
+        ],
+        [
+          "2016-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          606511.0,
+          590539.6666666666
+        ],
+        [
+          "2017-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          646185.0,
+          614744.6666666666
+        ],
+        [
+          "2018-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          692535.0,
+          648410.3333333334
+        ],
+        [
+          "2019-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          728225.0,
+          688981.6666666666
+        ],
+        [
+          "2020-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          732378.0,
+          717712.6666666666
+        ],
+        [
+          "2021-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          757963.0,
+          739522.0
+        ],
+        [
+          "2022-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          847431.0,
+          779257.3333333334
+        ],
+        [
+          "2023-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          929033.0,
+          844809.0
+        ],
+        [
+          "2024-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          980268.0,
+          918910.6666666666
+        ],
+        [
+          "2025-01-01",
+          "Total income",
+          "DOLLARS(millions)",
+          976077.0,
+          961792.6666666666
+        ]
+      ],
+      "row_count": 15,
+      "truncated": false,
+      "elapsed_ms": 44.3
+    },
+    "by_industry": {
+      "columns": [
+        {
+          "name": "industry",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "variable",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "unit",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "value",
+          "type": "DOUBLE"
+        }
+      ],
+      "rows": [
+        [
+          "Wholesale Trade",
+          "Total income",
+          "DOLLARS(millions)",
+          157754.0
+        ],
+        [
+          "Manufacturing",
+          "Total income",
+          "DOLLARS(millions)",
+          134105.0
+        ],
+        [
+          "Financial and Insurance Services",
+          "Total income",
+          "DOLLARS(millions)",
+          120374.0
+        ],
+        [
+          "Retail Trade",
+          "Total income",
+          "DOLLARS(millions)",
+          96968.0
+        ],
+        [
+          "Construction",
+          "Total income",
+          "DOLLARS(millions)",
+          96149.0
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "Total income",
+          "DOLLARS(millions)",
+          62308.0
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "Total income",
+          "DOLLARS(millions)",
+          60188.0
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "Total income",
+          "DOLLARS(millions)",
+          45756.0
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "Total income",
+          "DOLLARS(millions)",
+          38416.0
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "Total income",
+          "DOLLARS(millions)",
+          33028.0
+        ],
+        [
+          "Health Care and Social Assistance",
+          "Total income",
+          "DOLLARS(millions)",
+          32663.0
+        ],
+        [
+          "Accommodation and Food Services",
+          "Total income",
+          "DOLLARS(millions)",
+          22037.0
+        ],
+        [
+          "Information Media and Telecommunications",
+          "Total income",
+          "DOLLARS(millions)",
+          18721.0
+        ],
+        [
+          "Other Services",
+          "Total income",
+          "DOLLARS(millions)",
+          17311.0
+        ],
+        [
+          "Administrative and Support Services",
+          "Total income",
+          "DOLLARS(millions)",
+          16981.0
+        ],
+        [
+          "Arts and Recreation Services",
+          "Total income",
+          "DOLLARS(millions)",
+          9135.0
+        ],
+        [
+          "Education and Training",
+          "Total income",
+          "DOLLARS(millions)",
+          6388.0
+        ],
+        [
+          "Mining",
+          "Total income",
+          "DOLLARS(millions)",
+          5515.0
+        ],
+        [
+          "Public Administration and Safety",
+          "Total income",
+          "DOLLARS(millions)",
+          2279.0
+        ]
+      ],
+      "row_count": 19,
+      "truncated": false,
+      "elapsed_ms": 27.9
+    },
+    "by_size": {
+      "columns": [
+        {
+          "name": "size_group",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "unit",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "total",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "suppressed_cells",
+          "type": "BIGINT"
+        }
+      ],
+      "rows": [
+        [
+          "0",
+          "DOLLARS(millions)",
+          165849.0,
+          "0"
+        ],
+        [
+          "1-5",
+          "DOLLARS(millions)",
+          95309.0,
+          "0"
+        ],
+        [
+          "6-9",
+          "DOLLARS(millions)",
+          49057.0,
+          "0"
+        ],
+        [
+          "10-19",
+          "DOLLARS(millions)",
+          76128.0,
+          "0"
+        ],
+        [
+          "20-49",
+          "DOLLARS(millions)",
+          93543.0,
+          "0"
+        ],
+        [
+          "50-99",
+          "DOLLARS(millions)",
+          72542.0,
+          "0"
+        ],
+        [
+          "100-199",
+          "DOLLARS(millions)",
+          60696.0,
+          "0"
+        ],
+        [
+          "200+",
+          "DOLLARS(millions)",
+          362953.0,
+          "0"
+        ]
+      ],
+      "row_count": 8,
+      "truncated": false,
+      "elapsed_ms": 50.8
+    },
+    "margin_grid": {
+      "columns": [
+        {
+          "name": "industry",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "size_group",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "profit",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "income",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "margin_pct",
+          "type": "DOUBLE"
+        }
+      ],
+      "rows": [
+        [
+          "Accommodation and Food Services",
+          "0",
+          224.0,
+          2244.0,
+          10.0
+        ],
+        [
+          "Accommodation and Food Services",
+          "1-5",
+          135.0,
+          3356.0,
+          4.0
+        ],
+        [
+          "Accommodation and Food Services",
+          "10-19",
+          136.0,
+          3986.0,
+          3.4
+        ],
+        [
+          "Accommodation and Food Services",
+          "100-199",
+          74.0,
+          1421.0,
+          5.2
+        ],
+        [
+          "Accommodation and Food Services",
+          "20-49",
+          158.0,
+          3318.0,
+          4.8
+        ],
+        [
+          "Accommodation and Food Services",
+          "200+",
+          315.0,
+          3468.0,
+          9.1
+        ],
+        [
+          "Accommodation and Food Services",
+          "50-99",
+          89.0,
+          1752.0,
+          5.1
+        ],
+        [
+          "Accommodation and Food Services",
+          "6-9",
+          89.0,
+          2493.0,
+          3.6
+        ],
+        [
+          "Accommodation and Food Services",
+          "All sizes",
+          1220.0,
+          22037.0,
+          5.5
+        ],
+        [
+          "Administrative and Support Services",
+          "0",
+          554.0,
+          2665.0,
+          20.8
+        ],
+        [
+          "Administrative and Support Services",
+          "1-5",
+          182.0,
+          2092.0,
+          8.7
+        ],
+        [
+          "Administrative and Support Services",
+          "10-19",
+          87.0,
+          1462.0,
+          6.0
+        ],
+        [
+          "Administrative and Support Services",
+          "100-199",
+          50.0,
+          1369.0,
+          3.7
+        ],
+        [
+          "Administrative and Support Services",
+          "20-49",
+          145.0,
+          2232.0,
+          6.5
+        ],
+        [
+          "Administrative and Support Services",
+          "200+",
+          236.0,
+          4979.0,
+          4.7
+        ],
+        [
+          "Administrative and Support Services",
+          "50-99",
+          60.0,
+          1328.0,
+          4.5
+        ],
+        [
+          "Administrative and Support Services",
+          "6-9",
+          42.0,
+          854.0,
+          4.9
+        ],
+        [
+          "Administrative and Support Services",
+          "All sizes",
+          1356.0,
+          16981.0,
+          8.0
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "0",
+          2959.0,
+          17141.0,
+          17.3
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "1-5",
+          2953.0,
+          20071.0,
+          14.7
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "10-19",
+          537.0,
+          5199.0,
+          10.3
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "100-199",
+          107.0,
+          1559.0,
+          6.9
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "20-49",
+          224.0,
+          4409.0,
+          5.1
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "200+",
+          53.0,
+          2145.0,
+          2.5
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "50-99",
+          67.0,
+          3340.0,
+          2.0
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "6-9",
+          858.0,
+          6323.0,
+          13.6
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          "All sizes",
+          7760.0,
+          60188.0,
+          12.9
+        ],
+        [
+          "Arts and Recreation Services",
+          "0",
+          362.0,
+          1482.0,
+          24.4
+        ],
+        [
+          "Arts and Recreation Services",
+          "1-5",
+          78.0,
+          1085.0,
+          7.2
+        ],
+        [
+          "Arts and Recreation Services",
+          "10-19",
+          50.0,
+          822.0,
+          6.1
+        ],
+        [
+          "Arts and Recreation Services",
+          "100-199",
+          -2.0,
+          515.0,
+          -0.4
+        ],
+        [
+          "Arts and Recreation Services",
+          "20-49",
+          78.0,
+          1319.0,
+          5.9
+        ],
+        [
+          "Arts and Recreation Services",
+          "200+",
+          668.0,
+          2560.0,
+          26.1
+        ],
+        [
+          "Arts and Recreation Services",
+          "50-99",
+          37.0,
+          863.0,
+          4.3
+        ],
+        [
+          "Arts and Recreation Services",
+          "6-9",
+          21.0,
+          489.0,
+          4.3
+        ],
+        [
+          "Arts and Recreation Services",
+          "All sizes",
+          1293.0,
+          9135.0,
+          14.2
+        ],
+        [
+          "Construction",
+          "0",
+          1828.0,
+          19534.0,
+          9.4
+        ],
+        [
+          "Construction",
+          "1-5",
+          1127.0,
+          16700.0,
+          6.7
+        ],
+        [
+          "Construction",
+          "10-19",
+          801.0,
+          12539.0,
+          6.4
+        ],
+        [
+          "Construction",
+          "100-199",
+          233.0,
+          4559.0,
+          5.1
+        ],
+        [
+          "Construction",
+          "20-49",
+          962.0,
+          11122.0,
+          8.6
+        ],
+        [
+          "Construction",
+          "200+",
+          723.0,
+          15688.0,
+          4.6
+        ],
+        [
+          "Construction",
+          "50-99",
+          510.0,
+          7561.0,
+          6.7
+        ],
+        [
+          "Construction",
+          "6-9",
+          570.0,
+          8446.0,
+          6.7
+        ],
+        [
+          "Construction",
+          "All sizes",
+          6754.0,
+          96149.0,
+          7.0
+        ],
+        [
+          "Education and Training",
+          "0",
+          146.0,
+          794.0,
+          18.4
+        ],
+        [
+          "Education and Training",
+          "1-5",
+          39.0,
+          479.0,
+          8.1
+        ],
+        [
+          "Education and Training",
+          "10-19",
+          92.0,
+          963.0,
+          9.6
+        ],
+        [
+          "Education and Training",
+          "100-199",
+          61.0,
+          504.0,
+          12.1
+        ],
+        [
+          "Education and Training",
+          "20-49",
+          39.0,
+          933.0,
+          4.2
+        ],
+        [
+          "Education and Training",
+          "200+",
+          82.0,
+          1747.0,
+          4.7
+        ],
+        [
+          "Education and Training",
+          "50-99",
+          59.0,
+          559.0,
+          10.6
+        ],
+        [
+          "Education and Training",
+          "6-9",
+          15.0,
+          409.0,
+          3.7
+        ],
+        [
+          "Education and Training",
+          "All sizes",
+          531.0,
+          6388.0,
+          8.3
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "0",
+          219.0,
+          1492.0,
+          14.7
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "1-5",
+          55.0,
+          332.0,
+          16.6
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "10-19",
+          40.0,
+          363.0,
+          11.0
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "100-199",
+          120.0,
+          965.0,
+          12.4
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "20-49",
+          172.0,
+          1357.0,
+          12.7
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "200+",
+          3965.0,
+          27652.0,
+          14.3
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "50-99",
+          18.0,
+          618.0,
+          2.9
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "6-9",
+          8.0,
+          248.0,
+          3.2
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          "All sizes",
+          4597.0,
+          33028.0,
+          13.9
+        ],
+        [
+          "Financial and Insurance Services",
+          "0",
+          17780.0,
+          41437.0,
+          42.9
+        ],
+        [
+          "Financial and Insurance Services",
+          "1-5",
+          390.0,
+          3293.0,
+          11.8
+        ],
+        [
+          "Financial and Insurance Services",
+          "10-19",
+          307.0,
+          2913.0,
+          10.5
+        ],
+        [
+          "Financial and Insurance Services",
+          "100-199",
+          552.0,
+          3325.0,
+          16.6
+        ],
+        [
+          "Financial and Insurance Services",
+          "20-49",
+          453.0,
+          3554.0,
+          12.7
+        ],
+        [
+          "Financial and Insurance Services",
+          "200+",
+          11842.0,
+          62062.0,
+          19.1
+        ],
+        [
+          "Financial and Insurance Services",
+          "50-99",
+          413.0,
+          2069.0,
+          20.0
+        ],
+        [
+          "Financial and Insurance Services",
+          "6-9",
+          401.0,
+          1722.0,
+          23.3
+        ],
+        [
+          "Financial and Insurance Services",
+          "All sizes",
+          32138.0,
+          120374.0,
+          26.7
+        ],
+        [
+          "Health Care and Social Assistance",
+          "0",
+          1414.0,
+          4172.0,
+          33.9
+        ],
+        [
+          "Health Care and Social Assistance",
+          "1-5",
+          520.0,
+          2757.0,
+          18.9
+        ],
+        [
+          "Health Care and Social Assistance",
+          "10-19",
+          293.0,
+          2300.0,
+          12.7
+        ],
+        [
+          "Health Care and Social Assistance",
+          "100-199",
+          67.0,
+          2651.0,
+          2.5
+        ],
+        [
+          "Health Care and Social Assistance",
+          "20-49",
+          455.0,
+          3966.0,
+          11.5
+        ],
+        [
+          "Health Care and Social Assistance",
+          "200+",
+          218.0,
+          12286.0,
+          1.8
+        ],
+        [
+          "Health Care and Social Assistance",
+          "50-99",
+          170.0,
+          2827.0,
+          6.0
+        ],
+        [
+          "Health Care and Social Assistance",
+          "6-9",
+          212.0,
+          1703.0,
+          12.4
+        ],
+        [
+          "Health Care and Social Assistance",
+          "All sizes",
+          3348.0,
+          32663.0,
+          10.3
+        ],
+        [
+          "Information Media and Telecommunications",
+          "0",
+          376.0,
+          2755.0,
+          13.6
+        ],
+        [
+          "Information Media and Telecommunications",
+          "1-5",
+          66.0,
+          1211.0,
+          5.5
+        ],
+        [
+          "Information Media and Telecommunications",
+          "10-19",
+          -26.0,
+          541.0,
+          -4.8
+        ],
+        [
+          "Information Media and Telecommunications",
+          "100-199",
+          12.0,
+          789.0,
+          1.5
+        ],
+        [
+          "Information Media and Telecommunications",
+          "20-49",
+          48.0,
+          1325.0,
+          3.6
+        ],
+        [
+          "Information Media and Telecommunications",
+          "50-99",
+          77.0,
+          1352.0,
+          5.7
+        ],
+        [
+          "Information Media and Telecommunications",
+          "6-9",
+          18.0,
+          441.0,
+          4.1
+        ],
+        [
+          "Manufacturing",
+          "0",
+          368.0,
+          4040.0,
+          9.1
+        ],
+        [
+          "Manufacturing",
+          "1-5",
+          459.0,
+          5367.0,
+          8.6
+        ],
+        [
+          "Manufacturing",
+          "10-19",
+          421.0,
+          7136.0,
+          5.9
+        ],
+        [
+          "Manufacturing",
+          "100-199",
+          502.0,
+          12067.0,
+          4.2
+        ],
+        [
+          "Manufacturing",
+          "20-49",
+          727.0,
+          12134.0,
+          6.0
+        ],
+        [
+          "Manufacturing",
+          "200+",
+          4192.0,
+          78839.0,
+          5.3
+        ],
+        [
+          "Manufacturing",
+          "50-99",
+          569.0,
+          10883.0,
+          5.2
+        ],
+        [
+          "Manufacturing",
+          "6-9",
+          202.0,
+          3640.0,
+          5.5
+        ],
+        [
+          "Manufacturing",
+          "All sizes",
+          7440.0,
+          134105.0,
+          5.5
+        ],
+        [
+          "Mining",
+          "0",
+          107.0,
+          839.0,
+          12.8
+        ],
+        [
+          "Mining",
+          "1-5",
+          18.0,
+          141.0,
+          12.8
+        ],
+        [
+          "Mining",
+          "10-19",
+          34.0,
+          276.0,
+          12.3
+        ],
+        [
+          "Mining",
+          "100-199",
+          26.0,
+          250.0,
+          10.4
+        ],
+        [
+          "Mining",
+          "20-49",
+          127.0,
+          732.0,
+          17.3
+        ],
+        [
+          "Mining",
+          "200+",
+          348.0,
+          2757.0,
+          12.6
+        ],
+        [
+          "Mining",
+          "50-99",
+          19.0,
+          433.0,
+          4.4
+        ],
+        [
+          "Mining",
+          "6-9",
+          19.0,
+          87.0,
+          21.8
+        ],
+        [
+          "Mining",
+          "All sizes",
+          699.0,
+          5515.0,
+          12.7
+        ],
+        [
+          "Other Services",
+          "0",
+          405.0,
+          2520.0,
+          16.1
+        ],
+        [
+          "Other Services",
+          "1-5",
+          357.0,
+          4331.0,
+          8.2
+        ],
+        [
+          "Other Services",
+          "10-19",
+          216.0,
+          2804.0,
+          7.7
+        ],
+        [
+          "Other Services",
+          "100-199",
+          32.0,
+          728.0,
+          4.4
+        ],
+        [
+          "Other Services",
+          "20-49",
+          1.0,
+          2362.0,
+          0.0
+        ],
+        [
+          "Other Services",
+          "200+",
+          89.0,
+          1214.0,
+          7.3
+        ],
+        [
+          "Other Services",
+          "50-99",
+          49.0,
+          930.0,
+          5.3
+        ],
+        [
+          "Other Services",
+          "6-9",
+          170.0,
+          2423.0,
+          7.0
+        ],
+        [
+          "Other Services",
+          "All sizes",
+          1318.0,
+          17311.0,
+          7.6
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "0",
+          3121.0,
+          13275.0,
+          23.5
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "1-5",
+          1120.0,
+          7786.0,
+          14.4
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "10-19",
+          823.0,
+          6656.0,
+          12.4
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "100-199",
+          350.0,
+          4422.0,
+          7.9
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "20-49",
+          714.0,
+          7311.0,
+          9.8
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "200+",
+          848.0,
+          13494.0,
+          6.3
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "50-99",
+          338.0,
+          5872.0,
+          5.8
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "6-9",
+          492.0,
+          3492.0,
+          14.1
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          "All sizes",
+          7805.0,
+          62308.0,
+          12.5
+        ],
+        [
+          "Public Administration and Safety",
+          "0",
+          18.0,
+          234.0,
+          7.7
+        ],
+        [
+          "Public Administration and Safety",
+          "1-5",
+          17.0,
+          171.0,
+          9.9
+        ],
+        [
+          "Public Administration and Safety",
+          "10-19",
+          49.0,
+          184.0,
+          26.6
+        ],
+        [
+          "Public Administration and Safety",
+          "100-199",
+          0.0,
+          206.0,
+          0.0
+        ],
+        [
+          "Public Administration and Safety",
+          "20-49",
+          9.0,
+          166.0,
+          5.4
+        ],
+        [
+          "Public Administration and Safety",
+          "200+",
+          41.0,
+          1043.0,
+          3.9
+        ],
+        [
+          "Public Administration and Safety",
+          "50-99",
+          5.0,
+          175.0,
+          2.9
+        ],
+        [
+          "Public Administration and Safety",
+          "6-9",
+          7.0,
+          100.0,
+          7.0
+        ],
+        [
+          "Public Administration and Safety",
+          "All sizes",
+          147.0,
+          2279.0,
+          6.5
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "0",
+          8619.0,
+          31343.0,
+          27.5
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "1-5",
+          711.0,
+          4203.0,
+          16.9
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "10-19",
+          211.0,
+          1749.0,
+          12.1
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "100-199",
+          215.0,
+          1269.0,
+          16.9
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "20-49",
+          261.0,
+          1952.0,
+          13.4
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "200+",
+          126.0,
+          2323.0,
+          5.4
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "50-99",
+          249.0,
+          1646.0,
+          15.1
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "6-9",
+          174.0,
+          1270.0,
+          13.7
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          "All sizes",
+          10564.0,
+          45756.0,
+          23.1
+        ],
+        [
+          "Retail Trade",
+          "0",
+          635.0,
+          7617.0,
+          8.3
+        ],
+        [
+          "Retail Trade",
+          "1-5",
+          161.0,
+          10075.0,
+          1.6
+        ],
+        [
+          "Retail Trade",
+          "10-19",
+          368.0,
+          8513.0,
+          4.3
+        ],
+        [
+          "Retail Trade",
+          "100-199",
+          466.0,
+          12082.0,
+          3.9
+        ],
+        [
+          "Retail Trade",
+          "20-49",
+          408.0,
+          10796.0,
+          3.8
+        ],
+        [
+          "Retail Trade",
+          "200+",
+          1104.0,
+          34299.0,
+          3.2
+        ],
+        [
+          "Retail Trade",
+          "50-99",
+          223.0,
+          7772.0,
+          2.9
+        ],
+        [
+          "Retail Trade",
+          "6-9",
+          175.0,
+          5814.0,
+          3.0
+        ],
+        [
+          "Retail Trade",
+          "All sizes",
+          3540.0,
+          96968.0,
+          3.7
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "0",
+          360.0,
+          2907.0,
+          12.4
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "1-5",
+          200.0,
+          2545.0,
+          7.9
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "10-19",
+          171.0,
+          2363.0,
+          7.2
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "100-199",
+          278.0,
+          2311.0,
+          12.0
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "20-49",
+          200.0,
+          3461.0,
+          5.8
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "50-99",
+          196.0,
+          2500.0,
+          7.8
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          "6-9",
+          102.0,
+          1143.0,
+          8.9
+        ],
+        [
+          "Wholesale Trade",
+          "0",
+          491.0,
+          9358.0,
+          5.2
+        ],
+        [
+          "Wholesale Trade",
+          "1-5",
+          486.0,
+          9314.0,
+          5.2
+        ],
+        [
+          "Wholesale Trade",
+          "10-19",
+          1019.0,
+          15359.0,
+          6.6
+        ],
+        [
+          "Wholesale Trade",
+          "100-199",
+          411.0,
+          9704.0,
+          4.2
+        ],
+        [
+          "Wholesale Trade",
+          "20-49",
+          1041.0,
+          21094.0,
+          4.9
+        ],
+        [
+          "Wholesale Trade",
+          "200+",
+          926.0,
+          64904.0,
+          1.4
+        ],
+        [
+          "Wholesale Trade",
+          "50-99",
+          829.0,
+          20062.0,
+          4.1
+        ],
+        [
+          "Wholesale Trade",
+          "6-9",
+          503.0,
+          7960.0,
+          6.3
+        ],
+        [
+          "Wholesale Trade",
+          "All sizes",
+          5706.0,
+          157754.0,
+          3.6
+        ]
+      ],
+      "row_count": 167,
+      "truncated": false,
+      "elapsed_ms": 46.3
+    },
+    "industries": {
+      "columns": [
+        {
+          "name": "industry",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "business_units",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "employees",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "income_m",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "profit_m",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "margin_pct",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "wages_pct_of_income",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "income_per_employee_k",
+          "type": "DOUBLE"
+        }
+      ],
+      "rows": [
+        [
+          "Wholesale Trade",
+          16353.0,
+          121311.0,
+          157754.0,
+          5706.0,
+          3.6,
+          7.0,
+          1300.0
+        ],
+        [
+          "Manufacturing",
+          22614.0,
+          235149.0,
+          134105.0,
+          7440.0,
+          5.5,
+          14.9,
+          570.0
+        ],
+        [
+          "Financial and Insurance Services",
+          36168.0,
+          70368.0,
+          120374.0,
+          32138.0,
+          26.7,
+          8.2,
+          1711.0
+        ],
+        [
+          "Retail Trade",
+          29379.0,
+          222018.0,
+          96968.0,
+          3540.0,
+          3.7,
+          12.3,
+          437.0
+        ],
+        [
+          "Construction",
+          80793.0,
+          198174.0,
+          96149.0,
+          6754.0,
+          7.0,
+          20.3,
+          485.0
+        ],
+        [
+          "Professional, Scientific and Technical Services",
+          70731.0,
+          181107.0,
+          62308.0,
+          7805.0,
+          12.5,
+          36.3,
+          344.0
+        ],
+        [
+          "Agriculture, Forestry and Fishing",
+          61611.0,
+          111051.0,
+          60188.0,
+          7760.0,
+          12.9,
+          12.7,
+          542.0
+        ],
+        [
+          "Rental, Hiring and Real Estate Services",
+          81699.0,
+          34278.0,
+          45756.0,
+          10564.0,
+          23.1,
+          7.5,
+          1335.0
+        ],
+        [
+          "Transport, Postal and Warehousing",
+          17076.0,
+          103710.0,
+          38416.0,
+          null,
+          null,
+          24.0,
+          370.0
+        ],
+        [
+          "Electricity, Gas, Water and Waste Services",
+          1296.0,
+          23877.0,
+          33028.0,
+          4597.0,
+          13.9,
+          7.5,
+          1383.0
+        ],
+        [
+          "Health Care and Social Assistance",
+          25536.0,
+          192213.0,
+          32663.0,
+          3348.0,
+          10.3,
+          42.8,
+          170.0
+        ],
+        [
+          "Accommodation and Food Services",
+          25869.0,
+          170700.0,
+          22037.0,
+          1220.0,
+          5.5,
+          30.5,
+          129.0
+        ],
+        [
+          "Information Media and Telecommunications",
+          7737.0,
+          27948.0,
+          18721.0,
+          null,
+          null,
+          16.8,
+          670.0
+        ],
+        [
+          "Other Services",
+          27174.0,
+          74961.0,
+          17311.0,
+          1318.0,
+          7.6,
+          30.8,
+          231.0
+        ],
+        [
+          "Administrative and Support Services",
+          22077.0,
+          113469.0,
+          16981.0,
+          1356.0,
+          8.0,
+          38.7,
+          150.0
+        ],
+        [
+          "Arts and Recreation Services",
+          12030.0,
+          39144.0,
+          9135.0,
+          1293.0,
+          14.2,
+          23.0,
+          233.0
+        ],
+        [
+          "Education and Training",
+          8268.0,
+          54693.0,
+          6388.0,
+          531.0,
+          8.3,
+          50.3,
+          117.0
+        ],
+        [
+          "Mining",
+          714.0,
+          6177.0,
+          5515.0,
+          699.0,
+          12.7,
+          14.6,
+          893.0
+        ],
+        [
+          "Public Administration and Safety",
+          1224.0,
+          18540.0,
+          2279.0,
+          147.0,
+          6.5,
+          50.5,
+          123.0
+        ]
+      ],
+      "row_count": 19,
+      "truncated": false,
+      "elapsed_ms": 78.3
+    },
+    "suppressed": {
+      "columns": [
+        {
+          "name": "variable",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "cells",
+          "type": "BIGINT"
+        },
+        {
+          "name": "suppressed_cells",
+          "type": "BIGINT"
+        },
+        {
+          "name": "suppressed_pct",
+          "type": "DOUBLE"
+        }
+      ],
+      "rows": [
+        [
+          "Operating profit before tax",
+          "2580",
+          "121",
+          4.7
+        ],
+        [
+          "Fixed tangible assets",
+          "2580",
+          "120",
+          4.7
+        ],
+        [
+          "Sales, government funding, grants and subsidies",
+          "2580",
+          "71",
+          2.8
+        ],
+        [
+          "Total assets",
+          "2580",
+          "66",
+          2.6
+        ],
+        [
+          "Total income",
+          "2580",
+          "12",
+          0.5
+        ],
+        [
+          "Total expenditure",
+          "2580",
+          "8",
+          0.3
+        ],
+        [
+          "Salaries and wages paid",
+          "2580",
+          "2",
+          0.1
+        ],
+        [
+          "Activity unit",
+          "2580",
+          "0",
+          0.0
+        ],
+        [
+          "Rolling mean employees",
+          "2580",
+          "0",
+          0.0
+        ]
+      ],
+      "row_count": 9,
+      "truncated": false,
+      "elapsed_ms": 53.4
+    }
+  },
+  "errors": {},
+  "ran_at": "2026-10-31T03:46:53Z",
+  "title": "NZ enterprise survey",
+  "blocks": [
+    {
+      "id": "markdown-1",
+      "block": {
+        "kind": "markdown",
+        "text": "## NZ enterprise survey\n\nStatistics NZ's **Annual Enterprise Survey** reports income, costs, profit, assets, wages\nand employment for New Zealand businesses, split by **industry** (ANZSIC, 19 divisions)\nand by **firm size** (rolling mean employee count band, from 0 up to 200+).\nDollar figures are **NZ$ millions**; business and employee figures are counts.\n\nUse the **Year** and **Variable** parameters to change the charts. Variable must be one of:\nActivity unit, Fixed tangible assets, Operating profit before tax, Rolling mean employees,\nSalaries and wages paid, Sales, government funding, grants and subsidies, Total assets,\nTotal expenditure, Total income. The headline numbers always cover all industries for the chosen year.\n"
+      },
+      "html": "<h2>NZ enterprise survey</h2>\n<p>Statistics NZ's <strong>Annual Enterprise Survey</strong> reports income, costs, profit, assets, wages\nand employment for New Zealand businesses, split by <strong>industry</strong> (ANZSIC, 19 divisions)\nand by <strong>firm size</strong> (rolling mean employee count band, from 0 up to 200+).\nDollar figures are <strong>NZ$ millions</strong>; business and employee figures are counts.</p>\n<p>Use the <strong>Year</strong> and <strong>Variable</strong> parameters to change the charts. Variable must be one of:\nActivity unit, Fixed tangible assets, Operating profit before tax, Rolling mean employees,\nSalaries and wages paid, Sales, government funding, grants and subsidies, Total assets,\nTotal expenditure, Total income. The headline numbers always cover all industries for the chosen year.</p>\n"
+    },
+    {
+      "id": "headline",
+      "block": {
+        "kind": "metric",
+        "query": "headline",
+        "field": "total_income",
+        "label": "Total income, NZ$ millions",
+        "format": "number"
+      },
+      "display": "Total income, NZ$ millions",
+      "row": 1
+    },
+    {
+      "id": "headline-metric",
+      "block": {
+        "kind": "metric",
+        "query": "headline",
+        "field": "income_growth",
+        "label": "Income growth vs previous year",
+        "format": "percent"
+      },
+      "display": "Income growth vs previous year",
+      "row": 1
+    },
+    {
+      "id": "headline-metric-2",
+      "block": {
+        "kind": "metric",
+        "query": "headline",
+        "field": "profit_margin",
+        "label": "Operating profit margin",
+        "format": "percent"
+      },
+      "display": "Operating profit margin",
+      "row": 1
+    },
+    {
+      "id": "headline-metric-3",
+      "block": {
+        "kind": "metric",
+        "query": "headline",
+        "field": "employees",
+        "label": "Employees (rolling mean)",
+        "format": "number"
+      },
+      "display": "Employees (rolling mean)",
+      "row": 1
+    },
+    {
+      "id": "headline-metric-4",
+      "block": {
+        "kind": "metric",
+        "query": "headline",
+        "field": "suppressed_cells",
+        "label": "Suppressed cells this year",
+        "format": "number"
+      },
+      "display": "Suppressed cells this year",
+      "row": 1
+    },
+    {
+      "id": "trend",
+      "block": {
+        "kind": "chart",
+        "query": "trend",
+        "title": "Selected variable, all industries, with 3-year average",
+        "spec": {
+          "encoding": {
+            "x": {
+              "field": "period",
+              "type": "temporal",
+              "axis": {
+                "format": "%Y",
+                "title": "Year"
+              }
+            }
+          },
+          "layer": [
+            {
+              "mark": {
+                "type": "area",
+                "opacity": 0.35,
+                "line": true
+              },
+              "encoding": {
+                "y": {
+                  "field": "value",
+                  "type": "quantitative",
+                  "title": "Value"
+                },
+                "tooltip": [
+                  {
+                    "field": "variable",
+                    "type": "nominal"
+                  },
+                  {
+                    "field": "period",
+                    "type": "temporal",
+                    "format": "%Y",
+                    "title": "Year"
+                  },
+                  {
+                    "field": "value",
+                    "type": "quantitative",
+                    "format": ","
+                  },
+                  {
+                    "field": "unit",
+                    "type": "nominal"
+                  }
+                ]
+              }
+            },
+            {
+              "mark": {
+                "type": "line",
+                "strokeDash": [
+                  6,
+                  4
+                ]
+              },
+              "encoding": {
+                "y": {
+                  "field": "avg_3yr",
+                  "type": "quantitative"
+                },
+                "tooltip": [
+                  {
+                    "field": "avg_3yr",
+                    "type": "quantitative",
+                    "format": ",.0f",
+                    "title": "3-year average"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "display": "Selected variable, all industries, with 3-year average"
+    },
+    {
+      "id": "by-industry",
+      "block": {
+        "kind": "chart",
+        "query": "by_industry",
+        "title": "Selected variable by industry (year chosen above)",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "y": {
+              "field": "industry",
+              "type": "nominal",
+              "sort": "-x",
+              "title": null
+            },
+            "x": {
+              "field": "value",
+              "type": "quantitative",
+              "title": "Value"
+            },
+            "tooltip": [
+              {
+                "field": "industry",
+                "type": "nominal"
+              },
+              {
+                "field": "value",
+                "type": "quantitative",
+                "format": ","
+              },
+              {
+                "field": "unit",
+                "type": "nominal"
+              }
+            ]
+          }
+        }
+      },
+      "display": "Selected variable by industry (year chosen above)"
+    },
+    {
+      "id": "by-size",
+      "block": {
+        "kind": "chart",
+        "query": "by_size",
+        "title": "Share of selected variable by firm size (employees)",
+        "spec": {
+          "mark": {
+            "type": "arc",
+            "innerRadius": 60
+          },
+          "encoding": {
+            "theta": {
+              "field": "total",
+              "type": "quantitative"
+            },
+            "color": {
+              "field": "size_group",
+              "type": "nominal",
+              "title": "Employees",
+              "sort": [
+                "0",
+                "1-5",
+                "6-9",
+                "10-19",
+                "20-49",
+                "50-99",
+                "100-199",
+                "200+"
+              ]
+            },
+            "tooltip": [
+              {
+                "field": "size_group",
+                "type": "nominal",
+                "title": "Employees"
+              },
+              {
+                "field": "total",
+                "type": "quantitative",
+                "format": ","
+              },
+              {
+                "field": "unit",
+                "type": "nominal"
+              },
+              {
+                "field": "suppressed_cells",
+                "type": "quantitative",
+                "title": "Suppressed cells"
+              }
+            ]
+          }
+        }
+      },
+      "display": "Share of selected variable by firm size (employees)"
+    },
+    {
+      "id": "margin-grid",
+      "block": {
+        "kind": "chart",
+        "query": "margin_grid",
+        "title": "Operating profit margin (%) by industry and firm size",
+        "spec": {
+          "mark": "rect",
+          "encoding": {
+            "x": {
+              "field": "size_group",
+              "type": "ordinal",
+              "title": "Employees",
+              "sort": [
+                "0",
+                "1-5",
+                "6-9",
+                "10-19",
+                "20-49",
+                "50-99",
+                "100-199",
+                "200+",
+                "All sizes"
+              ]
+            },
+            "y": {
+              "field": "industry",
+              "type": "nominal",
+              "title": null
+            },
+            "color": {
+              "field": "margin_pct",
+              "type": "quantitative",
+              "title": "Margin %"
+            },
+            "tooltip": [
+              {
+                "field": "industry",
+                "type": "nominal"
+              },
+              {
+                "field": "size_group",
+                "type": "nominal",
+                "title": "Employees"
+              },
+              {
+                "field": "margin_pct",
+                "type": "quantitative",
+                "title": "Margin %"
+              },
+              {
+                "field": "income",
+                "type": "quantitative",
+                "format": ",",
+                "title": "Income NZ$m"
+              }
+            ]
+          }
+        }
+      },
+      "display": "Operating profit margin (%) by industry and firm size"
+    },
+    {
+      "id": "industries",
+      "block": {
+        "kind": "table",
+        "query": "industries",
+        "title": "Industries compared",
+        "limit": 25
+      },
+      "display": "Industries compared"
+    },
+    {
+      "id": "markdown-2",
+      "block": {
+        "kind": "markdown",
+        "text": "### Data quality\n\n- **The `value` column is text.** Stats NZ publishes some cells as the letter **C** (confidential,\n  suppressed to protect individual businesses) instead of a number. Slurp stores the whole column as\n  text, so every query here converts it with a safe numeric cast; **C cells become empty, are left out\n  of charts, and are not counted as zero.** That is why a few industries are missing for some\n  variables (for example operating profit), why a size-group chart can sum slightly lower than the\n  industry total, and why the margin heatmap has blank cells.\n- Overall about 1.7% of cells (400 of 23,220) are suppressed. Operating profit and fixed tangible\n  assets account for about 60% of them, and the 50+ employee bands are hit hardest (2-4% of their\n  cells). Population counts (business units, employees) are never suppressed. See the table below.\n- **Empty columns.** The import has nine unnamed columns (`col_8` to `col_16`). `col_8` and `col_9`\n  are entirely empty. `col_10` to `col_16` are almost empty: they hold a stray copy of 41 of the\n  suppressed cells plus two stray numbers, a spreadsheet leftover. They add no information and are ignored.\n- Industry totals (size band \"All sizes\") and the all-industries grand total are published rows, not\n  sums calculated here. Provisional figures for the latest year may be revised.\n"
+      },
+      "html": "<h3>Data quality</h3>\n<ul>\n<li><strong>The <code>value</code> column is text.</strong> Stats NZ publishes some cells as the letter <strong>C</strong> (confidential,\nsuppressed to protect individual businesses) instead of a number. Slurp stores the whole column as\ntext, so every query here converts it with a safe numeric cast; <strong>C cells become empty, are left out\nof charts, and are not counted as zero.</strong> That is why a few industries are missing for some\nvariables (for example operating profit), why a size-group chart can sum slightly lower than the\nindustry total, and why the margin heatmap has blank cells.</li>\n<li>Overall about 1.7% of cells (400 of 23,220) are suppressed. Operating profit and fixed tangible\nassets account for about 60% of them, and the 50+ employee bands are hit hardest (2-4% of their\ncells). Population counts (business units, employees) are never suppressed. See the table below.</li>\n<li><strong>Empty columns.</strong> The import has nine unnamed columns (<code>col_8</code> to <code>col_16</code>). <code>col_8</code> and <code>col_9</code>\nare entirely empty. <code>col_10</code> to <code>col_16</code> are almost empty: they hold a stray copy of 41 of the\nsuppressed cells plus two stray numbers, a spreadsheet leftover. They add no information and are ignored.</li>\n<li>Industry totals (size band \"All sizes\") and the all-industries grand total are published rows, not\nsums calculated here. Provisional figures for the latest year may be revised.</li>\n</ul>\n"
+    },
+    {
+      "id": "suppressed",
+      "block": {
+        "kind": "table",
+        "query": "suppressed",
+        "title": "Suppressed (C) cells by variable",
+        "limit": 10
+      },
+      "display": "Suppressed (C) cells by variable"
+    }
+  ]
+}

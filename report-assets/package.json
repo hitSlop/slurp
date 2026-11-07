@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "vega": "6.4.0",
+    "vega-lite": "6.5.0",
+    "vega-interpreter": "2.3.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.4"
+  }
+}

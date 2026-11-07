@@ -1,0 +1,20 @@
+---
+import {volumes,tools,money,count,asOf,assumptions,rangeFrom,roughly} from '../lib/pricing.mjs';
+const a=assumptions;
+---
+<div class="table-scroll" tabindex="0" role="region" aria-label="Estimated monthly analytics prices"><table class="compare"><caption class="fine">Monthly USD before tax, by events per month</caption><thead><tr><th scope="col">Product</th>{volumes.map(n=><th scope="col">{count(n)}</th>)}</tr></thead><tbody>{tools.map(t=><tr class={t.self?'self':''}><th scope="row"><a href={t.url} rel={t.self?undefined:'noopener'}>{t.name}</a></th>{volumes.map(n=>{const c=t.cost(n);const r=t.range&&n>=rangeFrom?t.range(n):null;return r?<td class="range" title={`Central estimate ${money(c)}`}>{money(roughly(r[0]))} to {money(roughly(r[1]))}</td>:<td class={c===null?'muted':''}>{c===null?t.unpublished:money(c)}</td>})}</tr>)}</tbody></table></div>
+<p class="fine">Prices read from each vendor's public pricing page on {asOf}; check them before deciding, they change. Mixpanel is yearly billing (monthly billing costs more). Amplitude does not publish paid event prices, and Mixpanel and OpenPanel direct high volumes to sales. OpenPanel can also be self-hosted for free.</p>
+<p class="fine"><strong>How the Slurp row is estimated.</strong> It is the Cloudflare bill for running your own Worker, not a Slurp fee: {a.eventsPerRequest} events per request, about {a.compressedBytesPerEvent} bytes per event stored, {a.retentionMonths} months of archives kept, and Cloudflare's list prices (Workers Free until about {(a.freeRequestsPerDay*a.freeHeadroom/1000).toFixed(0)}K requests a day, then Workers Paid at $5 a month plus usage). Storage is billed on its own at $0.015 per GB-month above 10 GB; set a retention limit to cap it. Sending bigger batches lowers the cost; sending single events raises it. It is an estimate, so compare it with your own Cloudflare bill.</p>
+<p class="fine"><strong>Why 1B and 10B are ranges.</strong> We load-tested one source at about 5,000 events a second (roughly 13 billion a month if it never let up), which is where the 10B row assumes peaks need 3 sources. Billed-side usage was measured at small scale and extrapolated; we have not run these volumes for a month. The low end assumes 200-byte events sent 100 to a request, the high end 1 KB events sent 5 to a request, 12 months kept either way. About two thirds of the bill is R2 storage, so event size and retention matter most. Hover a range for the central estimate.</p>
+<style>
+.compare{width:100%;border-collapse:collapse;font-size:14px}
+.compare caption{text-align:left;padding:14px 16px}
+.compare th,.compare td{padding:11px 16px;border-top:1px solid var(--rule);text-align:right;white-space:nowrap}
+.compare thead th{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);border-top:0}
+.compare tbody th{text-align:left;font-weight:550}
+.compare thead th:first-child{text-align:left}
+.compare td.muted{color:var(--muted);font-size:13px}
+.compare tr.self{background:var(--rail)}
+.compare tr.self td{font-weight:650}
+.compare td.range{font-weight:650;color:var(--red)}
+</style>

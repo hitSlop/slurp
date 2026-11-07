@@ -1,0 +1,13 @@
+---
+import Page from '../layouts/Page.astro';
+import Connections from '../components/Connections.astro';
+import Icon from '../components/Icon.astro';
+import {current,groups} from '../lib/connections';
+const sections=[{id:'today',label:'Works today'},{id:'roadmap',label:'Exploring'},{id:'jev',label:'Jev'}];
+---
+<Page title="Connections" description="Current Slurp SDK, HTTP, and agent workflows, plus ideas being explored for future connections." current="connections" sections={sections}>
+<header class="connections-intro"><p class="eyebrow">Connections</p><h1>Your app. Your tools.<br/><span class="hot">Your agent.</span></h1><p class="lede">Bring events home and work with them locally. Here’s what works today, and where we could take it next.</p></header>
+<section id="today" class="section"><span class="section-number">01 / WORKS TODAY</span><h2>Start with your app and your agent.</h2><p>Capture with the SDK or HTTP API. New events are sealed into archives about every 10 minutes; sync them with the CLI, then let your agent query the local data. Agent entries describe CLI workflows.</p><Connections items={current}/></section>
+<section id="roadmap" class="section"><span class="section-number">02 / EXPLORING</span><h2>More of your stack, together.</h2><p class="notice">These connections are ideas being explored. They are not available to connect, and have no announced release dates.</p>{groups.map(g=><section class="connection-group" id={g.id}><h3>{g.title}</h3><Connections items={g.items}/></section>)}</section>
+<section id="jev" class="section"><span class="section-number">03 / JEV · EXPLORING</span><h2>Something that notices.</h2><p>Jev is an idea for classifying incoming events and routing useful signals to an agent. This workflow is illustrative; processing and alert delivery are not available.</p><div class="steps"><div><Icon name="connections"/><h3>Events arrive</h3><p>From your app and future connections.</p></div><div><Icon name="agent"/><h3>Jev classifies</h3><p>Identify a possible signal and its confidence.</p></div><div><Icon name="webhook"/><h3>Alerts go out</h3><p>Hand the evidence to an agent or endpoint.</p></div></div><p class="fine">Illustrative signals: a spike in export failures, a new error pattern, stalled onboarding, or possible churn.</p><a class="btn" href="/docs/">Get started with what works today ↗</a></section>
+</Page>

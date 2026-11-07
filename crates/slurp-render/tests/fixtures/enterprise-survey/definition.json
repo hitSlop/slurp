@@ -1,0 +1,329 @@
+{
+  "kind": "report",
+  "slug": "enterprise-survey",
+  "id": "obj_01m680dhey2zktyp64fbtjw6js",
+  "project": "prj_01m6809rp23x0zvhwqs31jfx5h",
+  "title": "NZ enterprise survey",
+  "description": "Annual Enterprise Survey (financial years 2011-2025, provisional) by industry and firm size.",
+  "params": [
+    {
+      "name": "year",
+      "type": "integer",
+      "default": 2025,
+      "label": "Year"
+    },
+    {
+      "name": "variable",
+      "type": "string",
+      "default": "Total income",
+      "label": "Variable"
+    }
+  ],
+  "queries": {
+    "headline": {
+      "sql": "WITH g AS (\n  SELECT year, variable, try_cast(value AS DOUBLE) AS v\n  FROM enterprise_survey\n  WHERE rme_size_grp = 'j_Grand_Total'\n)\nSELECT\n  max(v) FILTER (WHERE variable = 'Total income' AND year = $year) AS total_income,\n  CASE WHEN max(v) FILTER (WHERE variable = 'Total income' AND year = $year - 1) IS NULL THEN 'n/a'\n       ELSE CAST(max(v) FILTER (WHERE variable = 'Total income' AND year = $year)\n         / max(v) FILTER (WHERE variable = 'Total income' AND year = $year - 1) - 1 AS VARCHAR)\n  END AS income_growth,\n  max(v) FILTER (WHERE variable = 'Operating profit before tax' AND year = $year)\n    / max(v) FILTER (WHERE variable = 'Total income' AND year = $year) AS profit_margin,\n  max(v) FILTER (WHERE variable = 'Rolling mean employees' AND year = $year) AS employees,\n  (SELECT count(*) FROM enterprise_survey WHERE value = 'C' AND year = $year) AS suppressed_cells\nFROM g\n"
+    },
+    "trend": {
+      "sql": "WITH t AS (\n  SELECT make_date(CAST(year AS INTEGER), 1, 1) AS period, variable, unit,\n         try_cast(value AS DOUBLE) AS value\n  FROM enterprise_survey\n  WHERE variable = $variable AND rme_size_grp = 'j_Grand_Total'\n)\nSELECT period, variable, unit, value,\n       avg(value) OVER (ORDER BY period ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS avg_3yr\nFROM t ORDER BY period\n"
+    },
+    "by_industry": {
+      "sql": "SELECT industry_name_anzsic AS industry, variable, unit,\n       try_cast(value AS DOUBLE) AS value\nFROM enterprise_survey\nWHERE variable = $variable AND year = $year\n  AND rme_size_grp = 'i_Industry_Total' AND industry_code_anzsic <> 'all'\n  AND try_cast(value AS DOUBLE) IS NOT NULL\nORDER BY value DESC\n"
+    },
+    "by_size": {
+      "sql": "SELECT split_part(rme_size_grp, '_', 2) AS size_group, any_value(unit) AS unit,\n       sum(try_cast(value AS DOUBLE)) AS total,\n       count(*) FILTER (WHERE value = 'C') AS suppressed_cells\nFROM enterprise_survey\nWHERE variable = $variable AND year = $year\n  AND industry_code_anzsic <> 'all'\n  AND rme_size_grp NOT IN ('i_Industry_Total', 'j_Grand_Total')\nGROUP BY rme_size_grp\nHAVING sum(try_cast(value AS DOUBLE)) > 0\nORDER BY rme_size_grp\n"
+    },
+    "margin_grid": {
+      "sql": "WITH p AS (\n  SELECT industry_name_anzsic AS industry,\n         CASE rme_size_grp WHEN 'i_Industry_Total' THEN 'All sizes'\n              ELSE split_part(rme_size_grp, '_', 2) END AS size_group,\n         max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Operating profit before tax') AS profit,\n         max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income') AS income\n  FROM enterprise_survey\n  WHERE year = $year AND industry_code_anzsic <> 'all' AND rme_size_grp <> 'j_Grand_Total'\n  GROUP BY 1, 2\n)\nSELECT industry, size_group, profit, income,\n       round(100.0 * profit / nullif(income, 0), 1) AS margin_pct\nFROM p\nWHERE profit IS NOT NULL\nORDER BY industry, size_group\n"
+    },
+    "industries": {
+      "sql": "SELECT industry_name_anzsic AS industry,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Activity unit') AS business_units,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Rolling mean employees') AS employees,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income') AS income_m,\n       max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Operating profit before tax') AS profit_m,\n       round(100.0 * max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Operating profit before tax')\n         / max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income'), 1) AS margin_pct,\n       round(100.0 * max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Salaries and wages paid')\n         / max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income'), 1) AS wages_pct_of_income,\n       round(1000.0 * max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Total income')\n         / nullif(max(try_cast(value AS DOUBLE)) FILTER (WHERE variable = 'Rolling mean employees'), 0), 0) AS income_per_employee_k\nFROM enterprise_survey\nWHERE year = $year AND rme_size_grp = 'i_Industry_Total' AND industry_code_anzsic <> 'all'\nGROUP BY industry_name_anzsic\nORDER BY income_m DESC\n"
+    },
+    "suppressed": {
+      "sql": "SELECT variable,\n       count(*) AS cells,\n       count(*) FILTER (WHERE value = 'C') AS suppressed_cells,\n       round(100.0 * count(*) FILTER (WHERE value = 'C') / count(*), 1) AS suppressed_pct\nFROM enterprise_survey\nGROUP BY variable\nORDER BY suppressed_cells DESC, variable\n"
+    }
+  },
+  "blocks": [
+    {
+      "kind": "markdown",
+      "text": "## NZ enterprise survey\n\nStatistics NZ's **Annual Enterprise Survey** reports income, costs, profit, assets, wages\nand employment for New Zealand businesses, split by **industry** (ANZSIC, 19 divisions)\nand by **firm size** (rolling mean employee count band, from 0 up to 200+).\nDollar figures are **NZ$ millions**; business and employee figures are counts.\n\nUse the **Year** and **Variable** parameters to change the charts. Variable must be one of:\nActivity unit, Fixed tangible assets, Operating profit before tax, Rolling mean employees,\nSalaries and wages paid, Sales, government funding, grants and subsidies, Total assets,\nTotal expenditure, Total income. The headline numbers always cover all industries for the chosen year.\n"
+    },
+    {
+      "kind": "metric",
+      "query": "headline",
+      "field": "total_income",
+      "label": "Total income, NZ$ millions",
+      "format": "number"
+    },
+    {
+      "kind": "metric",
+      "query": "headline",
+      "field": "income_growth",
+      "label": "Income growth vs previous year",
+      "format": "percent"
+    },
+    {
+      "kind": "metric",
+      "query": "headline",
+      "field": "profit_margin",
+      "label": "Operating profit margin",
+      "format": "percent"
+    },
+    {
+      "kind": "metric",
+      "query": "headline",
+      "field": "employees",
+      "label": "Employees (rolling mean)",
+      "format": "number"
+    },
+    {
+      "kind": "metric",
+      "query": "headline",
+      "field": "suppressed_cells",
+      "label": "Suppressed cells this year",
+      "format": "number"
+    },
+    {
+      "kind": "chart",
+      "query": "trend",
+      "title": "Selected variable, all industries, with 3-year average",
+      "spec": {
+        "encoding": {
+          "x": {
+            "field": "period",
+            "type": "temporal",
+            "axis": {
+              "format": "%Y",
+              "title": "Year"
+            }
+          }
+        },
+        "layer": [
+          {
+            "mark": {
+              "type": "area",
+              "opacity": 0.35,
+              "line": true
+            },
+            "encoding": {
+              "y": {
+                "field": "value",
+                "type": "quantitative",
+                "title": "Value"
+              },
+              "tooltip": [
+                {
+                  "field": "variable",
+                  "type": "nominal"
+                },
+                {
+                  "field": "period",
+                  "type": "temporal",
+                  "format": "%Y",
+                  "title": "Year"
+                },
+                {
+                  "field": "value",
+                  "type": "quantitative",
+                  "format": ","
+                },
+                {
+                  "field": "unit",
+                  "type": "nominal"
+                }
+              ]
+            }
+          },
+          {
+            "mark": {
+              "type": "line",
+              "strokeDash": [
+                6,
+                4
+              ]
+            },
+            "encoding": {
+              "y": {
+                "field": "avg_3yr",
+                "type": "quantitative"
+              },
+              "tooltip": [
+                {
+                  "field": "avg_3yr",
+                  "type": "quantitative",
+                  "format": ",.0f",
+                  "title": "3-year average"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "by_industry",
+      "title": "Selected variable by industry (year chosen above)",
+      "spec": {
+        "mark": "bar",
+        "encoding": {
+          "y": {
+            "field": "industry",
+            "type": "nominal",
+            "sort": "-x",
+            "title": null
+          },
+          "x": {
+            "field": "value",
+            "type": "quantitative",
+            "title": "Value"
+          },
+          "tooltip": [
+            {
+              "field": "industry",
+              "type": "nominal"
+            },
+            {
+              "field": "value",
+              "type": "quantitative",
+              "format": ","
+            },
+            {
+              "field": "unit",
+              "type": "nominal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "by_size",
+      "title": "Share of selected variable by firm size (employees)",
+      "spec": {
+        "mark": {
+          "type": "arc",
+          "innerRadius": 60
+        },
+        "encoding": {
+          "theta": {
+            "field": "total",
+            "type": "quantitative"
+          },
+          "color": {
+            "field": "size_group",
+            "type": "nominal",
+            "title": "Employees",
+            "sort": [
+              "0",
+              "1-5",
+              "6-9",
+              "10-19",
+              "20-49",
+              "50-99",
+              "100-199",
+              "200+"
+            ]
+          },
+          "tooltip": [
+            {
+              "field": "size_group",
+              "type": "nominal",
+              "title": "Employees"
+            },
+            {
+              "field": "total",
+              "type": "quantitative",
+              "format": ","
+            },
+            {
+              "field": "unit",
+              "type": "nominal"
+            },
+            {
+              "field": "suppressed_cells",
+              "type": "quantitative",
+              "title": "Suppressed cells"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "chart",
+      "query": "margin_grid",
+      "title": "Operating profit margin (%) by industry and firm size",
+      "spec": {
+        "mark": "rect",
+        "encoding": {
+          "x": {
+            "field": "size_group",
+            "type": "ordinal",
+            "title": "Employees",
+            "sort": [
+              "0",
+              "1-5",
+              "6-9",
+              "10-19",
+              "20-49",
+              "50-99",
+              "100-199",
+              "200+",
+              "All sizes"
+            ]
+          },
+          "y": {
+            "field": "industry",
+            "type": "nominal",
+            "title": null
+          },
+          "color": {
+            "field": "margin_pct",
+            "type": "quantitative",
+            "title": "Margin %"
+          },
+          "tooltip": [
+            {
+              "field": "industry",
+              "type": "nominal"
+            },
+            {
+              "field": "size_group",
+              "type": "nominal",
+              "title": "Employees"
+            },
+            {
+              "field": "margin_pct",
+              "type": "quantitative",
+              "title": "Margin %"
+            },
+            {
+              "field": "income",
+              "type": "quantitative",
+              "format": ",",
+              "title": "Income NZ$m"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "table",
+      "query": "industries",
+      "title": "Industries compared",
+      "limit": 25
+    },
+    {
+      "kind": "markdown",
+      "text": "### Data quality\n\n- **The `value` column is text.** Stats NZ publishes some cells as the letter **C** (confidential,\n  suppressed to protect individual businesses) instead of a number. Slurp stores the whole column as\n  text, so every query here converts it with a safe numeric cast; **C cells become empty, are left out\n  of charts, and are not counted as zero.** That is why a few industries are missing for some\n  variables (for example operating profit), why a size-group chart can sum slightly lower than the\n  industry total, and why the margin heatmap has blank cells.\n- Overall about 1.7% of cells (400 of 23,220) are suppressed. Operating profit and fixed tangible\n  assets account for about 60% of them, and the 50+ employee bands are hit hardest (2-4% of their\n  cells). Population counts (business units, employees) are never suppressed. See the table below.\n- **Empty columns.** The import has nine unnamed columns (`col_8` to `col_16`). `col_8` and `col_9`\n  are entirely empty. `col_10` to `col_16` are almost empty: they hold a stray copy of 41 of the\n  suppressed cells plus two stray numbers, a spreadsheet leftover. They add no information and are ignored.\n- Industry totals (size band \"All sizes\") and the all-industries grand total are published rows, not\n  sums calculated here. Provisional figures for the latest year may be revised.\n"
+    },
+    {
+      "kind": "table",
+      "query": "suppressed",
+      "title": "Suppressed (C) cells by variable",
+      "limit": 10
+    }
+  ],
+  "revision": 3,
+  "updated_at": "2026-10-31T03:36:33.042Z",
+  "updated_by": "sonnet-agent-test-2"
+}

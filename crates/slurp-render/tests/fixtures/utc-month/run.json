@@ -1,0 +1,285 @@
+{
+  "snapshot_id": 1,
+  "params": {},
+  "errors": {},
+  "queries": {
+    "q": {
+      "snapshot_id": 1,
+      "columns": [
+        {
+          "name": "day",
+          "type": "DATE"
+        },
+        {
+          "name": "naive",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "zoned",
+          "type": "TIMESTAMP WITH TIME ZONE"
+        },
+        {
+          "name": "n",
+          "type": "BIGINT"
+        }
+      ],
+      "rows": [
+        [
+          "2025-11-01",
+          "2025-11-01T00:00:00",
+          "2025-11-01T00:00:00+00:00",
+          "1"
+        ],
+        [
+          "2025-12-01",
+          "2025-12-01T00:00:00",
+          "2025-12-01T00:00:00+00:00",
+          "2"
+        ]
+      ],
+      "row_count": 2,
+      "elapsed_ms": 0,
+      "truncated": false
+    }
+  },
+  "title": "UTC monthly axes",
+  "blocks": [
+    {
+      "id": "q",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "day yearmonth",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "day",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              },
+              "timeUnit": "yearmonth"
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "day yearmonth"
+    },
+    {
+      "id": "q-chart",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "day {'unit': 'yearmonth'}",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "day",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              },
+              "timeUnit": {
+                "unit": "yearmonth"
+              }
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "day {'unit': 'yearmonth'}"
+    },
+    {
+      "id": "q-chart-2",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "day None",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "day",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              }
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "day None"
+    },
+    {
+      "id": "q-chart-3",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "naive yearmonth",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "naive",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              },
+              "timeUnit": "yearmonth"
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "naive yearmonth"
+    },
+    {
+      "id": "q-chart-4",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "naive {'unit': 'yearmonth'}",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "naive",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              },
+              "timeUnit": {
+                "unit": "yearmonth"
+              }
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "naive {'unit': 'yearmonth'}"
+    },
+    {
+      "id": "q-chart-5",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "naive None",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "naive",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              }
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "naive None"
+    },
+    {
+      "id": "q-chart-6",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "zoned yearmonth",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "zoned",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              },
+              "timeUnit": "yearmonth"
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "zoned yearmonth"
+    },
+    {
+      "id": "q-chart-7",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "zoned {'unit': 'yearmonth'}",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "zoned",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              },
+              "timeUnit": {
+                "unit": "yearmonth"
+              }
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "zoned {'unit': 'yearmonth'}"
+    },
+    {
+      "id": "q-chart-8",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "zoned None",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "x": {
+              "field": "zoned",
+              "type": "temporal",
+              "axis": {
+                "format": "%b %Y"
+              }
+            },
+            "y": {
+              "field": "n",
+              "type": "quantitative"
+            }
+          }
+        }
+      },
+      "display": "zoned None"
+    }
+  ]
+}

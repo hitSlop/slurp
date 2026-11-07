@@ -1,0 +1,35 @@
+{
+ "description": "A batch is validated as a whole; one bad line rejects everything and names the line.",
+ "cases": [
+  {
+   "name": "second line invalid",
+   "body": "{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}\n{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud800\"}}",
+   "ok": false,
+   "line": 2
+  },
+  {
+   "name": "valid batch with trailing newline",
+   "body": "{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}\n{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}\n",
+   "ok": true,
+   "lines": 2
+  },
+  {
+   "name": "valid batch with CRLF",
+   "body": "{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}\r\n{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}\r\n",
+   "ok": true,
+   "lines": 2
+  },
+  {
+   "name": "blank line in the middle is rejected",
+   "body": "{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}\n\n{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}",
+   "ok": false,
+   "line": 2
+  },
+  {
+   "name": "empty body is a no-op ack (Go: TrimRight then len==0)",
+   "body": "\n",
+   "ok": true,
+   "lines": 0
+  }
+ ]
+}

@@ -1,0 +1,70 @@
+---
+import Code from './Code.astro';
+import {deployButtonUrl} from '../lib/config.mjs';
+const {label='Deploy to Cloudflare',id='deploy'}=Astro.props;
+const oneClick=deployButtonUrl();
+const init=`cargo build -p slurp-cli
+export PATH="$PWD/target/debug:$PATH"
+slurp cloud init`;
+const manual=`cd backend
+npm install
+npx wrangler login
+npx wrangler r2 bucket create slurp-archive
+npx wrangler deploy
+openssl rand -base64 32 > admin-token.txt
+npx wrangler secret put ADMIN_TOKEN < admin-token.txt
+slurp connect https://slurp.YOUR-SUBDOMAIN.workers.dev \\
+  --token-stdin < admin-token.txt`;
+const connect=`slurp connect https://slurp.YOUR-SUBDOMAIN.workers.dev \\
+  --token-stdin < admin-token.txt
+slurp setup
+slurp init --name "My app"`;
+---
+<button type="button" class="btn btn-cloudflare" data-deploy-open={id}>{label} ↗</button>
+<dialog class="deploy" id={`dialog-${id}`} aria-labelledby={`title-${id}`}>
+<form method="dialog" class="close"><button aria-label="Close">×</button></form>
+<p class="eyebrow">Self-host</p>
+<h2 id={`title-${id}`}>Run Slurp in your own Cloudflare account.</h2>
+<p class="fine">Your Worker, Durable Objects and R2 bucket live in your account. Slurp does not host your events. The Free plan is enough to start.</p>
+<div class="tabs" role="tablist">
+<button role="tab" aria-selected={oneClick?'true':'false'} data-tab="one" disabled={!oneClick}>One click</button>
+<button role="tab" aria-selected={oneClick?'false':'true'} data-tab="cli">From your terminal</button>
+</div>
+<div class="panel" data-panel="one" hidden={!oneClick}>
+{oneClick
+ ? <><ol><li>Open Cloudflare's deploy page. It copies this project's <code>backend</code> into your account and creates the R2 bucket and Durable Objects for you.</li><li>When it asks for <code>ADMIN_TOKEN</code>, paste a long random value, for example from <code>openssl rand -base64 32</code>. Keep it, for example in a file called <code>admin-token.txt</code>: it controls your deployment.</li><li>When it finishes, open your new Worker's address (Cloudflare shows it, and it looks like <code>https://slurp.YOUR-SUBDOMAIN.workers.dev</code>). The page there shows the exact command to connect the CLI:</li></ol><Code label="Terminal" code={connect}/><a class="btn btn-cloudflare" href={oneClick} rel="noopener">Open Cloudflare deploy page ↗</a></>
+ : <p>One-click deploy turns on when this project is published on GitHub. Use the terminal steps for now.</p>}
+</div>
+<div class="panel" data-panel="cli" hidden={!!oneClick}>
+<p>One command logs in to Cloudflare, creates the R2 bucket, deploys the Worker, sets a generated admin token and connects this computer. You need Node 20+ (slurp fetches wrangler itself) and a Cloudflare account.</p>
+<Code label="Deploy and connect · from a checkout of this repository" code={init}/>
+<p class="fine">Then run <code>slurp setup</code> and <code>slurp init --name "My app"</code>. Later: <code>slurp cloud status</code>, <code>slurp cloud upgrade</code>, <code>slurp cloud destroy</code>.</p>
+<details><summary>Prefer to run wrangler yourself?</summary><Code label="Manual steps" code={manual}/><p class="fine">Replace <code>YOUR-SUBDOMAIN</code> with the URL <code>wrangler deploy</code> prints. Delete <code>admin-token.txt</code> once it is saved in your password manager.</p></details>
+</div>
+</dialog>
+<script>
+const open=(id:string)=>{const d=document.getElementById('dialog-'+id);if(d instanceof HTMLDialogElement&&!d.open)d.showModal()};
+for(const b of document.querySelectorAll<HTMLButtonElement>('[data-deploy-open]'))b.addEventListener('click',()=>open(b.dataset.deployOpen!));
+for(const d of document.querySelectorAll<HTMLDialogElement>('dialog.deploy')){
+ d.addEventListener('click',e=>{if(e.target===d)d.close()});
+ const tabs=[...d.querySelectorAll<HTMLButtonElement>('[role=tab]')];
+ for(const t of tabs)t.addEventListener('click',()=>{if(t.disabled)return;for(const o of tabs)o.setAttribute('aria-selected',String(o===t));for(const p of d.querySelectorAll<HTMLElement>('[data-panel]'))p.hidden=p.dataset.panel!==t.dataset.tab});
+}
+if(location.hash==='#deploy')open('deploy');
+</script>
+<style>
+.btn-cloudflare{--cf-orange:#f6821f;--cf-orange-hover:#e5740f;background:var(--cf-orange);border-color:var(--cf-orange);color:#17191c;font-weight:650}
+.btn-cloudflare:hover{background:var(--cf-orange-hover);border-color:var(--cf-orange-hover)}
+dialog.deploy{max-width:680px;width:calc(100% - 32px);border:1px solid var(--rule);border-radius:10px;padding:28px clamp(18px,4vw,36px);color:var(--ink);background:var(--surface);box-shadow:0 24px 80px #17191c33}
+dialog.deploy::backdrop{background:#17191c66}
+dialog.deploy h2{margin-top:0}
+dialog.deploy .close{position:absolute;top:10px;right:12px;margin:0}
+dialog.deploy .close button{border:0;background:none;font-size:26px;line-height:1;cursor:pointer;color:var(--muted);padding:4px 10px}
+.tabs{display:flex;gap:8px;margin:18px 0 12px}
+.tabs button{border:1px solid var(--rule);background:var(--surface);border-radius:7px;padding:8px 14px;font:550 13px var(--body);cursor:pointer;color:var(--ink)}
+.tabs button[aria-selected=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.tabs button:disabled{opacity:.45;cursor:not-allowed}
+.panel[hidden]{display:none}
+.panel ol{padding-left:20px}
+details{margin:12px 0}summary{cursor:pointer;font:600 13px var(--body)}
+</style>

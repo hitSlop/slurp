@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "reviewed_at": "2026-11-05",
+  "records": [
+    {
+      "id": "gameanalytics-mobile-2026",
+      "source": "https://www.gameanalytics.com/reports/2026-mobile-pc-gaming-benchmarks",
+      "published": "2026-08-24",
+      "observation_period": "2025",
+      "population": "16000+ mobile games using GameAnalytics; minimum 1000 MAU; all genres, iOS/Android",
+      "unit": "player",
+      "metric": "exact-day return retention",
+      "comparison": "directional",
+      "points": [
+        {
+          "day": 1,
+          "percentile": 50,
+          "approximate_pct": 22
+        },
+        {
+          "day": 7,
+          "percentile": 50,
+          "approximate_pct": 4,
+          "note": "source says just under 4%"
+        },
+        {
+          "day": 30,
+          "percentile": 50,
+          "range_pct": [
+            0.68,
+            0.79
+          ]
+        }
+      ],
+      "limitations": [
+        "Calendar/timezone semantics need confirmation before exact comparison.",
+        "Genre-specific figures unavailable in this report."
+      ]
+    },
+    {
+      "id": "revenuecat-subscriptions-2026",
+      "source": "https://www.revenuecat.com/state-of-subscription-apps",
+      "published": "2026",
+      "observation_period": "primarily 2025; older cohorts for long-term renewals",
+      "population": "RevenueCat apps with active subscription revenue and minimum installs/revenue thresholds",
+      "unit": "subscription",
+      "metric": "year-one paid subscription retention",
+      "comparison": "directional",
+      "points": [
+        {
+          "plan": "annual",
+          "percentile": 50,
+          "pct": 28
+        },
+        {
+          "plan": "monthly",
+          "percentile": 50,
+          "pct": 8
+        }
+      ],
+      "limitations": [
+        "Not user activity retention.",
+        "Match category, plan, platform and exact renewal definition."
+      ]
+    },
+    {
+      "id": "saas-capital-bootstrap-2026",
+      "source": "https://www.saas-capital.com/blog-posts/benchmarking-metrics-for-bootstrapped-saas-companies/",
+      "published": "2026-04-24",
+      "observation_period": "2026 survey; confirm underlying reporting window",
+      "population": "bootstrapped B2B SaaS with $3M-$20M ARR; broader survey 1000+ private SaaS companies",
+      "unit": "recurring revenue",
+      "metric": "revenue retention",
+      "comparison": "directional",
+      "points": [
+        {
+          "metric": "NRR",
+          "percentile": 50,
+          "pct": 103
+        },
+        {
+          "metric": "GRR",
+          "percentile": 50,
+          "pct": 91
+        }
+      ],
+      "limitations": [
+        "Not a launch-stage indie or user-retention benchmark.",
+        "Confirm annualization and reporting definitions."
+      ]
+    }
+  ]
+}

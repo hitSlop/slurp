@@ -1,0 +1,633 @@
+//! File-authored reports with embedded SQL and static chart rendering.
+use crate::Workspace;
+use anyhow::{Context, Result, bail};
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, fs, path::Path};
+/// A parsed file; queries and presentation remain ordinary authored source.
+#[derive(Debug)]
+pub struct Document {
+    pub queries: BTreeMap<String, String>,
+    pub blocks: Vec<(String, String)>,
+    pub params: BTreeMap<String, Value>,
+    /// Palette id from the front matter (`theme:`).
+    pub theme: Option<String>,
+    /// Style name from the front matter (`style:`).
+    pub style: Option<String>,
+    /// One short line about why the report exists (`purpose:`), shown in the top bar.
+    pub purpose: Option<String>,
+    /// Date shown in the top bar (`date:`); defaults to the day the report is built.
+    pub date: Option<String>,
+    /// DuckDB community extensions the queries use (`extensions:`), for example `behavioral`.
+    pub extensions: Vec<String>,
+}
+
+/// How a report should look; command-line choices win over the report's own front matter.
+#[derive(Debug, Clone, Default)]
+pub struct Look {
+    /// Shorthand for `--theme pro-dark`.
+    pub dark: bool,
+    pub theme: Option<String>,
+    pub style: Option<String>,
+    /// A stylesheet appended after the style's own CSS.
+    pub css: Option<std::path::PathBuf>,
+}
+/// The template and theme a report will use. Command-line values are relative to the current folder; the report's own
+/// `style:` and `theme:` are relative to the report file. The command line wins.
+pub fn resolve_look(
+    doc: &Document,
+    look: &Look,
+    file: &Path,
+) -> Result<(crate::report_style::Style, slurp_render::Theme)> {
+    let here = Path::new(".");
+    let report_dir = file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(here);
+    let style = match (&look.style, &doc.style) {
+        (Some(spec), _) => crate::report_style::Style::resolve(spec, here)?,
+        (None, Some(spec)) => crate::report_style::Style::resolve(spec, report_dir)?,
+        (None, None) => crate::report_style::Style::builtin(),
+    };
+    let theme = if look.dark {
+        slurp_render::Theme::dark()
+    } else {
+        match (&look.theme, &doc.theme) {
+            (Some(spec), _) => crate::report_style::resolve_theme(spec, here)?,
+            (None, Some(spec)) => crate::report_style::resolve_theme(spec, report_dir)?,
+            (None, None) => crate::report_style::resolve_theme(&style.default_theme, here)?,
+        }
+    };
+    Ok((style, theme))
+}
+
+/// Parse named SQL and chart/metric/table fences, preserving prose.
+pub fn parse(text: &str) -> Result<Document> {
+    let (front, text) = if let Some(rest) = text.strip_prefix("---\n") {
+        let (front, body) = rest
+            .split_once("\n---\n")
+            .context("unterminated front matter")?;
+        (serde_norway::from_str::<Value>(front)?, body)
+    } else {
+        (json!({}), text)
+    };
+    let theme = front["theme"].as_str().map(str::to_owned);
+    let style = front["style"].as_str().map(str::to_owned);
+    let purpose = front["purpose"].as_str().map(str::to_owned);
+    let date = front["date"].as_str().map(str::to_owned);
+    let extensions: Vec<String> = match &front["extensions"] {
+        Value::Null => vec![],
+        Value::Array(items) => items
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .context("extensions must be a list of names")
+            })
+            .collect::<Result<_>>()?,
+        _ => bail!("extensions must be a list of names"),
+    };
+    crate::setup::check_extension_names(&extensions)?;
+    let mut params = BTreeMap::new();
+    if let Some(values) = front["params"].as_object() {
+        for (name, def) in values {
+            if let Some(v) = def.get("default") {
+                params.insert(name.clone(), v.clone());
+            }
+        }
+    }
+    let mut queries = BTreeMap::new();
+    let mut blocks = vec![];
+    let mut cursor = 0;
+    let mut fence = None;
+    for (event, range) in Parser::new(text).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                let kind = info.to_string();
+                if kind.starts_with("sql ") || matches!(kind.as_str(), "chart" | "metric" | "table")
+                {
+                    if range.start > cursor {
+                        blocks.push(("markdown".into(), text[cursor..range.start].into()));
+                    }
+                    fence = Some((kind, range.start, String::new()));
+                }
+            }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                anyhow::ensure!(
+                    dest_url.starts_with("data:"),
+                    "reports require embedded data images; remote images are unsupported"
+                );
+            }
+            Event::Text(s) => {
+                if let Some((_, _, body)) = &mut fence {
+                    body.push_str(&s);
+                }
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some((kind, _, body)) = fence.take() {
+                    if let Some(name) = kind.strip_prefix("sql ") {
+                        if queries.insert(name.trim().into(), body).is_some() {
+                            bail!("duplicate named query")
+                        }
+                    } else {
+                        blocks.push((kind, body));
+                    }
+                    cursor = range.end;
+                }
+            }
+            _ => {}
+        }
+    }
+    if cursor < text.len() {
+        blocks.push(("markdown".into(), text[cursor..].into()));
+    }
+    for (kind, body) in &blocks {
+        if kind != "markdown" {
+            let v: Value = serde_norway::from_str(body)?;
+            let name = v["query"].as_str().context("block requires query: NAME")?;
+            anyhow::ensure!(queries.contains_key(name), "unknown query {name}");
+            if let Some(width) = v.get("width") {
+                anyhow::ensure!(
+                    matches!(width.as_str(), Some("full" | "half" | "third")),
+                    "width must be full, half or third"
+                );
+            }
+        }
+    }
+    Ok(Document {
+        queries,
+        blocks,
+        params,
+        theme,
+        style,
+        purpose,
+        date,
+        extensions,
+    })
+}
+fn escape(v: &str) -> String {
+    v.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+/// Render one read-only snapshot to self-contained HTML and optional PNG/PDF.
+pub fn build(
+    w: &Workspace,
+    file: &Path,
+    out: &Path,
+    dark: bool,
+    png: bool,
+    pdf: bool,
+) -> Result<Value> {
+    let look = Look {
+        dark,
+        ..Look::default()
+    };
+    build_with_params(w, file, out, &look, png, pdf, &BTreeMap::new())
+}
+/// Build with explicit scalar parameter overrides.
+pub fn build_with_params(
+    w: &Workspace,
+    file: &Path,
+    out: &Path,
+    look: &Look,
+    png: bool,
+    pdf: bool,
+    overrides: &BTreeMap<String, Value>,
+) -> Result<Value> {
+    let text = fs::read_to_string(file)?;
+    let mut doc = parse(&text)?;
+    let (style, theme) = resolve_look(&doc, look, file)?;
+    let w = &w.with_extensions(&doc.extensions)?;
+    let palette = theme.palette();
+    let extra_css = match &look.css {
+        Some(path) => {
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
+        }
+        None => String::new(),
+    };
+    for (name, value) in overrides {
+        anyhow::ensure!(doc.params.contains_key(name), "unknown parameter {name}");
+        doc.params.insert(name.clone(), value.clone());
+    }
+    // A single subprocess/transaction keeps all named queries on one snapshot.
+    let mut sql = String::from("BEGIN TRANSACTION READ ONLY;\n");
+    for (name, value) in &doc.params {
+        anyhow::ensure!(
+            name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "invalid parameter name"
+        );
+        let value = match value {
+            Value::String(s) => crate::literal(s),
+            Value::Null => "NULL".into(),
+            Value::Bool(_) | Value::Number(_) => value.to_string(),
+            _ => bail!("parameters must be scalar"),
+        };
+        sql.push_str(&format!("SET VARIABLE {name} = {value};\n"));
+    }
+    for (i, query) in doc.queries.values().enumerate() {
+        let query = bind_variables(query, &doc.params)?;
+        sql.push_str(&format!(
+            "CREATE TEMP TABLE report_{i} AS SELECT * FROM ({query}) LIMIT 1001;\n"
+        ));
+    }
+    sql.push_str("SELECT ");
+    if doc.queries.is_empty() {
+        sql.push_str("'{}' AS results");
+    } else {
+        sql.push_str("json_object(");
+        for (i, name) in doc.queries.keys().enumerate() {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push_str(&format!(
+                "{},(SELECT coalesce(json_group_array(t),'[]'::JSON) FROM report_{i} t)",
+                crate::literal(name)
+            ));
+        }
+        sql.push_str(")::VARCHAR AS results");
+    }
+    sql.push_str(", (SELECT coalesce(json_group_array(d),'[]'::JSON) FROM (SELECT * FROM _slurp.deliveries ORDER BY sequence DESC LIMIT 1) d) AS inputs; COMMIT;");
+    let result = w.execute(&sql, true)?;
+    let results = if result[0]["results"].is_string() {
+        serde_json::from_str(result[0]["results"].as_str().context("results")?)?
+    } else {
+        result[0]["results"].clone()
+    };
+    // serde_json maps are sorted by key; the query's own column order is what a reader expects in a table.
+    let orders = result[0]["results"]
+        .as_str()
+        .map(column_orders)
+        .unwrap_or_default();
+    let mut body = String::new();
+    let mut renderer = slurp_render::ChartRenderer::new();
+    let purpose = doc
+        .purpose
+        .clone()
+        .or_else(|| first_heading(&doc.blocks))
+        .unwrap_or_default();
+    let date = doc
+        .date
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().format("%b %-d, %Y").to_string());
+    let icon = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .encode(include_bytes!("../assets/report-icon.png"))
+    };
+    body.push_str(&format!(
+        "<div class=\"bar\"><span class=\"brand\"><img src=\"data:image/png;base64,{icon}\" width=\"20\" height=\"20\" alt=\"\"/><b>slurp</b></span><span class=\"purpose\">{}</span><span class=\"date\">{}</span></div>",
+        escape(&purpose),
+        escape(&date)
+    ));
+    let mut section_no = 0;
+    // Consecutive half / third width blocks share a row; Takumi lays out plain flex rows reliably.
+    let mut row: Vec<String> = vec![];
+    let mut row_width = String::new();
+    fn flush(body: &mut String, row: &mut Vec<String>) {
+        if !row.is_empty() {
+            body.push_str("<div class=\"row\">");
+            body.push_str(&row.join(""));
+            body.push_str("</div>");
+            row.clear();
+        }
+    }
+    for (kind, body_text) in doc.blocks {
+        if kind == "markdown" {
+            let html =
+                slurp_document::render(&body_text, &doc.params.clone().into_iter().collect());
+            let html = html.as_str();
+            if html.trim().is_empty() {
+                // Whitespace between code fences: not content, and it must not break up a row.
+                continue;
+            }
+            flush(&mut body, &mut row);
+            body.push_str("<div class=\"text\">");
+            body.push_str(html);
+            body.push_str("</div>");
+            continue;
+        }
+        let spec: Value = serde_norway::from_str(&body_text)?;
+        let rows = if let Some(name) = spec["query"].as_str() {
+            results.get(name).context("unknown query")?
+        } else {
+            bail!("report block requires query: NAME")
+        };
+        let rows = rows.as_array().context("query rows")?;
+        if rows.len() > 1000 {
+            bail!("report query exceeds 1000 rows; aggregate in SQL")
+        }
+        section_no += 1;
+        let outer = std::mem::take(&mut body);
+        let width = spec["width"].as_str().unwrap_or("full");
+        body.push_str(&format!(
+            "<section class=\"{kind}{}\"><header>",
+            if width == "full" {
+                String::new()
+            } else {
+                format!(" {width}")
+            }
+        ));
+        if let Some(title) = spec["title"].as_str() {
+            body.push_str(&format!(
+                "<h2><span class=\"n\">§{section_no}</span>{}</h2>",
+                escape(title)
+            ));
+        }
+        body.push_str(&format!(
+            "<span class=\"q\">{}</span></header><div class=\"body\">",
+            escape(spec["query"].as_str().unwrap_or_default())
+        ));
+        match kind.as_str() {
+            "metric" => {
+                if rows.len() != 1 {
+                    bail!("metric requires exactly one row")
+                };
+                let field = spec["field"].as_str().context("metric field")?;
+                let value = rows[0].get(field).context("unknown metric field")?;
+                body.push_str(&format!(
+                    "<p class=\"label\">{}</p><strong class=\"value\">{}</strong>",
+                    escape(spec["label"].as_str().unwrap_or(field)),
+                    escape(&display(value))
+                ));
+            }
+            "table" => {
+                body.push_str("<table>");
+                let columns: Vec<String> = spec["query"]
+                    .as_str()
+                    .and_then(|query| orders.get(query))
+                    .cloned()
+                    .or_else(|| {
+                        rows.first()
+                            .and_then(Value::as_object)
+                            .map(|row| row.keys().cloned().collect())
+                    })
+                    .unwrap_or_default();
+                let numeric: Vec<bool> = columns
+                    .iter()
+                    .map(|name| rows.first().is_some_and(|row| row[name].is_number()))
+                    .collect();
+                if !columns.is_empty() {
+                    body.push_str("<tr>");
+                    for (name, numeric) in columns.iter().zip(&numeric) {
+                        body.push_str(&format!(
+                            "<th{}>{}</th>",
+                            if *numeric { " class=\"num\"" } else { "" },
+                            escape(name)
+                        ));
+                    }
+                    body.push_str("</tr>");
+                }
+                if rows.is_empty() {
+                    body.push_str("<tr><td>No rows match this query.</td></tr>");
+                }
+                for row in rows
+                    .iter()
+                    .take(spec["limit"].as_u64().unwrap_or(100) as usize)
+                {
+                    body.push_str("<tr>");
+                    let row = row.as_object().context("row")?;
+                    for (name, numeric) in columns.iter().zip(&numeric) {
+                        body.push_str(&format!(
+                            "<td{}>{}</td>",
+                            if *numeric { " class=\"num\"" } else { "" },
+                            escape(&display(row.get(name).unwrap_or(&Value::Null)))
+                        ));
+                    }
+                    body.push_str("</tr>");
+                }
+                body.push_str("</table>");
+            }
+            "chart" => {
+                let names: Vec<_> = rows
+                    .first()
+                    .and_then(Value::as_object)
+                    .map(|o| o.keys().cloned().collect())
+                    .unwrap_or_default();
+                let data: Vec<Vec<Value>> = rows
+                    .iter()
+                    .map(|r| {
+                        names
+                            .iter()
+                            .map(|n| match &r[n] {
+                                Value::Number(v) => Value::String(v.to_string()),
+                                v => v.clone(),
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let query = json!({"columns":names.iter().map(|n|json!({"name":n,"type":if rows.iter().any(|r|r[n].is_number()){"DECIMAL"}else{"VARCHAR"}})).collect::<Vec<_>>(),"rows":data,"row_count":rows.len(),"truncated":false,"elapsed_ms":0});
+                let chart = renderer.compile(
+                    &spec["spec"],
+                    &query,
+                    slurp_render::CompileOptions {
+                        theme: theme.clone(),
+                        font: style.font.to_owned(),
+                        width: style.chart_width(width),
+                        ..Default::default()
+                    },
+                )?;
+                body.push_str(&chart.svg);
+            }
+            _ => bail!("unsupported block"),
+        }
+        body.push_str("</div></section>");
+        let section = std::mem::replace(&mut body, outer);
+        let capacity = match width {
+            "half" => 2,
+            "third" => 3,
+            _ => 1,
+        };
+        if capacity == 1 || (!row.is_empty() && row_width != width) {
+            flush(&mut body, &mut row);
+        }
+        if capacity == 1 {
+            body.push_str(&section);
+        } else {
+            row_width = width.to_owned();
+            row.push(section);
+            if row.len() == capacity {
+                flush(&mut body, &mut row);
+            }
+        }
+    }
+    flush(&mut body, &mut row);
+    let font = if style.font == slurp_render::MONO {
+        &include_bytes!("../../slurp-render/assets/GeistMonoVariable.ttf")[..]
+    } else {
+        &include_bytes!("../../slurp-render/assets/GeistVariable.ttf")[..]
+    };
+    let css = format!(
+        "{}{}",
+        style.css(palette, &{
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(font)
+        }),
+        extra_css.replace("</", "<\\/")
+    );
+    use std::io::Write;
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'\"><style>{css}</style></head><body><main>{body}</main></body></html>"
+    );
+    fs::create_dir_all(out.parent().unwrap_or(Path::new(".")))?;
+    let temp = tempfile::tempdir_in(out.parent().unwrap_or(Path::new(".")))?;
+    fs::write(temp.path().join("report.html"), &html)?;
+    if png || pdf {
+        let page = renderer.render_page(&html, png, pdf)?;
+        if let Some(bytes) = page.png {
+            fs::write(temp.path().join("report.png"), bytes)?
+        }
+        if let Some(bytes) = page.pdf {
+            fs::write(temp.path().join("report.pdf"), bytes)?
+        }
+    }
+    let manifest = json!({"version":1,"source":w.source,"generated_at":chrono::Utc::now(),"inputs":result[0]["inputs"]});
+    fs::File::create(temp.path().join("manifest.json"))?
+        .write_all(serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    if out.exists() {
+        bail!("output directory exists; choose a fresh --out directory")
+    }
+    fs::rename(temp.keep(), out)?;
+    Ok(manifest)
+}
+
+fn bind_variables(sql: &str, params: &BTreeMap<String, Value>) -> Result<String> {
+    let mut out = String::new();
+    let mut chars = sql.chars().peekable();
+    let mut quote = None;
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            out.push(c);
+            if c == q {
+                if chars.peek() == Some(&q) {
+                    out.push(chars.next().context("escaped quote")?);
+                } else {
+                    quote = None;
+                }
+            }
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            out.push(c);
+            continue;
+        }
+        if c == '$' {
+            let mut name = String::new();
+            while chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+            {
+                name.push(chars.next().context("parameter")?);
+            }
+            anyhow::ensure!(params.contains_key(&name), "missing parameter {name}");
+            out.push_str(&format!("getvariable('{}')", name));
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+fn display(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => "—".into(),
+        _ => v.to_string(),
+    }
+}
+
+/// Column names of each named query's first row, in the order the query returned them.
+fn column_orders(results: &str) -> BTreeMap<String, Vec<String>> {
+    use serde::{
+        Deserialize, Deserializer,
+        de::{IgnoredAny, MapAccess, SeqAccess, Visitor},
+    };
+    struct Keys(Vec<String>);
+    impl<'de> Deserialize<'de> for Keys {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Keys;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a row object")
+                }
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Keys, A::Error> {
+                    let mut keys = Vec::new();
+                    while let Some((key, _)) = map.next_entry::<String, IgnoredAny>()? {
+                        keys.push(key);
+                    }
+                    Ok(Keys(keys))
+                }
+            }
+            deserializer.deserialize_map(V)
+        }
+    }
+    struct FirstRow(Vec<String>);
+    impl<'de> Deserialize<'de> for FirstRow {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = FirstRow;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("an array of rows")
+                }
+                fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<FirstRow, A::Error> {
+                    let first = seq.next_element::<Keys>()?.map(|keys| keys.0);
+                    while seq.next_element::<IgnoredAny>()?.is_some() {}
+                    Ok(FirstRow(first.unwrap_or_default()))
+                }
+            }
+            deserializer.deserialize_seq(V)
+        }
+    }
+    serde_json::from_str::<BTreeMap<String, FirstRow>>(results)
+        .map(|queries| {
+            queries
+                .into_iter()
+                .map(|(name, row)| (name, row.0))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The first `# Heading` in the report's prose, used as the purpose when none is given.
+fn first_heading(blocks: &[(String, String)]) -> Option<String> {
+    blocks
+        .iter()
+        .filter(|(kind, _)| kind == "markdown")
+        .flat_map(|(_, text)| text.lines())
+        .find_map(|line| line.strip_prefix("# ").map(|t| t.trim().to_owned()))
+}
+
+#[cfg(test)]
+mod column_order_tests {
+    use super::column_orders;
+
+    #[test]
+    fn table_columns_follow_the_query_not_the_alphabet() {
+        let orders = column_orders(
+            r#"{"q":[{"zeta":1,"alpha":2,"mid":3},{"zeta":4,"alpha":5,"mid":6}],"empty":[]}"#,
+        );
+        assert_eq!(orders["q"], ["zeta", "alpha", "mid"]);
+        assert!(orders["empty"].is_empty());
+        assert!(column_orders("not json").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::parse;
+
+    #[test]
+    fn a_report_may_name_only_allowed_extensions() {
+        let ok = parse("---\nextensions: [behavioral]\n---\n# R\n").unwrap();
+        assert_eq!(ok.extensions, ["behavioral"]);
+        assert!(parse("# R\n").unwrap().extensions.is_empty());
+        let refused = parse("---\nextensions: [httpfs]\n---\n# R\n").unwrap_err();
+        assert!(refused.to_string().contains("unsupported DuckDB extension"));
+        assert!(parse("---\nextensions: behavioral\n---\n# R\n").is_err());
+        assert!(parse("---\nextensions: [1]\n---\n# R\n").is_err());
+    }
+}

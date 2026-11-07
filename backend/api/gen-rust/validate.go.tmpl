@@ -1,0 +1,115 @@
+{{/* Validation runs before emitting any Rust. Paths identify the offending schema construct. */}}
+{{- define "reject" -}}
+{{- stderrPrintf "gen-rust: unsupported %s at %s\n" .What .Where -}}{{- exit 1 -}}
+{{- end -}}
+
+{{- define "validate-ident" -}}
+{{- if or (not (regexMatch "^[A-Za-z][A-Za-z0-9_]*$" .Name)) (in .Name "self" "Self" "super" "crate") -}}
+  {{- template "reject" dict "What" (printf "Rust identifier %q" .Name) "Where" .Where -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "validate-type" -}}
+{{- $type := toString .Type -}}
+{{- if isMapType .Type -}}
+  {{- if ne (mapKeyType .Type) "string" -}}
+    {{- template "reject" dict "What" "map with non-string keys" "Where" .Where -}}
+  {{- end -}}
+  {{- template "validate-type" dict "Type" (mapValueType .Type) "Where" .Where "Types" .Types "Path" .Path -}}
+{{- else if isListType .Type -}}
+  {{- template "validate-type" dict "Type" (listElemType .Type) "Where" .Where "Types" .Types "Path" .Path -}}
+{{- else if isCoreType .Type -}}
+  {{- if not (in $type "bool" "string" "int8" "int16" "int32" "int64" "uint8" "uint16" "uint32" "uint64" "float32" "float64" "timestamp" "any") -}}
+    {{- template "reject" dict "What" (printf "core type %s" $type) "Where" .Where -}}
+  {{- end -}}
+{{- else -}}
+  {{- if has $type .Path -}}
+    {{- template "reject" dict "What" (printf "recursive type %s" $type) "Where" .Where -}}
+  {{- end -}}
+  {{- $found := false -}}
+  {{- range $t := .Types -}}
+    {{- if eq $t.Name $type -}}
+      {{- $found = true -}}
+      {{- if isEnumType $t -}}
+        {{- template "reject" dict "What" "enum" "Where" $t.Name -}}
+      {{- else if isAliasType $t -}}
+        {{- template "validate-type" dict "Type" $t.Type "Where" $.Where "Types" $.Types "Path" (append $.Path $type) -}}
+      {{- else -}}
+        {{- range $t.Fields -}}
+          {{- template "validate-type" dict "Type" .Type "Where" (printf "%s.%s" $t.Name .Name) "Types" $.Types "Path" (append $.Path $type) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if not $found -}}
+    {{- template "reject" dict "What" (printf "type %s" $type) "Where" .Where -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "validate" -}}
+{{- $names := dict "Error" true "RpcErrorBody" true "String" true "Vec" true "Option" true "Result" true -}}
+{{- range .Services -}}
+  {{- $name := printf "%sClient" .Name -}}
+  {{- template "validate-ident" dict "Name" $name "Where" .Name -}}
+  {{- if exists $names $name -}}{{- template "reject" dict "What" "generated name collision" "Where" .Name -}}{{- end -}}
+  {{- set $names $name true -}}
+{{- end -}}
+{{- range .Types -}}
+  {{- template "validate-ident" dict "Name" .Name "Where" .Name -}}
+  {{- if exists $names .Name -}}{{- template "reject" dict "What" "generated name collision" "Where" .Name -}}{{- end -}}
+  {{- set $names .Name true -}}
+  {{- if isEnumType . -}}{{- template "reject" dict "What" "enum" "Where" .Name -}}{{- end -}}
+  {{- if isAliasType . -}}
+    {{- template "validate-type" dict "Type" .Type "Where" .Name "Types" $.Types "Path" (list .Name) -}}
+  {{- end -}}
+{{- end -}}
+{{- range $t := .Types -}}
+  {{- $fields := dict -}}
+  {{- range $t.Fields -}}
+    {{- $where := printf "%s.%s" $t.Name .Name -}}
+    {{- $name := snakeCase .Name -}}
+    {{- template "validate-ident" dict "Name" $name "Where" $where -}}
+    {{- if exists $fields $name -}}{{- template "reject" dict "What" "snake_case field collision" "Where" $where -}}{{- end -}}
+    {{- set $fields $name true -}}
+    {{- range .Meta -}}
+      {{- if exists . "go.field.type" -}}{{- template "reject" dict "What" "go.field.type override" "Where" $where -}}{{- end -}}
+      {{- if exists . "go.tag.json" -}}
+        {{- range $i, $part := split "," (get . "go.tag.json") -}}
+          {{- if and (gt $i 0) (not (in $part "omitempty" "omitzero")) -}}
+            {{- template "reject" dict "What" (printf "JSON tag option %s" $part) "Where" $where -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+    {{- template "validate-type" dict "Type" .Type "Where" $where "Types" $.Types "Path" (list $t.Name) -}}
+  {{- end -}}
+{{- end -}}
+{{- range $s := .Services -}}
+  {{- $methods := dict "new" true -}}
+  {{- range .Methods -}}
+    {{- $where := printf "%s.%s" $s.Name .Name -}}
+    {{- if MethodHasRoute . -}}{{- template "reject" dict "What" "REST route" "Where" $where -}}{{- end -}}
+    {{- if or .StreamInput .StreamOutput -}}{{- template "reject" dict "What" "streaming method" "Where" $where -}}{{- end -}}
+    {{- if not .Succinct -}}{{- template "reject" dict "What" "non-succinct method" "Where" $where -}}{{- end -}}
+    {{- if or (ne (len .Inputs) 1) (ne (len .Outputs) 1) -}}
+      {{- template "reject" dict "What" "method without one request and one response struct" "Where" $where -}}
+    {{- end -}}
+    {{- range (list (index .Inputs 0) (index .Outputs 0)) -}}
+      {{- if or .Optional (not (isStructType .Type)) -}}
+        {{- template "reject" dict "What" "non-struct method argument" "Where" $where -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $name := snakeCase .Name -}}
+    {{- template "validate-ident" dict "Name" $name "Where" $where -}}
+    {{- if exists $methods $name -}}{{- template "reject" dict "What" "client method collision" "Where" $where -}}{{- end -}}
+    {{- set $methods $name true -}}
+  {{- end -}}
+{{- end -}}
+{{- $errors := dict "Webrpc" true "Transport" true "Decode" true -}}
+{{- range .Errors -}}
+  {{- template "validate-ident" dict "Name" .Name "Where" .Name -}}
+  {{- if exists $errors .Name -}}{{- template "reject" dict "What" "error variant collision" "Where" .Name -}}{{- end -}}
+  {{- set $errors .Name true -}}
+{{- end -}}
+{{- end -}}

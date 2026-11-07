@@ -1,0 +1,7 @@
+{
+  "name": "Paper",
+  "bg": "#fffaf0",
+  "fg": "#222222",
+  "accent": "#c2410c",
+  "series": ["#c2410c", "#0f766e", "#7c3aed", "#ca8a04", "#2563eb"]
+}

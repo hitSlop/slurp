@@ -1,0 +1,12 @@
+{
+  "build": "9fd43bb5067b",
+  "compatibility_date": "2026-10-01",
+  "vars": {
+    "SEAL_INTERVAL_MS": "600000",
+    "SEAL_MAX_BYTES": "8388608",
+    "GROUP_COMMIT_MS": "500",
+    "BUFFER_CAP_BYTES": "67108864",
+    "RETENTION_DAYS": "0",
+    "MAX_BODY_BYTES": "10485760"
+  }
+}

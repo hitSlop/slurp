@@ -1,0 +1,232 @@
+{
+  "params": {},
+  "queries": {
+    "q": {
+      "columns": [
+        {
+          "name": "category",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "rank",
+          "type": "BIGINT"
+        },
+        {
+          "name": "value",
+          "type": "DECIMAL(12,2)"
+        }
+      ],
+      "rows": [
+        [
+          "Category 01",
+          "1",
+          "199"
+        ],
+        [
+          "Category 10",
+          "10",
+          "190"
+        ],
+        [
+          "Category 11",
+          "11",
+          "189"
+        ],
+        [
+          "Category 12",
+          "12",
+          "188"
+        ],
+        [
+          "Category 13",
+          "13",
+          "187"
+        ],
+        [
+          "Category 14",
+          "14",
+          "186"
+        ],
+        [
+          "Category 15",
+          "15",
+          "185"
+        ],
+        [
+          "Category 16",
+          "16",
+          "184"
+        ],
+        [
+          "Category 17",
+          "17",
+          "183"
+        ],
+        [
+          "Category 18",
+          "18",
+          "182"
+        ],
+        [
+          "Category 19",
+          "19",
+          "181"
+        ],
+        [
+          "Category 02",
+          "2",
+          "198"
+        ],
+        [
+          "Category 03",
+          "3",
+          "197"
+        ],
+        [
+          "Category 04",
+          "4",
+          "196"
+        ],
+        [
+          "Category 05",
+          "5",
+          "195"
+        ],
+        [
+          "Category 06",
+          "6",
+          "194"
+        ],
+        [
+          "Category 07",
+          "7",
+          "193"
+        ],
+        [
+          "Category 08",
+          "8",
+          "192"
+        ],
+        [
+          "Category 09",
+          "9",
+          "191"
+        ]
+      ],
+      "row_count": 19,
+      "truncated": false,
+      "elapsed_ms": 0
+    }
+  },
+  "errors": {},
+  "title": "Chart data and sizing",
+  "blocks": [
+    {
+      "id": "q",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "BIGINT sort and 19-category auto-height",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "y": {
+              "field": "category",
+              "type": "nominal",
+              "sort": {
+                "field": "rank",
+                "op": "min"
+              }
+            },
+            "x": {
+              "field": "value",
+              "type": "quantitative"
+            },
+            "color": {
+              "field": "rank",
+              "type": "ordinal"
+            },
+            "tooltip": [
+              {
+                "field": "rank",
+                "type": "nominal"
+              }
+            ]
+          }
+        }
+      },
+      "display": "BIGINT sort and 19-category auto-height"
+    },
+    {
+      "id": "q-chart",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "Explicit step height",
+        "spec": {
+          "mark": "bar",
+          "encoding": {
+            "y": {
+              "field": "category",
+              "type": "nominal",
+              "sort": {
+                "field": "rank",
+                "op": "min"
+              }
+            },
+            "x": {
+              "field": "value",
+              "type": "quantitative"
+            },
+            "color": {
+              "field": "rank",
+              "type": "ordinal"
+            },
+            "tooltip": [
+              {
+                "field": "rank",
+                "type": "nominal"
+              }
+            ]
+          },
+          "height": {
+            "step": 28
+          }
+        }
+      },
+      "display": "Explicit step height"
+    },
+    {
+      "id": "q-chart-2",
+      "block": {
+        "kind": "chart",
+        "query": "q",
+        "title": "Numeric text and tooltip",
+        "spec": {
+          "mark": "text",
+          "encoding": {
+            "y": {
+              "field": "category",
+              "type": "ordinal",
+              "sort": {
+                "field": "rank",
+                "op": "min"
+              }
+            },
+            "text": {
+              "field": "rank",
+              "type": "nominal"
+            },
+            "tooltip": [
+              {
+                "field": "value",
+                "type": "nominal"
+              }
+            ]
+          }
+        }
+      },
+      "display": "Numeric text and tooltip"
+    }
+  ]
+}

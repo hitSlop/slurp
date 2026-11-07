@@ -107,7 +107,7 @@ From the [repository](https://github.com/hitSlop/slurp) root:
 
 ```sh
 pnpm --filter @hitslop/slurp-sdk typecheck
-(cd packages/sdk-js && node --test test/*.test.ts)
+(cd sdks/js && node --test test/*.test.ts)
 pnpm --filter @hitslop/slurp-sdk build
 ```
 

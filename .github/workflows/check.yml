@@ -84,7 +84,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: SDK tests against the Worker
         run: node --test --test-force-exit --test-timeout=150000 test/*.test.ts
-        working-directory: packages/sdk-js
+        working-directory: sdks/js
         timeout-minutes: 6
 
   web:

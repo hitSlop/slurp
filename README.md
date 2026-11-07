@@ -126,7 +126,7 @@ Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bu
 |---|---|
 | `backend/` | The Worker (TypeScript): ingest, archives, control plane. Self-contained so it can be deployed on its own. |
 | `crates/` | Rust CLI (`slurp-cli`), client and archive reader (`slurp-client`), Markdown reports (`slurp-document`, `slurp-render`) |
-| `packages/sdk-js` | JavaScript SDK |
+| `sdks/js` | JavaScript SDK |
 | `apps/site` | The public site (home, docs, self-host page, cost comparison) |
 | `apps/setup` | The private offline setup page `slurp init` opens (built into the CLI as `setup.html`) |
 | `docs/` | [Documentation](docs/README.md) |
@@ -139,7 +139,7 @@ pnpm --filter slurp-setup build   # the quickstart page the CLI embeds (crates/s
 pnpm --filter slurp-site build
 cargo test --workspace
 (cd backend && npm install && npm test)   # Worker tests under wrangler dev, incl. the real CLI
-(cd packages/sdk-js && node --test test/*.test.ts)
+(cd sdks/js && node --test test/*.test.ts)
 backend/api/generate.sh --check   # regenerate webrpc clients (needs Go; webrpc-gen is pinned in the script)
 ```
 

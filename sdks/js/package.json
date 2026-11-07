@@ -18,7 +18,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hitSlop/slurp.git",
-    "directory": "packages/sdk-js"
+    "directory": "sdks/js"
   },
   "bugs": {
     "url": "https://github.com/hitSlop/slurp/issues"

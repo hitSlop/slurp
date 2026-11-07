@@ -199,7 +199,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 SLURP_TEST_DUCKDB=/path/to/duckdb cargo test --workspace
 cargo doc --workspace --no-deps
 (cd backend && npm install && npm run typecheck && npm test)
-(cd packages/sdk-js && node --test test/*.test.ts)
+(cd sdks/js && node --test test/*.test.ts)
 backend/api/generate.sh --check
 SLURP_TEST_DUCKDB=/path/to/duckdb python3 scripts/e2e.py
 SLURP_TEST_DUCKDB=/path/to/duckdb python3 scripts/test-setup-terminal.py

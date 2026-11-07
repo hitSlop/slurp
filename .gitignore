@@ -31,3 +31,6 @@ examples/demo/.work/
 
 # local Claude Code settings
 .claude/settings.local.json
+
+# third-party reference source (AGPL/FSL): never commit
+/_docs/

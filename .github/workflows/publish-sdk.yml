@@ -1,6 +1,6 @@
 name: Publish SDK
 
-# Publishes @hitslop/slurp-sdk to npm from packages/sdk-js. Manual on purpose: a tag trigger would also start the CLI release
+# Publishes @hitslop/slurp-sdk to npm from sdks/js. Manual on purpose: a tag trigger would also start the CLI release
 # (cargo-dist reacts to any version-looking tag). Needs the NPM_TOKEN repository secret (granular token with write access to @hitslop).
 on:
   workflow_dispatch:
@@ -30,19 +30,19 @@ jobs:
         run: |
           pnpm --filter @hitslop/slurp-sdk typecheck
           pnpm --filter @hitslop/slurp-sdk build
-          cd packages/sdk-js && node --test --test-force-exit --test-timeout=150000 test/capture.test.ts
+          cd sdks/js && node --test --test-force-exit --test-timeout=150000 test/capture.test.ts
       - name: Refuse to republish a version
-        working-directory: packages/sdk-js
+        working-directory: sdks/js
         run: |
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
           if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "::error::$name@$version is already on npm; bump the version in packages/sdk-js/package.json first"
+            echo "::error::$name@$version is already on npm; bump the version in sdks/js/package.json first"
             exit 1
           fi
           echo "Publishing $name@$version"
       - name: Publish
-        working-directory: packages/sdk-js
+        working-directory: sdks/js
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

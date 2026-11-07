@@ -2,13 +2,18 @@
 
 Capture application events with the Slurp SDK, sync them into a local DuckDB file, and let your coding agent analyze them and author reports. Each workspace binds one source on your own Worker to one database. No desktop, daemon, DuckLake, or bundled analytical engine.
 
-## Build and start
+## Install and start
 
-Requires Rust stable, Go 1.27.1 for backend development, and DuckDB CLI. DuckDB **2.0.0** is the currently tested release; Slurp uses JSON and SQL without DuckLake extensions.
+Install a release (macOS or Linux; Windows is not supported yet):
 
 ```sh
-cargo build -p slurp-cli
-export PATH="$PWD/target/debug:$PATH"
+curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh
+# or: npm install -g @hitslop/slurp
+```
+
+To build from source instead you need Rust stable (and Go 1.27.1 for backend development): `cargo build -p slurp-cli && export PATH="$PWD/target/debug:$PATH"`. Slurp uses the DuckDB CLI; **2.0.0** is the tested release, and it uses JSON and SQL without DuckLake extensions. `slurp setup` finds DuckDB or installs it for you.
+
+```sh
 slurp setup
 cd /path/to/your/app
 slurp init

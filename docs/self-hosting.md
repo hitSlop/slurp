@@ -7,7 +7,8 @@ Slurp runs in your own Cloudflare account: one Worker, two SQLite Durable Object
 You need a Cloudflare account and Node.js 20+ (slurp fetches wrangler itself with `npx`; an installed wrangler 4.100+ is used if you have one).
 
 ```sh
-cargo build -p slurp-cli && export PATH="$PWD/target/debug:$PATH"
+curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh
+# or: npm install -g @hitslop/slurp
 slurp cloud init
 slurp setup
 slurp init --name "My app"

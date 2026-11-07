@@ -44,12 +44,12 @@ The Slurp row is the Cloudflare bill for running your own Worker, not a Slurp fe
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2FhitSlop%2Fslurp%2Ftree%2Fmaster%2Fbackend)
 
-One click deploys the Worker, Durable Objects and R2 bucket to your Cloudflare account (you choose an `ADMIN_TOKEN`). Then open the Worker's address: it shows the command that connects the CLI. Or do it all from a terminal:
+One click deploys the Worker, Durable Objects and R2 bucket to your Cloudflare account (you choose an `ADMIN_TOKEN`). Then open the Worker's address: it shows the command that connects the CLI. Or do it all from a terminal (to build the CLI from source instead, see [Development](#development)):
 
 ```sh
-# 1. Build the CLI, then deploy your Worker (needs a Cloudflare account and Node 20+)
-cargo build -p slurp-cli
-export PATH="$PWD/target/debug:$PATH"
+# 1. Install the CLI (macOS or Linux), then deploy your Worker (needs a Cloudflare account and Node 20+)
+curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh
+# or: npm install -g @hitslop/slurp
 slurp cloud init             # logs in, creates the bucket, deploys the Worker, connects this computer
 slurp setup                  # once per computer: library folder and DuckDB
 

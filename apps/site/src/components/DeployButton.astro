@@ -1,10 +1,11 @@
 ---
 import Code from './Code.astro';
 import {deployButtonUrl} from '../lib/config.mjs';
+import {installShell,installNpm} from '../lib/links.mjs';
 const {label='Deploy to Cloudflare',id='deploy'}=Astro.props;
 const oneClick=deployButtonUrl();
-const init=`cargo build -p slurp-cli
-export PATH="$PWD/target/debug:$PATH"
+const init=`${installShell}
+# or: ${installNpm}
 slurp cloud init`;
 const manual=`cd backend
 npm install
@@ -37,7 +38,7 @@ slurp init --name "My app"`;
 </div>
 <div class="panel" data-panel="cli" hidden={!!oneClick}>
 <p>One command logs in to Cloudflare, creates the R2 bucket, deploys the Worker, sets a generated admin token and connects this computer. You need Node 20+ (slurp fetches wrangler itself) and a Cloudflare account.</p>
-<Code label="Deploy and connect · from a checkout of this repository" code={init}/>
+<Code label="Install, deploy and connect" code={init}/>
 <p class="fine">Then run <code>slurp setup</code> and <code>slurp init --name "My app"</code>. Later: <code>slurp cloud status</code>, <code>slurp cloud upgrade</code>, <code>slurp cloud destroy</code>.</p>
 <details><summary>Prefer to run wrangler yourself?</summary><Code label="Manual steps" code={manual}/><p class="fine">Replace <code>YOUR-SUBDOMAIN</code> with the URL <code>wrangler deploy</code> prints. Delete <code>admin-token.txt</code> once it is saved in your password manager.</p></details>
 </div>

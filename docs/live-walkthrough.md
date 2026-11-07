@@ -6,6 +6,7 @@ Send six events to your own Worker, wait for the next archive, sync them into Du
 
 ```sh
 cd /path/to/this/repository
+# Install a release (curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh), or build from source:
 cargo build -p slurp-cli
 export PATH="$PWD/target/debug:$PATH"
 slurp cloud init            # skip if you already deployed: slurp connect <url> --token-stdin

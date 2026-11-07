@@ -237,3 +237,174 @@ fn non_finite_numbers_become_null_instead_of_breaking_queries_and_reports() {
     slurp_app::report::build(&w, &report, &temp.path().join("out"), false, false, false)
         .expect("a report with an infinite ratio builds");
 }
+
+fn event_line(
+    id: &str,
+    kind: &str,
+    event: &str,
+    user: Option<&str>,
+    anon: Option<&str>,
+    at: &str,
+    seq: usize,
+) -> String {
+    let mut record = json!({"id": id, "type": kind, "timestamp": at, "data": {}, "received_at": at, "received_seq": seq.to_string()});
+    if kind == "track" {
+        record["event"] = json!(event);
+    }
+    if let Some(user) = user {
+        record["user_id"] = json!(user);
+    }
+    if let Some(anon) = anon {
+        record["anonymous_id"] = json!(anon);
+    }
+    record.to_string() + "\n"
+}
+
+#[test]
+fn helpers_are_installed_and_identities_are_stitched_without_guessing() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let t = "2026-11-02T10:00:00Z";
+    let mut lines = String::new();
+    // a1 browses, then identifies as exactly one user (u1); a2 identifies as two users (ambiguous); a3 never identifies.
+    lines += &event_line("e1", "track", "viewed", None, Some("a1"), t, 1);
+    lines += &event_line("i1", "identify", "", Some("u1"), Some("a1"), t, 2);
+    lines += &event_line("e2", "track", "viewed", Some("u1"), None, t, 3);
+    lines += &event_line("e3", "track", "viewed", None, Some("a2"), t, 4);
+    lines += &event_line("i2", "identify", "", Some("u2"), Some("a2"), t, 5);
+    lines += &event_line("i3", "identify", "", Some("u3"), Some("a2"), t, 6);
+    lines += &event_line("e4", "track", "viewed", None, Some("a3"), t, 7);
+    w.import("a", 1, "hash", 1, archive(&lines).path())
+        .expect("import");
+    let rows = w
+        .query("SELECT id, person_id FROM events_with_person ORDER BY id")
+        .expect("people");
+    let people: std::collections::BTreeMap<String, String> = rows["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r[0].as_str().unwrap().to_owned(),
+                r[1].as_str().unwrap_or("none").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        people["e1"], "u:u1",
+        "an anonymous event joins the user it was identified as"
+    );
+    assert_eq!(people["e2"], "u:u1");
+    assert_eq!(
+        people["e3"], "a:a2",
+        "a visitor tied to two users is not merged by guesswork"
+    );
+    assert_eq!(people["e4"], "a:a3");
+    // The small macros.
+    let macros = w
+        .query("SELECT pct(25, 200) AS p, safe_num('x') AS bad, biz_date(TIMESTAMPTZ '2026-10-01 03:00:00+00') AS d, (SELECT count(*) FROM calendar('2026-10-01', '2026-10-04')) AS days, session_start(TIMESTAMP '2026-01-01 10:40', TIMESTAMP '2026-01-01 10:00', 30) AS gap, session_start(TIMESTAMP '2026-01-01 10:10', TIMESTAMP '2026-01-01 10:00', 30) AS same")
+        .expect("macros");
+    assert_eq!(macros["rows"], json!([[12.5, null, "2026-10-01", 4, 1, 0]]));
+}
+
+#[test]
+fn health_reports_only_what_needs_attention() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let ok = slurp_app::health::run(&w).expect("health on an empty database");
+    assert_eq!(ok["ok"], json!(true));
+    let t = "2026-11-02T10:00:00Z";
+    let mut lines = String::new();
+    let mut seq = 0;
+    let mut next = || {
+        seq += 1;
+        seq
+    };
+    // Event names spelled two ways.
+    for (i, name) in ["Signed_Up", "signed_up", "signed_up"].iter().enumerate() {
+        lines += &event_line(
+            &format!("c{i}"),
+            "track",
+            name,
+            Some(&format!("c{i}")),
+            None,
+            t,
+            next(),
+        );
+    }
+    // A client clock a day ahead.
+    let mut ahead = event_line(
+        "f1",
+        "track",
+        "opened",
+        Some("f1"),
+        None,
+        "2026-11-03T10:00:00Z",
+        next(),
+    );
+    ahead = ahead.replace(
+        "\"received_at\":\"2026-11-03T10:00:00Z\"",
+        "\"received_at\":\"2026-11-02T10:00:00Z\"",
+    );
+    lines += &ahead;
+    // One id that is far busier than 30 ordinary ones.
+    for i in 0..30 {
+        lines += &event_line(
+            &format!("n{i}"),
+            "track",
+            "opened",
+            Some(&format!("normal{i}")),
+            None,
+            t,
+            next(),
+        );
+    }
+    for i in 0..1100 {
+        lines += &event_line(
+            &format!("b{i}"),
+            "track",
+            "opened",
+            Some("bot_1"),
+            None,
+            &format!("2026-11-02T10:{:02}:{:02}Z", i / 60 % 60, i % 60),
+            next(),
+        );
+    }
+    // The same event tracked twice under different ids.
+    lines += &event_line("d1", "track", "paid", Some("d"), None, t, next());
+    lines += &event_line("d2", "track", "paid", Some("d"), None, t, next());
+    w.import("a", 1, "hash", 1, archive(&lines).path())
+        .expect("import");
+    let found = slurp_app::health::run(&w).expect("health");
+    assert_eq!(found["ok"], json!(false));
+    let checks: Vec<&str> = found["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["check"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            "casing_variants",
+            "future_timestamps",
+            "duplicate_events",
+            "heavy_hitters"
+        ],
+        "{found}"
+    );
+    let heavy = &found["findings"][3];
+    assert_eq!(
+        heavy["evidence"]["people"][0]["person_id"],
+        json!("u:bot_1")
+    );
+    assert!(
+        heavy["suggestion"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing was changed")
+    );
+    assert_eq!(found["findings"][2]["evidence"]["extra_events"], json!(1));
+}

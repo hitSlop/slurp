@@ -16,6 +16,7 @@ pub enum Kind {
     Send,
     Sync,
     Sql,
+    Health,
 }
 
 pub fn configure(mode: &str, json: bool) {
@@ -123,6 +124,39 @@ fn publication(value: &Value, out: &mut dyn Write) -> io::Result<()> {
 pub fn render(kind: Kind, value: &Value, width: usize, out: &mut dyn Write) -> io::Result<()> {
     match kind {
         Kind::Sql => table(value, width.max(16), out),
+        Kind::Health => {
+            let events = value["events"].as_u64().unwrap_or(0);
+            let findings = value["findings"].as_array().cloned().unwrap_or_default();
+            if findings.is_empty() {
+                return writeln!(
+                    out,
+                    "No problems found in {}. Checked event spelling, clocks, repeated events and unusually busy ids.",
+                    noun(events, "event", "events")
+                );
+            }
+            writeln!(
+                out,
+                "{} to look at in {}:",
+                noun(findings.len() as u64, "finding", "findings"),
+                noun(events, "event", "events")
+            )?;
+            for finding in findings {
+                writeln!(out)?;
+                writeln!(
+                    out,
+                    "[{}] {}",
+                    finding["severity"].as_str().unwrap_or("info"),
+                    finding["title"].as_str().unwrap_or_default()
+                )?;
+                writeln!(out, "  {}", finding["detail"].as_str().unwrap_or_default())?;
+                writeln!(
+                    out,
+                    "  What to do: {}",
+                    finding["suggestion"].as_str().unwrap_or_default()
+                )?;
+            }
+            writeln!(out, "\nNothing was changed. Use --json for the evidence.")
+        }
         Kind::Send => {
             let count = value["events"].as_u64().unwrap_or(1);
             writeln!(out, "Accepted {}.", noun(count, "event", "events"))?;

@@ -44,6 +44,8 @@ enum Operation {
     Setup(onboarding::Options),
     Doctor,
     Status,
+    /// Check the events for common data problems (spelling variants, bad clocks, bots, double tracking). Changes nothing.
+    Health,
     Describe,
     Sync,
     Sql {
@@ -139,6 +141,7 @@ fn main() -> std::process::ExitCode {
         Operation::Init(_) => output::Kind::Init,
         Operation::Sync => output::Kind::Sync,
         Operation::Sql { .. } => output::Kind::Sql,
+        Operation::Health => output::Kind::Health,
         _ => output::Kind::General,
     };
     match run(cli) {
@@ -292,6 +295,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         Operation::Doctor | Operation::Status => Ok(
             json!({"version":w.version,"source":w.source,"backend":w.backend,"database":w.database,"events":w.execute("SELECT count(*) AS count FROM events",true)?,"last_delivery":w.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1",true)?}),
         ),
+        Operation::Health => slurp_app::health::run(&w),
         Operation::Describe => w.execute("DESCRIBE events", true),
         Operation::Sql {
             query,

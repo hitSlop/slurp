@@ -18,6 +18,8 @@ pub mod skills;
 pub mod storage;
 pub mod system;
 use error::{ErrorCode, Failure};
+pub mod health;
+pub mod helpers;
 pub mod report;
 pub mod report_check;
 pub mod report_format;
@@ -133,6 +135,7 @@ impl Workspace {
             extensions: Vec::new(),
         };
         w.execute_inner(&format!("BEGIN; CREATE SCHEMA _slurp; CREATE TABLE _slurp.identity(version INTEGER, backend VARCHAR, source VARCHAR); INSERT INTO _slurp.identity VALUES(1,{},{}); CREATE TABLE _slurp.deliveries(archive VARCHAR, sequence BIGINT, sha256 VARCHAR, bytes UBIGINT, imported_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(archive,sequence)); CREATE TABLE events(id VARCHAR PRIMARY KEY, type VARCHAR, event VARCHAR, timestamp TIMESTAMPTZ, user_id VARCHAR, anonymous_id VARCHAR, session_id VARCHAR, data JSON, context JSON, received_at TIMESTAMPTZ, received_seq VARCHAR, raw_record JSON, fingerprint VARCHAR); COMMIT;",literal(&w.backend),literal(&w.source)),false, true)?;
+        w.execute_inner(&helpers::script(), false, true)?;
         fs::create_dir_all(root.join(".slurp/reports"))?;
         let mut destination = fs::OpenOptions::new()
             .write(true)
@@ -217,6 +220,7 @@ impl Workspace {
                 "database binding mismatch"
             ))
         }
+        w.ensure_helpers();
         Ok(w)
     }
     /// Run bounded-time SQL using the configured external engine.

@@ -104,6 +104,26 @@ Your Worker seals buffered events into an archive about every 10 minutes by defa
 
 Queries return columns, exact JSON values, up to 1,000 rows, and an explicit truncation flag. DuckDB subprocesses have a 60-second timeout and a 32 MiB output bound. Arbitrary local SQL is trusted code, not a filesystem sandbox.
 
+## Helpers and health checks
+
+Every project database gets a few helpers (installed on `slurp init`, and added to older databases the next time you run a command), so queries stay short:
+
+| Helper | What it gives you |
+|---|---|
+| `events_with_person` | `events` plus a `person_id`: `u:<user id>` when the person is known, else `a:<anonymous id>`. An anonymous visitor is linked to a user only when their identify events name exactly one user; a visitor tied to two users is left separate. Count people with `count(DISTINCT person_id)`. |
+| `identity_links` | The anonymous id to user id links behind it. |
+| `calendar(start, end)` | One row per day (or `step := '1 hour'`), so charts show zero days instead of skipping them. Columns `biz_date`, `weekday`, `is_weekday`. |
+| `biz_date(ts)`, `biz_trunc(part, ts)` | The date or `date_trunc` in your timezone. UTC by default; define your own `biz_tz()` in a query to change it. |
+| `session_start(ts, previous_ts, gap_minutes)` | 1 when an event starts a new session. Add the 1s up in a window to number sessions without an extension (see the comment in `crates/slurp-cli/assets/helpers.sql`). |
+| `pct(part, total)`, `share(x)`, `safe_num(x)` | Percentages and shares that return NULL instead of failing on zero or bad values. |
+
+```sql
+SELECT biz_date(timestamp) AS day, count(DISTINCT person_id) AS people
+FROM events_with_person GROUP BY 1 ORDER BY 1
+```
+
+`slurp health` runs four exact checks and prints only what needs attention: event names spelled more than one way, events stamped in the future (a wrong client clock), the same event tracked twice under different ids, and ids far busier than everyone else (bots, test accounts). It suggests fixes and changes nothing; `--json` includes the evidence.
+
 ## Behavioral SQL: retention, funnels, sessions
 
 DuckDB's `behavioral` community extension adds product-analytics functions that are awkward in plain SQL: `retention()`, `window_funnel()`, `sessionize()`, `sequence_match()`, `sequence_count()` and `sequence_next_node()`. Slurp can load it for you; it is installed once from DuckDB's community repository (this computer must be online the first time) and works offline afterwards. It is the only community extension Slurp allows.

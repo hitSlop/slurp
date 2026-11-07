@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "generate": "sh api/generate.sh",
     "bundle": "node scripts/bundle.mjs",
-    "test": "node --test --experimental-strip-types test/*.test.ts"
+    "test": "node --test --test-timeout=240000 --experimental-strip-types test/*.test.ts"
   },
   "cloudflare": {
     "bindings": {

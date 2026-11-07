@@ -11,8 +11,8 @@ import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody
  * so nothing is cut or reshaped on the way in; SQL pulls fields out at query time (the `errors` view).
  * Sessions, transactions, replays, attachments, profiles, spans, logs and metrics are accepted and dropped.
  *
- * DSN: Sentry SDKs only accept word characters in the public key, and Slurp keys are base64url, so the DSN
- * carries the publishable key hex-encoded: https://<hex(slurp_pk_...)>@<worker-host>/1
+ * DSN: a publishable key is made only of word characters (`slurp_pk_<project hex>_<random hex>`), which is all Sentry SDKs
+ * accept in a DSN's public key, so the DSN carries the key itself: https://<slurp_pk_...>@<worker-host>/1
  */
 
 const ALLOW_HEADERS = 'X-Sentry-Auth, Content-Type, Sentry-Trace, Baggage, Authorization, Content-Encoding'
@@ -25,19 +25,8 @@ export function sentryRoute(path: string): SentryRoute | null {
   return m ? { project: m[1], kind: m[2] as 'envelope' | 'store' } : null
 }
 
-/** The DSN public key for a publishable key (hex of its UTF-8 bytes). */
-export const sentryKeyFor = (publishableKey: string) => [...new TextEncoder().encode(publishableKey)].map(b => b.toString(16).padStart(2, '0')).join('')
-
-/** Accept the hex form (what the DSN carries) or the raw publishable key. */
-export function decodeSentryKey(value: string | null | undefined): string | null {
-  if (!value) return null
-  if (value.startsWith('slurp_pk_')) return value
-  if (!/^(?:[0-9a-f]{2})+$/i.test(value) || value.length > 200) return null
-  try {
-    const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Uint8Array.from(value.match(/../g)!, h => parseInt(h, 16)))
-    return raw.startsWith('slurp_pk_') ? raw : null
-  } catch { return null }
-}
+/** The DSN, the X-Sentry-Auth header and the query string all carry the publishable key itself. */
+const publishableKey = (value: string | null | undefined): string | null => (value?.startsWith('slurp_pk_') ? value : null)
 
 const keyFromDsn = (dsn: unknown): string | null => {
   if (typeof dsn !== 'string') return null
@@ -50,7 +39,7 @@ function credentials(req: Request, headerDsn: unknown): { key: string | null } |
   const found = new Set<string>()
   const auth = /sentry_key=([^,\s]+)/.exec(req.headers.get('x-sentry-auth') ?? '')?.[1]
   const query = new URL(req.url).searchParams.get('sentry_key')
-  for (const v of [auth, query, keyFromDsn(headerDsn)]) if (v) found.add(decodeSentryKey(v) ?? `invalid:${v}`)
+  for (const v of [auth, query, keyFromDsn(headerDsn)]) if (v) found.add(publishableKey(v) ?? `invalid:${v}`)
   if (found.size > 1) return 'conflict'
   return { key: found.size === 1 ? [...found][0] : null }
 }
@@ -171,7 +160,7 @@ export async function sentryIngest(req: Request, route: SentryRoute, host: Compa
   const creds = credentials(req, envelope.header.dsn)
   if (creds === 'conflict') return reply(403, { detail: 'conflicting credentials' })
   const principal = await host.publishable(creds.key)
-  if (!principal) return reply(403, { detail: 'invalid or missing sentry_key (use the DSN Slurp prints for this source)' })
+  if (!principal) return reply(403, { detail: 'invalid or missing sentry_key (use the DSN Slurp prints for this project)' })
   const eventId = text(envelope.header.event_id) ?? ''
   const now = Date.now()
   const lines: string[] = []
@@ -183,7 +172,7 @@ export async function sentryIngest(req: Request, route: SentryRoute, host: Compa
     lines.push(t.line)
   }
   if (lines.length > 0) {
-    const res = await host.ingest(principal.source, encoder.encode(lines.join('\n') + '\n'), host.geoFor(req, principal.geo))
+    const res = await host.ingest(principal, encoder.encode(lines.join('\n') + '\n'), host.geoFor(req, principal.geo))
     if (!res.ok) return ingestFailure(res)
   }
   return reply(200, { id: eventId })

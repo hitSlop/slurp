@@ -3,7 +3,7 @@ import { sha256Hex } from '../util.ts'
 import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody } from './common.ts'
 
 /**
- * Segment-compatible ingestion: point an existing Segment SDK at this Worker and events land in the source
+ * Segment-compatible ingestion: point an existing Segment SDK at this Worker and events land in the project
  * that owns the key, next to events from the native SDK. Segment's "write key" is a Slurp publishable key.
  *
  * Written from the SDKs' observable behavior (the HTTP calls they make and the responses they accept).
@@ -140,14 +140,14 @@ export async function segmentIngest(req: Request, route: SegmentRoute, host: Com
     if (messages.length === 0) return json(200, { success: true, accepted: 0, rejected: 0 })
     return json(400, { error: 'no valid events in the request', rejected })
   }
-  const res = await host.ingest(principal.source, encoder.encode(lines.join('\n') + '\n'), host.geoFor(req, principal.geo))
+  const res = await host.ingest(principal, encoder.encode(lines.join('\n') + '\n'), host.geoFor(req, principal.geo))
   if (!res.ok) return ingestFailure(res)
   return json(200, { success: true, accepted: lines.length, rejected })
 }
 
 async function settings(req: Request, key: string, origin: string, host: CompatHost): Promise<Response> {
   if (req.method === 'OPTIONS') return preflight(ALLOW_HEADERS)
-  if (!(await host.publishable(key))) return json(404, { error: 'unknown source' })
+  if (!(await host.publishable(key))) return json(404, { error: 'unknown project' })
   return json(200, {
     integrations: { 'Segment.io': { apiKey: key, apiHost: `${new URL(origin).host}/v1`, protocol: new URL(origin).protocol === 'http:' ? 'http' : 'https', addBundledMetadata: true, unbundledIntegrations: [] } },
     plan: { track: { __default: { enabled: true, integrations: {} } }, identify: { __default: { enabled: true } }, group: { __default: { enabled: true } } },

@@ -12,7 +12,6 @@ pub enum ErrorCode {
     DeliveryConflict,
     ConflictingEventId,
     RetentionGap,
-    ArchiveReset,
     Busy,
     WorkspaceUnavailable,
     StorageUnavailable,

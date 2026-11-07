@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { after, before, test } from 'node:test'
 import { AlreadyExistsError, ForbiddenError, InvalidArgumentError, NotFoundError, RetentionGapError, UnauthenticatedError, UnavailableError } from '../src/slurp.gen.ts'
-import { admin, debug, evt, newSource, post, readArchives, rpc, startWorker, stats, type Worker } from './harness.ts'
+import { ADMIN_TOKEN, admin, debug, evt, newProject, post, readArchives, rpc, startWorker, stats, type Worker } from './harness.ts'
 
 let w: Worker
 before(async () => { w = await startWorker() })
@@ -10,12 +10,12 @@ after(async () => { await w.stop() })
 const name = (p: string) => `${p}_${Math.random().toString(16).slice(2, 8)}`
 
 test('health and auth gates (generated clients)', async () => {
-  assert.equal((await w.clients.health.version({})).schema, 'v0.5.0')
+  assert.equal((await w.clients.health.version({})).schema, 'v0.6.0')
   const h = await (await fetch(`${w.base}/v1/health`)).json() as any
   assert.equal(h.configured, true); assert.equal(h.capabilities.archive, 'jsonl.gz')
-  await assert.rejects(w.clients.source.listSources({}), UnauthenticatedError)
-  await assert.rejects(w.clients.source.listSources({}, { Authorization: 'Bearer wrong' }), UnauthenticatedError)
-  await assert.rejects(w.clients.source.createSource({ name: name('x'), requestId: 'r' }, { Authorization: 'Bearer slurp_pk_nope' }), UnauthenticatedError)
+  await assert.rejects(w.clients.project.listProjects({}), UnauthenticatedError)
+  await assert.rejects(w.clients.project.listProjects({}, { Authorization: 'Bearer wrong' }), UnauthenticatedError)
+  await assert.rejects(w.clients.project.createProject({ name: name('x') }, { Authorization: 'Bearer slurp_pk_nope' }), UnauthenticatedError)
 })
 
 test('the Worker address explains itself and leaks nothing', async () => {
@@ -28,49 +28,87 @@ test('the Worker address explains itself and leaks nothing', async () => {
   assert.equal((await fetch(`${w.base}/`, { method: 'POST' })).status, 404, 'only GET and HEAD serve the page')
 })
 
-test('source and key control plane', async () => {
+test('project and key control plane', async () => {
   const n = name('cp')
-  const created = await w.clients.source.createSource({ name: n, requestId: crypto.randomUUID() }, admin)
-  assert.match(created.publishableKey, /^slurp_pk_/); assert.equal(created.ingestUrl, `${w.base}/v1/events`)
-  await assert.rejects(w.clients.source.createSource({ name: n, requestId: crypto.randomUUID() }, admin), AlreadyExistsError)
-  for (const bad of ['Bad Name', 'dash-name', '1abc', 'a__b', 'src_x', 'session_x', 'select', '_slurp', 'x'.repeat(64)])
-    await assert.rejects(w.clients.source.createSource({ name: bad, requestId: crypto.randomUUID() }, admin), InvalidArgumentError, bad)
-  await assert.rejects(w.clients.source.createSource({ name: name('rid'), requestId: 'not-a-uuid' }, admin), InvalidArgumentError)
-  await assert.rejects(w.clients.source.createSource({ name: name('ttl'), title: 'x'.repeat(201), requestId: crypto.randomUUID() }, admin), InvalidArgumentError)
-  assert.equal((await w.clients.source.createSource({ name: 'app_my_saas', requestId: crypto.randomUUID() }, admin)).source.name, 'app_my_saas', 'CLI-generated alias is accepted')
-  const k = await w.clients.source.createKey({ source: n, scope: 'secret', name: 'cli' }, admin)
-  assert.match(k.key, /^slurp_sk_/)
-  await assert.rejects(w.clients.source.createKey({ source: n, scope: 'root' }, admin), InvalidArgumentError)
-  assert.equal((await w.clients.source.listKeys({ source: created.source.id }, admin)).keys.length, 2)
-  assert.equal((await w.clients.source.getSource({ source: n }, admin)).source.id, created.source.id)
-  await assert.rejects(w.clients.source.getSource({ source: 'nope' }, admin), NotFoundError)
-  assert.equal((await w.clients.source.updateSource({ source: n, title: 'T' }, admin)).source.title, 'T')
+  const created = await w.clients.project.createProject({ name: n }, admin)
+  assert.equal(created.created, true); assert.match(created.project.id, /^prj_[0-9a-f]{16}$/)
+  // A key names its project and is made only of word characters, so it fits a Sentry DSN as is.
+  assert.match(created.publishableKey, new RegExp(`^slurp_pk_${created.project.id.slice(4)}_[0-9a-f]{48}$`))
+  assert.equal(created.ingestUrl, `${w.base}/v1/events`)
+  for (const bad of ['Bad Name', 'dash-name', '1abc', 'a__b', 'prj_x', 'session_x', 'select', '_slurp', 'x'.repeat(64)])
+    await assert.rejects(w.clients.project.createProject({ name: bad }, admin), InvalidArgumentError, bad)
+  await assert.rejects(w.clients.project.createProject({ name: name('ttl'), title: 'x'.repeat(201) }, admin), InvalidArgumentError)
+  assert.equal((await w.clients.project.createProject({ name: 'app_my_saas' }, admin)).project.name, 'app_my_saas', 'CLI-generated alias is accepted')
+  const k = await w.clients.project.createKey({ project: n, scope: 'secret', name: 'cli' }, admin)
+  assert.match(k.key, new RegExp(`^slurp_sk_${created.project.id.slice(4)}_[0-9a-f]{48}$`))
+  await assert.rejects(w.clients.project.createKey({ project: n, scope: 'root' }, admin), InvalidArgumentError)
+  await assert.rejects(w.clients.project.createKey({ project: 'nope', scope: 'secret' }, admin), NotFoundError)
+  const keys = (await w.clients.project.listKeys({ project: created.project.id }, admin)).keys
+  assert.equal(keys.length, 2)
+  assert.equal(keys.find(x => x.scope === 'publishable')!.key, created.publishableKey, 'a publishable key can be read again')
+  assert.equal(keys.find(x => x.scope === 'secret')!.key, undefined, 'a secret key is never stored or listed')
+  assert.equal((await w.clients.project.getProject({ project: n }, admin)).project.id, created.project.id)
+  await assert.rejects(w.clients.project.getProject({ project: 'nope' }, admin), NotFoundError)
+  assert.equal((await w.clients.project.updateProject({ project: n, title: 'T' }, admin)).project.title, 'T')
+  const other = name('cp2')
+  await w.clients.project.createProject({ name: other }, admin)
+  await assert.rejects(w.clients.project.updateProject({ project: other, name: n }, admin), AlreadyExistsError)
   // key-scoped callers cannot use the control plane
-  await assert.rejects(w.clients.source.listSources({}, { Authorization: `Bearer ${k.key}` }), ForbiddenError)
-  // memberships and hosted-only services answer cleanly
-  assert.deepEqual((await w.clients.source.listMemberships({ source: n }, admin)).memberships, [])
-  await assert.rejects(w.clients.source.addMember({ source: n, userId: 'u' }, admin), ForbiddenError)
+  await assert.rejects(w.clients.project.listProjects({}, { Authorization: `Bearer ${k.key}` }), ForbiddenError)
+  // the hosted-service methods (memberships, usage, billing) are gone from the API, not stubbed
+  const gone = async (service: string, method: string) => (await fetch(`${w.base}/rpc/${service}/${method}`, { method: 'POST', headers: { ...admin, 'content-type': 'application/json' }, body: '{}' })).status
+  assert.equal(await gone('Billing', 'GetStatus'), 404); assert.equal(await gone('Usage', 'GetUsage'), 404); assert.equal(await gone('Source', 'ListSources'), 404)
   assert.equal((await w.clients.health.version({})).server, 'slurp-worker')
-  const billing = await rpc(w.base, 'Billing', 'GetStatus', {})
-  assert.equal(billing.status, 503); assert.match(billing.cause, /self-hosted/)
 })
 
-test('requestId retry rotates only that create\'s key; revoked keys stop working', async () => {
-  const rid = crypto.randomUUID(), n = name('retry')
-  const a = await w.clients.source.createSource({ name: n, requestId: rid }, admin)
-  const b = await w.clients.source.createSource({ name: n, requestId: rid }, admin)
-  assert.equal(a.source.id, b.source.id); assert.notEqual(a.publishableKey, b.publishableKey)
-  assert.equal((await post(w.base, a.publishableKey, evt('x1'))).status, 401)
-  assert.equal((await post(w.base, b.publishableKey, evt('x1'))).status, 200)
-  const keys = (await w.clients.source.listKeys({ source: a.source.id }, admin)).keys
-  const live = keys.find(k => !k.revokedAt)!
-  await w.clients.source.revokeKey({ source: a.source.id, keyId: live.keyId }, admin)
-  await assert.rejects(w.clients.source.revokeKey({ source: a.source.id, keyId: 'ffffffffffffffff' }, admin), NotFoundError)
-  assert.equal((await post(w.base, b.publishableKey, evt('x2'))).status, 401, 'revoked key stops working (cache window is 5s but revokeKey clears it)')
+test('creating a project twice returns the same project and key, and never rotates a key', async () => {
+  const n = name('again')
+  const a = await w.clients.project.createProject({ name: n }, admin)
+  const b = await w.clients.project.createProject({ name: n, geoEnabled: true }, admin)
+  assert.equal(b.created, false); assert.equal(a.project.id, b.project.id); assert.equal(a.publishableKey, b.publishableKey)
+  assert.equal((await w.clients.project.getProject({ project: n }, admin)).geoEnabled, false, 'geo applies only when the project is created')
+  assert.equal((await post(w.base, a.publishableKey, evt('r1'))).status, 200, 'the installed key still works after a repeat')
+  assert.equal((await w.clients.project.listKeys({ project: n }, admin)).keys.length, 1)
+})
+
+test('revoking a key takes effect on the very next request, and each key only opens its own project', async () => {
+  const a = await newProject(w.base, name('ka')), b = await newProject(w.base, name('kb'))
+  assert.equal((await post(w.base, a.pk, evt('k1'))).status, 200)
+  const second = await w.clients.project.createKey({ project: a.id, scope: 'publishable', name: 'ios' }, admin)
+  assert.equal((await post(w.base, second.key, evt('k2'))).status, 200)
+  const first = (await w.clients.project.listKeys({ project: a.id, scope: 'publishable' }, admin)).keys.find(x => x.key === a.pk)!
+  await w.clients.project.revokeKey({ project: a.id, keyId: first.keyId }, admin)
+  await assert.rejects(w.clients.project.revokeKey({ project: a.id, keyId: 'ffffffffffffffff' }, admin), NotFoundError)
+  assert.equal((await post(w.base, a.pk, evt('k3'))).status, 401, 'revoked: no cache window')
+  assert.equal((await post(w.base, second.key, evt('k4'))).status, 200, 'the other key is untouched')
+  // a secret key of one project cannot read another, and a made-up project id gets nothing
+  await assert.rejects(w.clients.archive.listObjects({ project: b.id }, { Authorization: `Bearer ${a.sk}` }), ForbiddenError)
+  const forged = `slurp_pk_${'0'.repeat(16)}_${'0'.repeat(48)}`
+  assert.equal((await post(w.base, forged, evt('f1'))).status, 401)
+  assert.equal((await post(w.base, a.pk.replace(/.$/, c => (c === '0' ? '1' : '0')), evt('f2'))).status, 401, 'a key that is nearly right')
+  assert.equal((await post(w.base, 'slurp_pk_nope', evt('f3'))).status, 401)
+  assert.equal((await post(w.base, ADMIN_TOKEN, evt('f4'))).status, 403, 'the admin token is not an ingest key')
+})
+
+test('every event is stamped with the key that sent it, and a client cannot claim another sender', async () => {
+  const p = await newProject(w.base, name('who'))
+  const web = (await w.clients.project.createKey({ project: p.id, scope: 'publishable', name: 'web' }, admin)).key
+  const ios = (await w.clients.project.createKey({ project: p.id, scope: 'publishable', name: 'ios' }, admin)).key
+  assert.equal((await post(w.base, web, evt('w1'))).status, 200)
+  assert.equal((await post(w.base, ios, evt('i1'))).status, 200)
+  assert.equal((await post(w.base, p.pk, evt('d1'))).status, 200)
+  assert.equal((await post(w.base, web, evt('x1', { sender: 'ios' }))).status, 400, 'sender is reserved')
+  assert.equal((await post(w.base, `${w.base}`.slice(0, 0) + web, evt('same'))).status, 200)
+  assert.equal((await post(w.base, ios, evt('same'))).status, 200)
+  await debug(w.base, 'seal', p.id)
+  const lines = (await readArchives(w.base, p.id, p.sk)).flatMap(x => x.lines)
+  const sender = (id: string) => lines.filter(l => l.id === id).map(l => l.sender)
+  assert.deepEqual([sender('w1'), sender('i1'), sender('d1')], [['web'], ['ios'], ['default']])
+  assert.deepEqual(sender('same').sort(), ['ios', 'web'], 'the same body from two senders is two events, not a duplicate')
 })
 
 test('ingest rules, CORS, dedupe, wide numbers', async () => {
-  const s = await newSource(w.base, name('ing'))
+  const s = await newProject(w.base, name('ing'))
   const wide = '{"id":"b","type":"track","event":"signup","timestamp":"2026-11-06T00:00:00Z","data":{"big":12345678901234567890}}'
   const batch = evt('a') + '\n' + wide + '\n'
   const first = await post(w.base, s.pk, batch)
@@ -102,11 +140,11 @@ test('ingest rules, CORS, dedupe, wide numbers', async () => {
   const [arc] = await readArchives(w.base, s.id, s.sk)
   assert.equal(arc.lines.length, 3, 'a, b (once, despite the duplicate), q')
   assert.ok(arc.raw.includes('"big":12345678901234567890'))
-  assert.match(arc.raw.split('\n')[0], /^\{"received_at":"[^"]+","received_seq":"\d+","id":"a"/)
+  assert.match(arc.raw.split('\n')[0], /^\{"received_at":"[^"]+","received_seq":"\d+","sender":"default","id":"a"/)
 })
 
 test('large records are stored whole: 900 KB survives sealing, 1.1 MB is refused with 413 and nothing is cut', async () => {
-  const s = await newSource(w.base, name('big'))
+  const s = await newProject(w.base, name('big'))
   const pad = (n: number, tail: string) => ({ data: { blob: 'x'.repeat(n) + tail } })
   const small = await post(w.base, s.pk, evt('a'))
   assert.equal(small.status, 200)
@@ -125,8 +163,8 @@ test('large records are stored whole: 900 KB survives sealing, 1.1 MB is refused
   assert.ok(stored.get('c').data.blob.endsWith('C-END') && stored.get('d').data.blob.endsWith('D-END'))
 })
 
-test('geo enrichment from request.cf only, when the source opts in', async () => {
-  const on = await newSource(w.base, name('geo'), true), off = await newSource(w.base, name('nogeo'), false)
+test('geo enrichment from request.cf only, when the project opts in', async () => {
+  const on = await newProject(w.base, name('geo'), true), off = await newProject(w.base, name('nogeo'), false)
   const rec = (id: string, ctx?: object) => '{"id":"' + id + '","type":"track","event":"v","timestamp":"2026-11-06T00:00:00Z","data":{"wide":9007199254740993123456789}' + (ctx ? ',"context":' + JSON.stringify(ctx) : '') + '}'
   const forged = { 'X-Slurp-Geo-Country': 'ZZ', 'X-Slurp-Ingress-Secret': 'x', 'CF-IPCountry': 'ZZ' }
   assert.equal((await post(w.base, on.pk, rec('g1') + '\n' + rec('g2', { app: { version: '1' } }), forged)).status, 200)
@@ -143,9 +181,9 @@ test('geo enrichment from request.cf only, when the source opts in', async () =>
 })
 
 test('seal -> manifest -> Archive.ListObjects -> signed download, checkpoint and auth', async () => {
-  const s = await newSource(w.base, name('arc'))
+  const s = await newProject(w.base, name('arc'))
   for (let i = 0; i < 3; i++) { await post(w.base, s.pk, evt(`e${i}`)); await debug(w.base, 'seal', s.id) }
-  const list = await w.clients.archive.listObjects({ source: s.id }, { Authorization: `Bearer ${s.sk}` })
+  const list = await w.clients.archive.listObjects({ project: s.id }, { Authorization: `Bearer ${s.sk}` })
   assert.deepEqual(list.objects.map(o => o.seq), ['1', '2', '3'])
   assert.equal(list.coverage?.firstRetained, '1'); assert.equal(list.coverage?.latestPublished, '3'); assert.ok(list.expiresAt)
   for (const o of list.objects) {
@@ -154,22 +192,22 @@ test('seal -> manifest -> Archive.ListObjects -> signed download, checkpoint and
     assert.equal(createHash('sha256').update(bytes).digest('hex'), o.sha256); assert.equal(bytes.length, o.size)
     assert.equal((await fetch(o.url.replace(/sig=.{4}/, 'sig=0000'))).status, 403)
   }
-  const page = await w.clients.archive.listObjects({ source: s.id, limit: 2 }, { Authorization: `Bearer ${s.sk}` })
+  const page = await w.clients.archive.listObjects({ project: s.id, limit: 2 }, { Authorization: `Bearer ${s.sk}` })
   assert.equal(page.objects.length, 2); assert.equal(page.nextAfter, '2')
-  assert.deepEqual((await w.clients.archive.listObjects({ source: s.id, after: '2' }, admin)).objects.map(o => o.seq), ['3'])
-  assert.equal((await w.clients.archive.listObjects({ source: s.id, after: '3' }, admin)).objects.length, 0)
-  const cov = await w.clients.archive.getCoverage({ source: s.id }, admin)
+  assert.deepEqual((await w.clients.archive.listObjects({ project: s.id, after: '2' }, admin)).objects.map(o => o.seq), ['3'])
+  assert.equal((await w.clients.archive.listObjects({ project: s.id, after: '3' }, admin)).objects.length, 0)
+  const cov = await w.clients.archive.getCoverage({ project: s.id }, admin)
   assert.equal(cov.coverage?.latestPublished, '3'); assert.equal(cov.publication?.state, 'idle')
-  await assert.rejects(w.clients.archive.listObjects({ source: s.id }, { Authorization: `Bearer ${s.pk}` }), ForbiddenError)
-  const other = await newSource(w.base, name('other'))
-  await assert.rejects(w.clients.archive.listObjects({ source: s.id }, { Authorization: `Bearer ${other.sk}` }), ForbiddenError)
-  await assert.rejects(w.clients.archive.listObjects({ source: s.id }), UnauthenticatedError)
-  await assert.rejects(w.clients.archive.listObjects({ source: s.id, after: 'x' }, admin), InvalidArgumentError)
-  assert.equal((await w.clients.archive.listObjects({ source: (await newSource(w.base, name('empty'))).id }, admin)).objects.length, 0)
+  await assert.rejects(w.clients.archive.listObjects({ project: s.id }, { Authorization: `Bearer ${s.pk}` }), ForbiddenError)
+  const other = await newProject(w.base, name('other'))
+  await assert.rejects(w.clients.archive.listObjects({ project: s.id }, { Authorization: `Bearer ${other.sk}` }), ForbiddenError)
+  await assert.rejects(w.clients.archive.listObjects({ project: s.id }), UnauthenticatedError)
+  await assert.rejects(w.clients.archive.listObjects({ project: s.id, after: 'x' }, admin), InvalidArgumentError)
+  assert.equal((await w.clients.archive.listObjects({ project: (await newProject(w.base, name('empty'))).id }, admin)).objects.length, 0)
 })
 
 test('group commit: concurrent requests share rows, every event lands exactly once', async () => {
-  const s = await newSource(w.base, name('gc'))
+  const s = await newProject(w.base, name('gc'))
   const before = (await stats(w.base, s.id)).rows
   const res = await Promise.all(Array.from({ length: 60 }, (_, i) => post(w.base, s.pk, Array.from({ length: 20 }, (_, k) => evt(`c${i}-${k}`)).join('\n'))))
   assert.deepEqual([...new Set(res.map(r => r.status))], [200])

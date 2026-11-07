@@ -26,7 +26,7 @@ pub struct Options {
     #[arg(long, env = "SLURP_BACKEND")]
     pub backend: Option<String>,
     /// Prepare local preferences without connecting a Worker.
-    #[arg(long, alias = "no-login")]
+    #[arg(long)]
     pub no_connect: bool,
     /// Print browser destinations instead of opening them.
     #[arg(long)]
@@ -241,7 +241,7 @@ fn settings_menu(
         return Ok(configured_status(home, &saved));
     }
     ui.heading("Slurp is already configured on this computer.")?;
-    let mut authenticated = None;
+    let mut connected = None;
     loop {
         let status = configured_status(home, &saved);
         ui.note(
@@ -300,7 +300,7 @@ fn settings_menu(
             "done" => {
                 ui.success("Run slurp init inside your app to connect a project.")?;
                 let mut result = configured_status(home, &saved);
-                result["authenticated"] = json!(authenticated);
+                result["connected"] = json!(connected);
                 return Ok(result);
             }
             "guide" => {
@@ -364,16 +364,15 @@ fn settings_menu(
                         .backend
                         .as_deref()
                         .unwrap_or(slurp_client::config::DEFAULT_BACKEND),
-                    home,
                     ui,
                     no_open,
                 )) {
                     Ok(_) => {
-                        authenticated = Some(true);
+                        connected = Some(true);
                         ui.note("Worker connected", "Ready to connect projects.")?;
                     }
                     Err(error) => {
-                        authenticated = Some(false);
+                        connected = Some(false);
                         ui.note("Worker connection incomplete", &error.to_string())?;
                     }
                 }
@@ -493,12 +492,7 @@ pub fn run(options: Options, machine_output: bool) -> Result<Value> {
         );
     }
     if !ui.interactive && !options.no_connect {
-        tokio::runtime::Runtime::new()?.block_on(login::ensure(
-            &backend,
-            &home,
-            &ui,
-            options.no_open,
-        ))?;
+        tokio::runtime::Runtime::new()?.block_on(login::ensure(&backend, &ui, options.no_open))?;
     }
     if install {
         executable = Some(setup::install()?);
@@ -508,7 +502,7 @@ pub fn run(options: Options, machine_output: bool) -> Result<Value> {
     system::save_machine(&home, &backend, &library_path, &executable)?;
     if ui.interactive && !options.no_connect {
         tokio::runtime::Runtime::new()?
-            .block_on(login::ensure(&backend, &home, &ui, options.no_open))
+            .block_on(login::ensure(&backend, &ui, options.no_open))
             .context(
                 "machine preferences saved; Worker connection incomplete; rerun slurp setup to continue",
             )?;
@@ -520,6 +514,6 @@ pub fn run(options: Options, machine_output: bool) -> Result<Value> {
     };
     ui.success(next)?;
     Ok(
-        json!({"home":home,"config":home.join("config.toml"),"library_dir":library_path,"duckdb":executable,"authenticated":!options.no_connect,"local_ready":true,"missing":if options.no_connect {vec!["login"]}else{Vec::<&str>::new()},"next_steps":next}),
+        json!({"home":home,"config":home.join("config.toml"),"library_dir":library_path,"duckdb":executable,"connected":!options.no_connect,"local_ready":true,"missing":if options.no_connect {vec!["login"]}else{Vec::<&str>::new()},"next_steps":next}),
     )
 }

@@ -8,8 +8,6 @@ license.workspace = true
 
 [dependencies]
 rquickjs = "=0.14.0"
-resvg = { version = "=0.49.0", default-features = false, features = ["text", "system-fonts"] }
-fontdb = "=0.24.0"
 skrifa = "=0.48.0"
 zstd = "=0.13.3"
 takumi = { version = "=2.19.0", features = ["from-html", "unstable"] }

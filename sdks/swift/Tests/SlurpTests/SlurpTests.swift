@@ -25,6 +25,8 @@ final class StubProtocol: URLProtocol {
         let sent = Sent(body: body, headers: request.allHTTPHeaderFields ?? [:])
         StubProtocol.lock.lock(); StubProtocol.sent.append(sent); StubProtocol.lock.unlock()
         let reply: (status: Int, headers: [String: String]) = StubProtocol.handler?(sent) ?? (status: 200, headers: [:])
+        if reply.status == -1 { return } // a server that never answers
+        if reply.status == 0 { client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return }
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: reply.headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data("{}".utf8))
@@ -52,7 +54,7 @@ final class SlurpTests: XCTestCase {
     }
 
     func client(_ customize: (inout SlurpClient.Configuration) -> Void = { _ in }) -> SlurpClient {
-        var configuration = SlurpClient.Configuration(key: "slurp_pk_test", endpoint: URL(string: "https://worker.example/v1/events")!, sourceId: "src_test")
+        var configuration = SlurpClient.Configuration(key: "slurp_pk_test", endpoint: URL(string: "https://worker.example/v1/events")!)
         configuration.session = session()
         configuration.directory = directory
         configuration.flushInterval = 3600
@@ -249,5 +251,18 @@ final class SlurpTests: XCTestCase {
         slurp.screen("Settings")
         let result = await slurp.flush()
         XCTAssertEqual(result.accepted, 3); XCTAssertEqual(result.pending, 0)
+    }
+
+    /// A key names its project, so a replacement key from the same project keeps the saved queue and identity.
+    func testAKeyNamesItsProjectAndOtherKeysAreTheirOwnIdentity() {
+        let project = String(repeating: "a", count: 16)
+        let first = "slurp_pk_\(project)_\(String(repeating: "1", count: 48))"
+        let second = "slurp_pk_\(project)_\(String(repeating: "2", count: 48))"
+        let other = "slurp_pk_\(String(repeating: "b", count: 16))_\(String(repeating: "1", count: 48))"
+        XCTAssertEqual(SlurpClient.identity(of: first), project)
+        XCTAssertEqual(SlurpClient.identity(of: second), project)
+        XCTAssertNotEqual(SlurpClient.identity(of: other), project)
+        XCTAssertEqual(SlurpClient.identity(of: "slurp_pk_test"), "slurp_pk_test")
+        XCTAssertEqual(SlurpClient.identity(of: "slurp_pk_\(project)_short"), "slurp_pk_\(project)_short")
     }
 }

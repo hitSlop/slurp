@@ -50,7 +50,7 @@ fn recipes_preserve_denominators_maturity_boundaries_and_zero_activity() {
     let w = Workspace::init(
         temp.path(),
         "http://localhost:8080".into(),
-        "src_test".into(),
+        "prj_test".into(),
         None,
         exe.into(),
     )
@@ -108,7 +108,7 @@ fn local_json_flags_and_sql_file_work_through_the_cli() {
     Workspace::init(
         temp.path(),
         "http://localhost:8080".into(),
-        "src_test".into(),
+        "prj_test".into(),
         None,
         exe.into(),
     )
@@ -117,7 +117,7 @@ fn local_json_flags_and_sql_file_work_through_the_cli() {
     std::fs::write(&sql, "SELECT 42 AS answer;\n").expect("query file");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_slurp"))
         .arg("--json")
-        .arg("--workspace")
+        .arg("--project")
         .arg(temp.path())
         .args(["sql", "--file"])
         .arg(sql)

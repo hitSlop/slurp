@@ -2,7 +2,7 @@
 name: slurp
 description: Sync self-hosted events, query local DuckDB and author reports.
 ---
-Use slurp status and slurp describe before analysis, and slurp health to see data problems (spelling variants, wrong clocks, double tracking, bots) before trusting a number. For people use events_with_person and its person_id instead of user_id alone (it joins anonymous visitors to their identified user); calendar(), biz_date(), pct() and session_start() are available in every query. Run slurp sync to fetch published archives. The Worker seals new archives about every 10 minutes by default; accepted events may not yet be visible. Send and sync may return optional source-level publication estimates; these are not delivery guarantees. Use --json for full structured query results and publication metadata. Credentials belong in the private machine store or environment, never reports or source control. The default machine store is ~/.slurp/credentials.json with owner-only permissions; ordinary sync/send must not invoke Keychain. SLURP_TOKEN / SLURP_READ_KEY override the saved Worker connection. If migrating an older installation, a human can run slurp credentials migrate-keychain once; do not repeatedly retry that command from an unattended agent.
+Use slurp status and slurp describe before analysis, and slurp health to see data problems (spelling variants, wrong clocks, double tracking, bots) before trusting a number. For people use events_with_person and its person_id instead of user_id alone (it joins anonymous visitors to their identified user); calendar(), biz_date(), pct() and session_start() are available in every query. Run slurp sync to fetch published archives. The Worker seals new archives about every 10 minutes by default; accepted events may not yet be visible. Send and sync may return optional project-level publication estimates; these are not delivery guarantees. Use --json for full structured query results and publication metadata. Credentials belong in the private machine store or environment, never reports or source control. The default machine store is ~/.slurp/credentials.json with owner-only permissions; ordinary sync/send must not invoke Keychain. SLURP_TOKEN / SLURP_READ_KEY override the saved Worker connection.
 Query events using slurp sql 'SELECT ...' or duckdb -readonly .slurp/data/events.duckdb. Payload properties remain JSON in data. Do not modify events or _slurp tables. Save business logic as SQL files, not importer changes.
 Reports contain Markdown, named ```sql NAME fences and YAML chart, metric, table fences with query: NAME. Chart spec is Vega-Lite without external data. Aggregate in SQL; metric queries return one row. Build with slurp report build FILE --out NEW_DIRECTORY --png --pdf. Add `purpose:` (one line) to the front matter, and `width: half` or `width: third` to a block to place two or three side by side. Choose colors with --theme ID or --dark, or write a theme .json; run `slurp report show list` for ids. A custom page template is a .css file (--style FILE; start from `slurp report show style grid`). Run `slurp report check FILE` before building: it lists every mistake with its line (unknown keys, queries or columns, bad SQL or chart specs), and `build` refuses a report that fails it. Metrics take `decimals`, `prefix`, `suffix` and `compact`, tables take `limit` and `formats`; blocks must not be nested in lists or quotes. PNG/PDF cannot draw CJK, Arabic or emoji (the build warns); the HTML can. For retention, funnels and sessions use DuckDB's behavioral functions (retention(), window_funnel(), sessionize(), sequence_match()): add `extensions: [behavioral]` to a report's front matter, or pass `--extension behavioral` to slurp sql. The first use downloads the extension, so it needs a network connection once. Inspect outputs before delivering. Reports contain selected query results, so review before sharing.
 
@@ -14,15 +14,15 @@ Use DuckDB 2.x. Run saved queries with `slurp sql --file query.sql`. Preserve me
 
 ## First-run commands
 
-Inside an initialized app or its subfolders, use `slurp send EVENT` and `slurp identify USER_ID`. The nearest parent project supplies the source and SDK key; no database or human login is needed to send. `--workspace` selects an exact project; `--source` is an explicit ingestion override. Never guess a project from the global registry.
+Inside an initialized app or its subfolders, use `slurp send EVENT` and `slurp identify USER_ID`. The nearest parent project supplies the project and (via your saved Worker connection) its publishable key; no database is needed to send. Every event carries the name of the key that sent it as `sender`. `--project` selects an exact project folder; `--to PROJECT` sends to a project by id or name instead. Never guess a project from the global registry.
 
-Human onboarding uses `slurp setup` once per computer, then `slurp init` in each app. Setup configures a library and DuckDB and signs in; it never creates a source or project. Init creates or selects a project by name and opens a local quickstart page with its SDK snippet. Source IDs are an advanced scripting interface.
+Human onboarding uses `slurp setup` once per computer, then `slurp init` in each app. Setup configures a library and DuckDB and signs in; it never creates a project. Init creates a project by name (or joins the existing project with that name) and opens a local quickstart page with its SDK snippet. Project IDs (`prj_…`) are an advanced scripting interface.
 
-For noninteractive work, use explicit `init --source SOURCE` with a supplied read key and available DuckDB, or `init --name NAME` when authorized to create a project. Missing prerequisites return `setup_required`; do not retry an interactive wizard in a headless agent. Existing init runs reuse the source, database and key.
+For noninteractive work, use explicit `init --connect PROJECT` with a supplied read key and available DuckDB, or `init --name NAME` when authorized to create a project. Missing prerequisites return `setup_required`; do not retry an interactive wizard in a headless agent. Existing init runs reuse the project, database and key.
 
 ## Collection limits
 
-HTTP 429 and 503 are retryable: honor `Retry-After` and back off. HTTP 401 and 403 are terminal for that key; surface them to the owner instead of creating another source. If the Worker hits Cloudflare's daily request cap on the Free plan, ingestion pauses and the SDK retries; ask the owner before upgrading the Cloudflare plan. `slurp status` shows archive coverage and pending publication. Read keys cannot create sources or keys.
+HTTP 429 and 503 are retryable: honor `Retry-After` and back off. HTTP 401 and 403 are terminal for that key; surface them to the owner instead of creating another key. If the Worker hits Cloudflare's daily request cap on the Free plan, ingestion pauses and the SDK retries; ask the owner before upgrading the Cloudflare plan. `slurp status` shows archive coverage and pending publication. Read keys cannot create projects or keys.
 
 <!-- onboarding:generated -->
 
@@ -37,7 +37,6 @@ import { init, track, flush } from '@hitslop/slurp-sdk';
 
 init({
   endpoint: 'YOUR_INGEST_URL',
-  sourceId: 'YOUR_SOURCE_ID',
   key: 'YOUR_PUBLISHABLE_KEY',
 });
 
@@ -48,7 +47,7 @@ await flush(); // Node: flush before exiting
 ### sync
 
 ```sh
-slurp init --backend YOUR_BACKEND --source YOUR_SOURCE_ID
+slurp init --backend YOUR_BACKEND --connect YOUR_PROJECT_ID
 slurp sync
 slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 ```
@@ -58,14 +57,14 @@ slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 ```sh
 slurp agent setup --out .agents/skills/slurp
 # Put the bot read key in its secret store as SLURP_TOKEN.
-slurp init --backend YOUR_BACKEND --source YOUR_SOURCE_ID
+slurp init --backend YOUR_BACKEND --connect YOUR_PROJECT_ID
 slurp sync
 ```
 
 ### key
 
 ```sh
-slurp --backend YOUR_BACKEND source key create YOUR_SOURCE_ID --scope secret --name grok
+slurp --backend YOUR_BACKEND project key create YOUR_PROJECT_ID --scope secret --name grok
 ```
 
 ### hosting
@@ -85,7 +84,6 @@ import { init, track, identify, screen } from '@hitslop/slurp-react-native';
 
 init({
   endpoint: 'YOUR_INGEST_URL',
-  sourceId: 'YOUR_SOURCE_ID',
   key: 'YOUR_PUBLISHABLE_KEY',
 });
 
@@ -101,8 +99,7 @@ import Slurp
 
 SlurpClient.configure(.init(
     key: "YOUR_PUBLISHABLE_KEY",
-    endpoint: URL(string: "YOUR_INGEST_URL")!,
-    sourceId: "YOUR_SOURCE_ID"))
+    endpoint: URL(string: "YOUR_INGEST_URL")!))
 
 SlurpClient.shared.screen("Home")
 SlurpClient.shared.track("purchase_completed", ["total": 49])
@@ -126,6 +123,22 @@ let config = Configuration(writeKey: "YOUR_PUBLISHABLE_KEY").apiHost("YOUR_HOST/
 
 ```js
 // Already use Sentry? Keep the SDK and change the DSN.
-// The public key in the DSN is your publishable key written in hex (Sentry only allows letters, digits and _ there).
-Sentry.init({ dsn: 'https://YOUR_SENTRY_KEY@YOUR_HOST/1' });
+// The public key in the DSN is your publishable key as is.
+Sentry.init({ dsn: 'https://YOUR_PUBLISHABLE_KEY@YOUR_HOST/1' });
+```
+
+### mcp
+
+```sh
+# Let an AI client read this project's events over MCP (add --allow-send to let it send events too).
+claude mcp add slurp -- slurp mcp --project /path/to/your/project
+# Cursor, Claude Desktop, Windsurf (JSON) and Codex (TOML): see https://github.com/hitSlop/slurp/blob/master/docs/integrations.md
+```
+
+### notify
+
+```sh
+# Post a report to Slack (bot token) or Discord (webhook). Credentials come from the environment.
+slurp report build report.md --out ./report --png
+SLACK_BOT_TOKEN=xoxb-... slurp notify slack --channel C0123ABCD --text "Weekly report" --file ./report/report.png
 ```

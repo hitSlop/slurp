@@ -1,6 +1,31 @@
 {
-  "build": "b8759218ff63",
+  "build": "f5c8dd779bf3",
   "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REGISTRY",
+        "class_name": "RegistryDO"
+      },
+      {
+        "name": "PROJECT",
+        "class_name": "ProjectDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RegistryDO",
+        "ProjectDO"
+      ]
+    }
+  ],
+  "r2_binding": "ARCHIVE",
+  "observability": {
+    "enabled": true
+  },
   "vars": {
     "SEAL_INTERVAL_MS": "600000",
     "SEAL_MAX_BYTES": "8388608",

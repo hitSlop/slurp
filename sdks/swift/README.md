@@ -9,15 +9,14 @@ In Xcode: **File → Add Package Dependencies…** and enter `https://github.com
 // target dependency: .product(name: "Slurp", package: "slurp")
 ```
 
-`slurp init` prints your ingest URL, source ID and publishable key (`slurp_pk_…`, ingest-only, safe to ship in an app).
+`slurp init` prints your ingest URL and publishable key (`slurp_pk_…`, ingest-only, safe to ship in an app).
 
 ```swift
 import Slurp
 
 var configuration = SlurpClient.Configuration(
     key: "slurp_pk_…",
-    endpoint: URL(string: "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events")!,
-    sourceId: "src_…")
+    endpoint: URL(string: "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events")!)
 SlurpClient.configure(configuration)
 
 SlurpClient.shared.screen("Home")
@@ -29,21 +28,22 @@ SlurpClient.shared.identify("user-42", traits: ["plan": "pro"])
 
 ## Events survive the app being killed
 
-Every event is appended to a file in Application Support before anything is sent. A batch is written to its own file before its first upload and deleted only after the Worker acknowledges it, so a kill, a crash or a dead network never loses an event, and a retry sends the identical bytes (the Worker drops a duplicate it already stored). The visitor identity, signed-in user and session persist too. A crash while writing the queue can at worst leave a duplicate (same id, which the archive deduplicates) or a half-written last line, which is ignored.
+Every event is appended to a file in Application Support before anything is sent. A batch is written to its own file before its first upload and deleted only after the Worker acknowledges it, so a kill, a crash or a dead network never loses an event, and a retry sends the identical bytes (the Worker drops a duplicate it already stored). The visitor identity, signed-in user and session persist too. The Worker refuses a whole request if one line in it is malformed, so the queue never keeps a damaged line: when the file is read, a half-written last line (from a crash) or any line that is not a complete JSON record is removed, the file is rewritten, and `onError` is told how many were dropped; a write that fails is healed the same way before the next one.
 
-Events are sent when `flushAt` (100) are queued, every `flushInterval` (5 s) while the app runs, when the app resigns active, enters the background or quits, and when it becomes active again. Failures back off with jitter and honor `Retry-After`, including across launches. A 413 splits the batch, a 400 drops it, and a 401/403 stops the client and discards its queue (the key is wrong or revoked). Events are never truncated; one larger than 1 MiB is refused and reported through `onError`.
+Events are sent when `flushAt` (100) are queued, every `flushInterval` (5 s) while the app runs, when the app resigns active, enters the background or quits, and when it becomes active again. Any 2xx acknowledges a batch. Failures (408, 429, 5xx, no network, or no answer within `requestTimeout`) back off with jitter and honor `Retry-After`, including across launches, and always resend the identical bytes. A 413 splits the batch (the first half is the larger one) and drops only a single event that is itself too large; if the halves cannot be written, the batch is kept and retried. A 400 drops the batch. A 401 or 403 stops the client, discards its queue and reports everything that was waiting; supplying a different key starts it again. Events are never truncated; one larger than 1 MiB is refused and reported through `onError`.
 
 ## Configuration
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `sourceId` | none | Include it so the visitor identity survives a key rotation |
 | `flushAt`, `flushInterval` | 100, 5 s | When to send |
 | `maxBatchEvents`, `maxBatchBytes` | 1000, 921,600 | Batch size; an event larger than the byte target travels alone |
 | `maxQueue` | 10,000 | Events kept while offline; the oldest are dropped and reported |
+| `maxQueueBytes` | 50 MiB | Bytes kept while offline, counting queued events and unsent batches; the oldest are dropped and reported |
+| `requestTimeout` | 30 s | A request with no answer is cancelled and retried with the same bytes |
 | `sessionTimeout` | 1800 s | Inactivity before a new session starts |
 | `context` | none | Closure returning extra context merged over the automatic one |
-| `onError` | none | `(Error, dropped: Int)`; `dropped` is zero when work is kept for a retry |
+| `onError` | none | `(Error, dropped: Int)`; `dropped` is zero when work is kept for a retry. Called on a queue of its own, so it is safe to read `pending`, call `flush` or `close()` from inside it |
 | `flushOnBackground` | true | Send when the app leaves the foreground |
 | `session`, `directory` | shared session, Application Support | Inject your own `URLSession` or queue folder |
 

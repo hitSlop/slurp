@@ -51,7 +51,7 @@ fn public_guide_has_budget_tier_and_no_personalized_context() {
     let page = setup::write_storage_guide(home.path()).expect("write guide");
     let html = fs::read_to_string(&page).expect("guide HTML");
     assert!(html.contains("\"guide_only\":true"));
-    assert!(html.contains("\"source\":null"));
+    assert!(html.contains("\"project\":null"));
     assert!(html.contains("\"publishable_key\":null"));
     assert!(html.contains("\"read_key\":null"));
     let catalog: serde_json::Value =

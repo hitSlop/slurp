@@ -21,7 +21,7 @@ const client = createClient({
   onError: error => { errors.push(error.message) },
   fetch: async (input, init) => {
     const body = String(init?.body)
-    const persisted = JSON.parse((await storage.getItem(`@hitslop/slurp-sdk:v2:${key}`))!)
+    const persisted = JSON.parse((await storage.getItem(`@hitslop/slurp-sdk:v1:${endpoint}:${key.split('_')[2]}`))!)
     assert.equal(persisted.batches[0], body)
     batches.push(body)
     return send(input, init)

@@ -64,7 +64,7 @@ fn versions_and_hash_match_app() {
 }
 
 #[test]
-fn errors_warnings_sanitization_and_png() {
+fn errors_warnings_and_sanitization() {
     let result = json!({"columns":[{"name":"x","type":"INTEGER"},{"name":"y","type":"DOUBLE"}],"rows":[["1","2.5"],["2",null]]});
     let mut renderer = ChartRenderer::new();
     for spec in [
@@ -83,18 +83,6 @@ fn errors_warnings_sanitization_and_png() {
         .compile(&spec, &result, CompileOptions::default())
         .unwrap();
     assert!(!light.svg.contains("must-not-open"));
-    let png = renderer.to_png(&light.svg, 2.0).unwrap();
-    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-    assert!(renderer.to_png(&light.svg, 0.0).is_err());
-    assert!(renderer.to_png(&light.svg, f32::NAN).is_err());
-    assert!(
-        renderer
-            .to_png(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="100000"/>"#,
-                2.0
-            )
-            .is_err()
-    );
     let warning = renderer
         .compile(
             &json!({"mark":"bar","encoding":{"x":{"field":"x","type":"quantitative"},"shape":{"field":"x","type":"nominal"}}}),

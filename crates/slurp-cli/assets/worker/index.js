@@ -41,7 +41,7 @@ __name(retry, "retry");
 var MAX_RECORD_BYTES = 1024 * 1024;
 var MAX_DEPTH = 128;
 var RECORD_TOO_LARGE = "record exceeds 1 MiB";
-var RESERVED = ["received_at", "received_seq", "rt", "rseq", "ts", "props"];
+var RESERVED = ["received_at", "received_seq", "sender"];
 var MAX_LINES = 1 << 20;
 var Reject = class extends Error {
   static {
@@ -220,7 +220,7 @@ function validateRecord(line) {
     const v = JSON.parse(line.slice(span[0], span[1]));
     return v === "" ? null : v;
   }, "text");
-  for (const k of RESERVED) if (sc.members.has(k)) return { reason: `reserved or obsolete ${k} field` };
+  for (const k of RESERVED) if (sc.members.has(k)) return { reason: `reserved ${k} field` };
   const id = text3("id");
   if (id === null || new TextEncoder().encode(id).length > 256) return { reason: "id must be a string of 1-256 bytes" };
   const type = text3("type");
@@ -301,12 +301,12 @@ function checkBody(body, geo) {
   return { lines };
 }
 __name(checkBody, "checkBody");
-function stampOne(raw, batchId, atMs, n) {
+function stampOne(raw, batchId, atMs, n, sender) {
   const line = raw.replace(/^[ \t\r]+/, "");
   const rest = line.slice(1);
   const seq = (BigInt(batchId) << 20n | BigInt(n)).toString();
   const comma = /^[ \t\r]*\}/.test(rest) ? "" : ",";
-  return `{"received_at":"${new Date(atMs).toISOString()}","received_seq":"${seq}"${comma}${rest}
+  return `{"received_at":"${new Date(atMs).toISOString()}","received_seq":"${seq}","sender":${JSON.stringify(sender)}${comma}${rest}
 `;
 }
 __name(stampOne, "stampOne");
@@ -339,7 +339,7 @@ ${setup}
 <li>Install the Slurp CLI.</li>
 <li>Connect it to this Worker with the <code>ADMIN_TOKEN</code> you chose when you deployed. The token is read from standard input, so it never shows up in your shell history:
 <pre><code>slurp connect ${o} --token-stdin</code></pre></li>
-<li>In your app's folder, create a source and get the SDK snippet:
+<li>In your app's folder, create a project and get the SDK snippet:
 <pre><code>slurp setup
 slurp init --name "My app"</code></pre></li>
 </ol>
@@ -351,7 +351,7 @@ __name(setupPage, "setupPage");
 
 // src/slurp.gen.ts
 var WebrpcVersion = "v1";
-var WebrpcSchemaVersion = "v0.5.0";
+var WebrpcSchemaVersion = "v0.6.0";
 var serveArchiveRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
   const pathname = new URL(request.url).pathname;
   if (!pathname.startsWith("/rpc/Archive/")) return null;
@@ -390,82 +390,55 @@ var dispatchArchiveRequest = /* @__PURE__ */ __name(async (service, ctx, method,
       throw new WebrpcBadRouteError({ cause: "method not found" });
   }
 }, "dispatchArchiveRequest");
-var serveSourceRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
+var serveProjectRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
   const pathname = new URL(request.url).pathname;
-  if (!pathname.startsWith("/rpc/Source/")) return null;
-  const method = pathname.slice("/rpc/Source/".length);
+  if (!pathname.startsWith("/rpc/Project/")) return null;
+  const method = pathname.slice("/rpc/Project/".length);
   if (method === "" || method.includes("/")) return null;
   if (request.method !== "POST") {
     return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
   }
   try {
-    return await dispatchSourceRequest(service, ctx, method, request);
+    return await dispatchProjectRequest(service, ctx, method, request);
   } catch (err) {
     return webrpcErrorResponse(err);
   }
-}, "serveSourceRpc");
-var dispatchSourceRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
+}, "serveProjectRpc");
+var dispatchProjectRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
   switch (method) {
-    case "GetSource": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "GetSourceRequest");
-      if (payload && !validateType(payload, "GetSourceRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: getSourceRequest" });
+    case "GetProject": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "GetProjectRequest");
+      if (payload && !validateType(payload, "GetProjectRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: getProjectRequest" });
       }
-      const result = await service.getSource(ctx, payload || {});
+      const result = await service.getProject(ctx, payload || {});
       const tagged = webrpcTaggedStatus(result);
       return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
     }
-    case "UpdateSource": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "UpdateSourceRequest");
-      if (payload && !validateType(payload, "UpdateSourceRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: updateSourceRequest" });
+    case "UpdateProject": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "UpdateProjectRequest");
+      if (payload && !validateType(payload, "UpdateProjectRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: updateProjectRequest" });
       }
-      const result = await service.updateSource(ctx, payload || {});
+      const result = await service.updateProject(ctx, payload || {});
       const tagged = webrpcTaggedStatus(result);
       return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
     }
-    case "AddMember": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "SourceMemberRequest");
-      if (payload && !validateType(payload, "SourceMemberRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: sourceMemberRequest" });
+    case "ListProjects": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "ListProjectsRequest");
+      if (payload && !validateType(payload, "ListProjectsRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: listProjectsRequest" });
       }
-      const result = await service.addMember(ctx, payload || {});
+      const result = await service.listProjects(ctx, payload || {});
       const tagged = webrpcTaggedStatus(result);
       return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
     }
-    case "RemoveMember": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "SourceMemberRequest");
-      if (payload && !validateType(payload, "SourceMemberRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: sourceMemberRequest" });
+    case "CreateProject": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "CreateProjectRequest");
+      if (payload && !validateType(payload, "CreateProjectRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: createProjectRequest" });
       }
-      const result = await service.removeMember(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "ListSources": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "ListSourcesRequest");
-      if (payload && !validateType(payload, "ListSourcesRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: listSourcesRequest" });
-      }
-      const result = await service.listSources(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "ListMemberships": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "ListMembershipsRequest");
-      if (payload && !validateType(payload, "ListMembershipsRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: listMembershipsRequest" });
-      }
-      const result = await service.listMemberships(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "CreateSource": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "CreateSourceRequest");
-      if (payload && !validateType(payload, "CreateSourceRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: createSourceRequest" });
-      }
-      const result = await service.createSource(ctx, payload || {});
+      const result = await service.createProject(ctx, payload || {});
       const tagged = webrpcTaggedStatus(result);
       return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
     }
@@ -499,7 +472,7 @@ var dispatchSourceRequest = /* @__PURE__ */ __name(async (service, ctx, method, 
     default:
       throw new WebrpcBadRouteError({ cause: "method not found" });
   }
-}, "dispatchSourceRequest");
+}, "dispatchProjectRequest");
 var serveHealthRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
   const pathname = new URL(request.url).pathname;
   if (!pathname.startsWith("/rpc/Health/")) return null;
@@ -545,48 +518,12 @@ var serveAuthRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
 }, "serveAuthRpc");
 var dispatchAuthRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
   switch (method) {
-    case "BeginLogin": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BeginLoginRequest");
-      if (payload && !validateType(payload, "BeginLoginRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: beginLoginRequest" });
+    case "Whoami": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "WhoamiRequest");
+      if (payload && !validateType(payload, "WhoamiRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: whoamiRequest" });
       }
-      const result = await service.beginLogin(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "PollLogin": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "PollLoginRequest");
-      if (payload && !validateType(payload, "PollLoginRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: pollLoginRequest" });
-      }
-      const result = await service.pollLogin(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "Refresh": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "RefreshRequest");
-      if (payload && !validateType(payload, "RefreshRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: refreshRequest" });
-      }
-      const result = await service.refresh(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "Logout": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "LogoutRequest");
-      if (payload && !validateType(payload, "LogoutRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: logoutRequest" });
-      }
-      const result = await service.logout(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "CurrentUser": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "CurrentUserRequest");
-      if (payload && !validateType(payload, "CurrentUserRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: currentUserRequest" });
-      }
-      const result = await service.currentUser(ctx, payload || {});
+      const result = await service.whoami(ctx, payload || {});
       const tagged = webrpcTaggedStatus(result);
       return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
     }
@@ -594,91 +531,6 @@ var dispatchAuthRequest = /* @__PURE__ */ __name(async (service, ctx, method, re
       throw new WebrpcBadRouteError({ cause: "method not found" });
   }
 }, "dispatchAuthRequest");
-var serveUsageRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
-  const pathname = new URL(request.url).pathname;
-  if (!pathname.startsWith("/rpc/Usage/")) return null;
-  const method = pathname.slice("/rpc/Usage/".length);
-  if (method === "" || method.includes("/")) return null;
-  if (request.method !== "POST") {
-    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
-  }
-  try {
-    return await dispatchUsageRequest(service, ctx, method, request);
-  } catch (err) {
-    return webrpcErrorResponse(err);
-  }
-}, "serveUsageRpc");
-var dispatchUsageRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
-  switch (method) {
-    case "GetUsage": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "GetUsageRequest");
-      if (payload && !validateType(payload, "GetUsageRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: getUsageRequest" });
-      }
-      const result = await service.getUsage(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    default:
-      throw new WebrpcBadRouteError({ cause: "method not found" });
-  }
-}, "dispatchUsageRequest");
-var serveBillingRpc = /* @__PURE__ */ __name(async (service, ctx, request) => {
-  const pathname = new URL(request.url).pathname;
-  if (!pathname.startsWith("/rpc/Billing/")) return null;
-  const method = pathname.slice("/rpc/Billing/".length);
-  if (method === "" || method.includes("/")) return null;
-  if (request.method !== "POST") {
-    return webrpcErrorResponse(new WebrpcBadMethodError({ cause: `unsupported HTTP method ${request.method} (only POST is allowed)` }), { Allow: "POST" });
-  }
-  try {
-    return await dispatchBillingRequest(service, ctx, method, request);
-  } catch (err) {
-    return webrpcErrorResponse(err);
-  }
-}, "serveBillingRpc");
-var dispatchBillingRequest = /* @__PURE__ */ __name(async (service, ctx, method, request, status = 200) => {
-  switch (method) {
-    case "GetStatus": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingStatusRequest");
-      if (payload && !validateType(payload, "BillingStatusRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: billingStatusRequest" });
-      }
-      const result = await service.getStatus(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "CreateCheckout": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingCheckoutRequest");
-      if (payload && !validateType(payload, "BillingCheckoutRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: billingCheckoutRequest" });
-      }
-      const result = await service.createCheckout(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "CreatePortal": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingPortalRequest");
-      if (payload && !validateType(payload, "BillingPortalRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: billingPortalRequest" });
-      }
-      const result = await service.createPortal(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    case "SetLimit": {
-      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "BillingLimitRequest");
-      if (payload && !validateType(payload, "BillingLimitRequest")) {
-        throw new WebrpcBadRequestError({ cause: "invalid argument: billingLimitRequest" });
-      }
-      const result = await service.setLimit(ctx, payload || {});
-      const tagged = webrpcTaggedStatus(result);
-      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
-    }
-    default:
-      throw new WebrpcBadRouteError({ cause: "method not found" });
-  }
-}, "dispatchBillingRequest");
 var webrpcRequestBodyText = /* @__PURE__ */ __name(async (request, skipContentTypeCheck = false) => {
   const contentType = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
   const checkContentType = /* @__PURE__ */ __name(() => {
@@ -792,7 +644,7 @@ var validateArchiveObject = /* @__PURE__ */ __name((value) => {
   return true;
 }, "validateArchiveObject");
 var validateListObjectsRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
     return false;
   }
   if ("after" in value && !validateType(value["after"], "Seq")) {
@@ -819,7 +671,7 @@ var validateListObjectsResponse = /* @__PURE__ */ __name((value) => {
   return true;
 }, "validateListObjectsResponse");
 var validateGetCoverageRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
     return false;
   }
   return true;
@@ -848,7 +700,7 @@ var validateGetCoverageResponse = /* @__PURE__ */ __name((value) => {
   }
   return true;
 }, "validateGetCoverageResponse");
-var validateSourceInfo = /* @__PURE__ */ __name((value) => {
+var validateProjectInfo = /* @__PURE__ */ __name((value) => {
   if (!("id" in value) || !validateType(value["id"], "string")) {
     return false;
   }
@@ -858,40 +710,16 @@ var validateSourceInfo = /* @__PURE__ */ __name((value) => {
   if ("title" in value && !validateType(value["title"], "string")) {
     return false;
   }
-  if (!("ownerId" in value) || !validateType(value["ownerId"], "string")) {
-    return false;
-  }
-  if (!("createdAt" in value) || !validateType(value["createdAt"], "string")) {
-    return false;
-  }
-  if (!("geoEnabled" in value) || !validateType(value["geoEnabled"], "boolean")) {
-    return false;
-  }
-  if (!("role" in value) || !validateType(value["role"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateSourceInfo");
-var validateMembership = /* @__PURE__ */ __name((value) => {
-  if (!("userId" in value) || !validateType(value["userId"], "string")) {
-    return false;
-  }
-  if (!("source" in value) || !validateType(value["source"], "string")) {
-    return false;
-  }
-  if (!("role" in value) || !validateType(value["role"], "string")) {
-    return false;
-  }
   if (!("createdAt" in value) || !validateType(value["createdAt"], "string")) {
     return false;
   }
   return true;
-}, "validateMembership");
+}, "validateProjectInfo");
 var validateApiKey = /* @__PURE__ */ __name((value) => {
   if (!("keyId" in value) || !validateType(value["keyId"], "string")) {
     return false;
   }
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
     return false;
   }
   if (!("scope" in value) || !validateType(value["scope"], "string")) {
@@ -906,30 +734,21 @@ var validateApiKey = /* @__PURE__ */ __name((value) => {
   if ("revokedAt" in value && !validateType(value["revokedAt"], "string")) {
     return false;
   }
+  if ("key" in value && !validateType(value["key"], "string")) {
+    return false;
+  }
   return true;
 }, "validateApiKey");
-var validateListMembershipsRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+var validateListProjectsRequest = /* @__PURE__ */ __name((_value) => {
+  return true;
+}, "validateListProjectsRequest");
+var validateListProjectsResponse = /* @__PURE__ */ __name((value) => {
+  if (!("projects" in value) || !validateType(value["projects"], "ProjectInfo[]")) {
     return false;
   }
   return true;
-}, "validateListMembershipsRequest");
-var validateListMembershipsResponse = /* @__PURE__ */ __name((value) => {
-  if (!("memberships" in value) || !validateType(value["memberships"], "Membership[]")) {
-    return false;
-  }
-  return true;
-}, "validateListMembershipsResponse");
-var validateListSourcesRequest = /* @__PURE__ */ __name((_value) => {
-  return true;
-}, "validateListSourcesRequest");
-var validateListSourcesResponse = /* @__PURE__ */ __name((value) => {
-  if (!("sources" in value) || !validateType(value["sources"], "SourceInfo[]")) {
-    return false;
-  }
-  return true;
-}, "validateListSourcesResponse");
-var validateCreateSourceRequest = /* @__PURE__ */ __name((value) => {
+}, "validateListProjectsResponse");
+var validateCreateProjectRequest = /* @__PURE__ */ __name((value) => {
   if ("title" in value && !validateType(value["title"], "string")) {
     return false;
   }
@@ -939,28 +758,43 @@ var validateCreateSourceRequest = /* @__PURE__ */ __name((value) => {
   if (!("name" in value) || !validateType(value["name"], "string")) {
     return false;
   }
-  if (!("requestId" in value) || !validateType(value["requestId"], "string")) {
+  return true;
+}, "validateCreateProjectRequest");
+var validateCreateProjectResponse = /* @__PURE__ */ __name((value) => {
+  if (!("project" in value) || !validateType(value["project"], "ProjectInfo")) {
     return false;
   }
-  return true;
-}, "validateCreateSourceRequest");
-var validateGetSourceRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+  if (!("created" in value) || !validateType(value["created"], "boolean")) {
     return false;
   }
-  return true;
-}, "validateGetSourceRequest");
-var validateGetSourceResponse = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "SourceInfo")) {
+  if (!("publishableKey" in value) || !validateType(value["publishableKey"], "string")) {
     return false;
   }
   if (!("ingestUrl" in value) || !validateType(value["ingestUrl"], "string")) {
     return false;
   }
   return true;
-}, "validateGetSourceResponse");
-var validateUpdateSourceRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+}, "validateCreateProjectResponse");
+var validateGetProjectRequest = /* @__PURE__ */ __name((value) => {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetProjectRequest");
+var validateGetProjectResponse = /* @__PURE__ */ __name((value) => {
+  if (!("project" in value) || !validateType(value["project"], "ProjectInfo")) {
+    return false;
+  }
+  if (!("ingestUrl" in value) || !validateType(value["ingestUrl"], "string")) {
+    return false;
+  }
+  if (!("geoEnabled" in value) || !validateType(value["geoEnabled"], "boolean")) {
+    return false;
+  }
+  return true;
+}, "validateGetProjectResponse");
+var validateUpdateProjectRequest = /* @__PURE__ */ __name((value) => {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
     return false;
   }
   if ("name" in value && !validateType(value["name"], "string")) {
@@ -973,36 +807,18 @@ var validateUpdateSourceRequest = /* @__PURE__ */ __name((value) => {
     return false;
   }
   return true;
-}, "validateUpdateSourceRequest");
-var validateUpdateSourceResponse = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "SourceInfo")) {
+}, "validateUpdateProjectRequest");
+var validateUpdateProjectResponse = /* @__PURE__ */ __name((value) => {
+  if (!("project" in value) || !validateType(value["project"], "ProjectInfo")) {
+    return false;
+  }
+  if (!("geoEnabled" in value) || !validateType(value["geoEnabled"], "boolean")) {
     return false;
   }
   return true;
-}, "validateUpdateSourceResponse");
-var validateSourceMemberRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
-    return false;
-  }
-  if (!("userId" in value) || !validateType(value["userId"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateSourceMemberRequest");
-var validateCreateSourceResponse = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "SourceInfo")) {
-    return false;
-  }
-  if (!("publishableKey" in value) || !validateType(value["publishableKey"], "string")) {
-    return false;
-  }
-  if (!("ingestUrl" in value) || !validateType(value["ingestUrl"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateCreateSourceResponse");
+}, "validateUpdateProjectResponse");
 var validateCreateKeyRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
     return false;
   }
   if (!("scope" in value) || !validateType(value["scope"], "string")) {
@@ -1023,7 +839,7 @@ var validateCreateKeyResponse = /* @__PURE__ */ __name((value) => {
   return true;
 }, "validateCreateKeyResponse");
 var validateListKeysRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
     return false;
   }
   if ("scope" in value && !validateType(value["scope"], "string")) {
@@ -1038,7 +854,7 @@ var validateListKeysResponse = /* @__PURE__ */ __name((value) => {
   return true;
 }, "validateListKeysResponse");
 var validateRevokeKeyRequest = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
     return false;
   }
   if (!("keyId" in value) || !validateType(value["keyId"], "string")) {
@@ -1067,213 +883,21 @@ var validateVersionResponse = /* @__PURE__ */ __name((value) => {
   }
   return true;
 }, "validateVersionResponse");
-var validateBeginLoginRequest = /* @__PURE__ */ __name((_value) => {
+var validateWhoamiRequest = /* @__PURE__ */ __name((_value) => {
   return true;
-}, "validateBeginLoginRequest");
-var validateBeginLoginResponse = /* @__PURE__ */ __name((value) => {
-  if (!("deviceCode" in value) || !validateType(value["deviceCode"], "string")) {
+}, "validateWhoamiRequest");
+var validateWhoamiResponse = /* @__PURE__ */ __name((value) => {
+  if (!("scope" in value) || !validateType(value["scope"], "string")) {
     return false;
   }
-  if (!("userCode" in value) || !validateType(value["userCode"], "string")) {
+  if ("project" in value && !validateType(value["project"], "string")) {
     return false;
   }
-  if (!("verificationUrl" in value) || !validateType(value["verificationUrl"], "string")) {
-    return false;
-  }
-  if ("verificationUrlComplete" in value && !validateType(value["verificationUrlComplete"], "string")) {
-    return false;
-  }
-  if (!("expiresInSeconds" in value) || !validateType(value["expiresInSeconds"], "number")) {
-    return false;
-  }
-  if (!("intervalSeconds" in value) || !validateType(value["intervalSeconds"], "number")) {
+  if ("name" in value && !validateType(value["name"], "string")) {
     return false;
   }
   return true;
-}, "validateBeginLoginResponse");
-var validatePollLoginRequest = /* @__PURE__ */ __name((value) => {
-  if (!("deviceCode" in value) || !validateType(value["deviceCode"], "string")) {
-    return false;
-  }
-  return true;
-}, "validatePollLoginRequest");
-var validateAuthUser = /* @__PURE__ */ __name((value) => {
-  if (!("id" in value) || !validateType(value["id"], "string")) {
-    return false;
-  }
-  if (!("email" in value) || !validateType(value["email"], "string")) {
-    return false;
-  }
-  if ("firstName" in value && !validateType(value["firstName"], "string")) {
-    return false;
-  }
-  if ("lastName" in value && !validateType(value["lastName"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateAuthUser");
-var validateAuthCredentials = /* @__PURE__ */ __name((value) => {
-  if (!("user" in value) || !validateType(value["user"], "AuthUser")) {
-    return false;
-  }
-  if (!("accessToken" in value) || !validateType(value["accessToken"], "string")) {
-    return false;
-  }
-  if (!("refreshToken" in value) || !validateType(value["refreshToken"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateAuthCredentials");
-var validatePollLoginResponse = /* @__PURE__ */ __name((value) => {
-  if (!("status" in value) || !validateType(value["status"], "string")) {
-    return false;
-  }
-  if ("credentials" in value && !validateType(value["credentials"], "AuthCredentials")) {
-    return false;
-  }
-  return true;
-}, "validatePollLoginResponse");
-var validateRefreshRequest = /* @__PURE__ */ __name((value) => {
-  if (!("refreshToken" in value) || !validateType(value["refreshToken"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateRefreshRequest");
-var validateRefreshResponse = /* @__PURE__ */ __name((value) => {
-  if (!("credentials" in value) || !validateType(value["credentials"], "AuthCredentials")) {
-    return false;
-  }
-  return true;
-}, "validateRefreshResponse");
-var validateLogoutRequest = /* @__PURE__ */ __name((_value) => {
-  return true;
-}, "validateLogoutRequest");
-var validateLogoutResponse = /* @__PURE__ */ __name((value) => {
-  if (!("ok" in value) || !validateType(value["ok"], "boolean")) {
-    return false;
-  }
-  return true;
-}, "validateLogoutResponse");
-var validateCurrentUserRequest = /* @__PURE__ */ __name((_value) => {
-  return true;
-}, "validateCurrentUserRequest");
-var validateCurrentUserResponse = /* @__PURE__ */ __name((value) => {
-  if (!("user" in value) || !validateType(value["user"], "AuthUser")) {
-    return false;
-  }
-  return true;
-}, "validateCurrentUserResponse");
-var validateUsageEntry = /* @__PURE__ */ __name((value) => {
-  if (!("source" in value) || !validateType(value["source"], "string")) {
-    return false;
-  }
-  if ("sourceName" in value && !validateType(value["sourceName"], "string")) {
-    return false;
-  }
-  if ("sourceTitle" in value && !validateType(value["sourceTitle"], "string")) {
-    return false;
-  }
-  if (!("day" in value) || !validateType(value["day"], "string")) {
-    return false;
-  }
-  if (!("events" in value) || !validateType(value["events"], "string")) {
-    return false;
-  }
-  if (!("rawBytes" in value) || !validateType(value["rawBytes"], "string")) {
-    return false;
-  }
-  if (!("compressedBytes" in value) || !validateType(value["compressedBytes"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateUsageEntry");
-var validateGetUsageRequest = /* @__PURE__ */ __name((value) => {
-  if ("month" in value && !validateType(value["month"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateGetUsageRequest");
-var validateGetUsageResponse = /* @__PURE__ */ __name((value) => {
-  if (!("month" in value) || !validateType(value["month"], "string")) {
-    return false;
-  }
-  if (!("asOf" in value) || !validateType(value["asOf"], "string")) {
-    return false;
-  }
-  if (!("entries" in value) || !validateType(value["entries"], "UsageEntry[]")) {
-    return false;
-  }
-  if (!("retainedBytes" in value) || !validateType(value["retainedBytes"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateGetUsageResponse");
-var validateBillingStatusRequest = /* @__PURE__ */ __name((_value) => {
-  return true;
-}, "validateBillingStatusRequest");
-var validateBillingStatusResponse = /* @__PURE__ */ __name((value) => {
-  if (!("environment" in value) || !validateType(value["environment"], "string")) {
-    return false;
-  }
-  if (!("state" in value) || !validateType(value["state"], "string")) {
-    return false;
-  }
-  if (!("period" in value) || !validateType(value["period"], "string")) {
-    return false;
-  }
-  if ("startsAt" in value && !validateType(value["startsAt"], "string")) {
-    return false;
-  }
-  if ("endsAt" in value && !validateType(value["endsAt"], "string")) {
-    return false;
-  }
-  if (!("acceptedBytes" in value) || !validateType(value["acceptedBytes"], "string")) {
-    return false;
-  }
-  if (!("forgivenBytes" in value) || !validateType(value["forgivenBytes"], "string")) {
-    return false;
-  }
-  if (!("includedBytes" in value) || !validateType(value["includedBytes"], "string")) {
-    return false;
-  }
-  if (!("estimatedCents" in value) || !validateType(value["estimatedCents"], "string")) {
-    return false;
-  }
-  if (!("spendLimitCents" in value) || !validateType(value["spendLimitCents"], "string")) {
-    return false;
-  }
-  if (!("currency" in value) || !validateType(value["currency"], "string")) {
-    return false;
-  }
-  if (!("reporting" in value) || !validateType(value["reporting"], "string")) {
-    return false;
-  }
-  if (!("asOf" in value) || !validateType(value["asOf"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateBillingStatusResponse");
-var validateBillingCheckoutRequest = /* @__PURE__ */ __name((value) => {
-  if (!("requestId" in value) || !validateType(value["requestId"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateBillingCheckoutRequest");
-var validateBillingUrlResponse = /* @__PURE__ */ __name((value) => {
-  if (!("url" in value) || !validateType(value["url"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateBillingUrlResponse");
-var validateBillingPortalRequest = /* @__PURE__ */ __name((_value) => {
-  return true;
-}, "validateBillingPortalRequest");
-var validateBillingLimitRequest = /* @__PURE__ */ __name((value) => {
-  if (!("cents" in value) || !validateType(value["cents"], "string")) {
-    return false;
-  }
-  return true;
-}, "validateBillingLimitRequest");
+}, "validateWhoamiResponse");
 var TYPE_VALIDATORS = {
   Seq: validateSeq,
   Coverage: validateCoverage,
@@ -1283,20 +907,16 @@ var TYPE_VALIDATORS = {
   GetCoverageRequest: validateGetCoverageRequest,
   PublicationStatus: validatePublicationStatus,
   GetCoverageResponse: validateGetCoverageResponse,
-  SourceInfo: validateSourceInfo,
-  Membership: validateMembership,
+  ProjectInfo: validateProjectInfo,
   ApiKey: validateApiKey,
-  ListMembershipsRequest: validateListMembershipsRequest,
-  ListMembershipsResponse: validateListMembershipsResponse,
-  ListSourcesRequest: validateListSourcesRequest,
-  ListSourcesResponse: validateListSourcesResponse,
-  CreateSourceRequest: validateCreateSourceRequest,
-  GetSourceRequest: validateGetSourceRequest,
-  GetSourceResponse: validateGetSourceResponse,
-  UpdateSourceRequest: validateUpdateSourceRequest,
-  UpdateSourceResponse: validateUpdateSourceResponse,
-  SourceMemberRequest: validateSourceMemberRequest,
-  CreateSourceResponse: validateCreateSourceResponse,
+  ListProjectsRequest: validateListProjectsRequest,
+  ListProjectsResponse: validateListProjectsResponse,
+  CreateProjectRequest: validateCreateProjectRequest,
+  CreateProjectResponse: validateCreateProjectResponse,
+  GetProjectRequest: validateGetProjectRequest,
+  GetProjectResponse: validateGetProjectResponse,
+  UpdateProjectRequest: validateUpdateProjectRequest,
+  UpdateProjectResponse: validateUpdateProjectResponse,
   CreateKeyRequest: validateCreateKeyRequest,
   CreateKeyResponse: validateCreateKeyResponse,
   ListKeysRequest: validateListKeysRequest,
@@ -1305,27 +925,8 @@ var TYPE_VALIDATORS = {
   RevokeKeyResponse: validateRevokeKeyResponse,
   VersionRequest: validateVersionRequest,
   VersionResponse: validateVersionResponse,
-  BeginLoginRequest: validateBeginLoginRequest,
-  BeginLoginResponse: validateBeginLoginResponse,
-  PollLoginRequest: validatePollLoginRequest,
-  AuthUser: validateAuthUser,
-  AuthCredentials: validateAuthCredentials,
-  PollLoginResponse: validatePollLoginResponse,
-  RefreshRequest: validateRefreshRequest,
-  RefreshResponse: validateRefreshResponse,
-  LogoutRequest: validateLogoutRequest,
-  LogoutResponse: validateLogoutResponse,
-  CurrentUserRequest: validateCurrentUserRequest,
-  CurrentUserResponse: validateCurrentUserResponse,
-  UsageEntry: validateUsageEntry,
-  GetUsageRequest: validateGetUsageRequest,
-  GetUsageResponse: validateGetUsageResponse,
-  BillingStatusRequest: validateBillingStatusRequest,
-  BillingStatusResponse: validateBillingStatusResponse,
-  BillingCheckoutRequest: validateBillingCheckoutRequest,
-  BillingUrlResponse: validateBillingUrlResponse,
-  BillingPortalRequest: validateBillingPortalRequest,
-  BillingLimitRequest: validateBillingLimitRequest
+  WhoamiRequest: validateWhoamiRequest,
+  WhoamiResponse: validateWhoamiResponse
 };
 var validateType = /* @__PURE__ */ __name((value, type) => {
   if (type === "any") {
@@ -1497,7 +1098,7 @@ var AlreadyExistsError = class _AlreadyExistsError extends WebrpcError {
     super(error);
     this.name = error.name || "AlreadyExists";
     this.code = typeof error.code === "number" ? error.code : 2001;
-    this.message = error.message || `source name already exists for this owner`;
+    this.message = error.message || `project name already exists`;
     this.status = typeof error.status === "number" ? error.status : 409;
     if (error.cause !== void 0) this.cause = error.cause;
     Object.setPrototypeOf(this, _AlreadyExistsError.prototype);
@@ -1546,7 +1147,7 @@ var UnavailableError = class _UnavailableError extends WebrpcError {
   }
 };
 var WebrpcHeader = "Webrpc";
-var WebrpcHeaderValue = "webrpc@v0.49.0;typescript@v0.49.0;slurp@v0.5.0";
+var WebrpcHeaderValue = "webrpc@v0.49.0;typescript@v0.49.0;slurp@v0.6.0";
 
 // src/compat/common.ts
 var COMPAT_CORS = {
@@ -1732,14 +1333,14 @@ async function segmentIngest(req, route, host) {
     if (messages.length === 0) return json(200, { success: true, accepted: 0, rejected: 0 });
     return json(400, { error: "no valid events in the request", rejected });
   }
-  const res = await host.ingest(principal.source, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
+  const res = await host.ingest(principal, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
   if (!res.ok) return ingestFailure(res);
   return json(200, { success: true, accepted: lines.length, rejected });
 }
 __name(segmentIngest, "segmentIngest");
 async function settings(req, key, origin, host) {
   if (req.method === "OPTIONS") return preflight(ALLOW_HEADERS);
-  if (!await host.publishable(key)) return json(404, { error: "unknown source" });
+  if (!await host.publishable(key)) return json(404, { error: "unknown project" });
   return json(200, {
     integrations: { "Segment.io": { apiKey: key, apiHost: `${new URL(origin).host}/v1`, protocol: new URL(origin).protocol === "http:" ? "http" : "https", addBundledMetadata: true, unbundledIntegrations: [] } },
     plan: { track: { __default: { enabled: true, integrations: {} } }, identify: { __default: { enabled: true } }, group: { __default: { enabled: true } } },
@@ -1762,18 +1363,7 @@ function sentryRoute(path) {
   return m ? { project: m[1], kind: m[2] } : null;
 }
 __name(sentryRoute, "sentryRoute");
-function decodeSentryKey(value) {
-  if (!value) return null;
-  if (value.startsWith("slurp_pk_")) return value;
-  if (!/^(?:[0-9a-f]{2})+$/i.test(value) || value.length > 200) return null;
-  try {
-    const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Uint8Array.from(value.match(/../g), (h) => parseInt(h, 16)));
-    return raw.startsWith("slurp_pk_") ? raw : null;
-  } catch {
-    return null;
-  }
-}
-__name(decodeSentryKey, "decodeSentryKey");
+var publishableKey = /* @__PURE__ */ __name((value) => value?.startsWith("slurp_pk_") ? value : null, "publishableKey");
 var keyFromDsn = /* @__PURE__ */ __name((dsn) => {
   if (typeof dsn !== "string") return null;
   const m = /^[a-z]+:\/\/([^:@/]+)(?::[^@]*)?@/i.exec(dsn);
@@ -1783,7 +1373,7 @@ function credentials(req, headerDsn) {
   const found = /* @__PURE__ */ new Set();
   const auth = /sentry_key=([^,\s]+)/.exec(req.headers.get("x-sentry-auth") ?? "")?.[1];
   const query = new URL(req.url).searchParams.get("sentry_key");
-  for (const v of [auth, query, keyFromDsn(headerDsn)]) if (v) found.add(decodeSentryKey(v) ?? `invalid:${v}`);
+  for (const v of [auth, query, keyFromDsn(headerDsn)]) if (v) found.add(publishableKey(v) ?? `invalid:${v}`);
   if (found.size > 1) return "conflict";
   return { key: found.size === 1 ? [...found][0] : null };
 }
@@ -1907,7 +1497,7 @@ async function sentryIngest(req, route, host) {
   const creds = credentials(req, envelope.header.dsn);
   if (creds === "conflict") return reply(403, { detail: "conflicting credentials" });
   const principal = await host.publishable(creds.key);
-  if (!principal) return reply(403, { detail: "invalid or missing sentry_key (use the DSN Slurp prints for this source)" });
+  if (!principal) return reply(403, { detail: "invalid or missing sentry_key (use the DSN Slurp prints for this project)" });
   const eventId = text2(envelope.header.event_id) ?? "";
   const now = Date.now();
   const lines = [];
@@ -1919,7 +1509,7 @@ async function sentryIngest(req, route, host) {
     lines.push(t.line);
   }
   if (lines.length > 0) {
-    const res = await host.ingest(principal.source, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
+    const res = await host.ingest(principal, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
     if (!res.ok) return ingestFailure(res);
   }
   return reply(200, { id: eventId });
@@ -1928,18 +1518,17 @@ __name(sentryIngest, "sentryIngest");
 
 // src/registry.ts
 import { DurableObject } from "cloudflare:workers";
-var UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-var RESERVED_PREFIXES = ["session_", "src_", "mdl_"];
+var RESERVED_PREFIXES = ["session_", "prj_", "mdl_"];
 var RESERVED_WORDS = new Set("_slurp add all analyse analyze and any array as asc asymmetric both case cast check collate column constraint create default deferrable desc describe distinct do else end except false fetch for foreign from group having in information_schema initially intersect into lake lambda lateral leading limit main memory not null offset on only or order pg_catalog pivot pivot_longer pivot_wider placing primary qualify raw references returning select show some summarize symmetric system table temp then to trailing true union unique unpivot using variadic when where window with".split(" "));
-function validSourceName(name) {
+function validProjectName(name) {
   return name.length >= 1 && name.length <= 63 && /^[a-z][a-z0-9_]*$/.test(name) && !name.includes("__") && !RESERVED_PREFIXES.some((p) => name.startsWith(p)) && !RESERVED_WORDS.has(name);
 }
-__name(validSourceName, "validSourceName");
+__name(validProjectName, "validProjectName");
 function validTitle(title) {
   return title === void 0 || new TextEncoder().encode(title).length <= 200;
 }
 __name(validTitle, "validTitle");
-var NAME = { test: validSourceName };
+var NAME = { test: validProjectName };
 var RegistryDO = class extends DurableObject {
   static {
     __name(this, "RegistryDO");
@@ -1947,98 +1536,52 @@ var RegistryDO = class extends DurableObject {
   sql = this.ctx.storage.sql;
   constructor(ctx, env) {
     super(ctx, env);
-    this.ensureSchema();
+    this.sql.exec("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)");
   }
-  ensureSchema() {
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, owner_id TEXT NOT NULL, created_at TEXT NOT NULL, geo_enabled INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS keys(key_id TEXT PRIMARY KEY, source TEXT NOT NULL, scope TEXT NOT NULL, name TEXT NOT NULL, hash TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT);
-      CREATE TABLE IF NOT EXISTS requests(request_id TEXT PRIMARY KEY, source TEXT NOT NULL, key_id TEXT NOT NULL);`);
+  /** The project with this name, creating it first if there is none. Repeating a call returns the same project. */
+  claim(a) {
+    if (!NAME.test(a.name) || !validTitle(a.title)) return { ok: false, code: "invalid", message: "invalid project details" };
+    const existing = this.sql.exec("SELECT * FROM projects WHERE name=?", a.name).toArray()[0];
+    if (existing) return { ok: true, value: { project: existing, created: false } };
+    const id = "prj_" + randomHex(8);
+    this.sql.exec("INSERT INTO projects VALUES(?,?,?,?)", id, a.name, a.title ?? null, (/* @__PURE__ */ new Date()).toISOString());
+    return { ok: true, value: { project: this.get(id), created: true } };
   }
-  async mintKey(source, scope, name) {
-    const key = (scope === "publishable" ? "slurp_pk_" : "slurp_sk_") + b64url(crypto.getRandomValues(new Uint8Array(24)));
-    const hash = await sha256Hex(key);
-    const keyId = hash.slice(0, 16);
-    this.sql.exec("INSERT INTO keys VALUES(?,?,?,?,?,?,NULL)", keyId, source, scope, name, hash, (/* @__PURE__ */ new Date()).toISOString());
-    return { key, keyId };
+  get(ref) {
+    return this.sql.exec("SELECT * FROM projects WHERE id=? OR name=? LIMIT 1", ref, ref).toArray()[0] ?? null;
   }
-  async createSource(a) {
-    const prior = this.sql.exec("SELECT source, key_id FROM requests WHERE request_id=?", a.requestId).toArray()[0];
-    if (prior) {
-      this.sql.exec("UPDATE keys SET revoked_at=COALESCE(revoked_at,?) WHERE key_id=?", (/* @__PURE__ */ new Date()).toISOString(), prior.key_id);
-      const { key: key2, keyId: keyId2 } = await this.mintKey(prior.source, "publishable", "Default");
-      this.sql.exec("UPDATE requests SET key_id=? WHERE request_id=?", keyId2, a.requestId);
-      return { ok: true, value: { source: this.sql.exec("SELECT * FROM sources WHERE id=?", prior.source).one(), key: key2 } };
-    }
-    if (!UUID.test(a.requestId) || !NAME.test(a.name) || !validTitle(a.title)) return { ok: false, code: "invalid", message: "invalid source details" };
-    if (this.sql.exec("SELECT 1 FROM sources WHERE name=?", a.name).toArray().length) return { ok: false, code: "exists", message: "name exists" };
-    const id = "src_" + randomHex(8);
-    this.sql.exec("INSERT INTO sources VALUES(?,?,?,?,?,?)", id, a.name, a.title ?? null, "admin", (/* @__PURE__ */ new Date()).toISOString(), a.geoEnabled ? 1 : 0);
-    const { key, keyId } = await this.mintKey(id, "publishable", "Default");
-    this.sql.exec("INSERT INTO requests VALUES(?,?,?)", a.requestId, id, keyId);
-    return { ok: true, value: { source: this.sql.exec("SELECT * FROM sources WHERE id=?", id).one(), key } };
+  list() {
+    return this.sql.exec("SELECT * FROM projects ORDER BY id").toArray();
   }
-  getSource(ref) {
-    return this.sql.exec("SELECT * FROM sources WHERE id=? OR name=? LIMIT 1", ref, ref).toArray()[0] ?? null;
-  }
-  listSources() {
-    return this.sql.exec("SELECT * FROM sources ORDER BY id").toArray();
-  }
-  updateSource(ref, p) {
-    const s = this.getSource(ref);
-    if (!s) return { ok: false, code: "notfound", message: "source" };
+  update(ref, p) {
+    const s = this.get(ref);
+    if (!s) return { ok: false, code: "notfound", message: "project" };
     if (!validTitle(p.title)) return { ok: false, code: "invalid", message: "bad title" };
-    if (p.name !== void 0) {
-      if (!NAME.test(p.name)) return { ok: false, code: "invalid", message: "bad name" };
-      if (p.name !== s.name && this.sql.exec("SELECT 1 FROM sources WHERE name=?", p.name).toArray().length) return { ok: false, code: "exists", message: "name exists" };
-      this.sql.exec("UPDATE sources SET name=? WHERE id=?", p.name, s.id);
-    }
-    if (p.title !== void 0) this.sql.exec("UPDATE sources SET title=? WHERE id=?", p.title === "" ? null : p.title, s.id);
-    if (p.geoEnabled !== void 0) this.sql.exec("UPDATE sources SET geo_enabled=? WHERE id=?", p.geoEnabled ? 1 : 0, s.id);
-    return { ok: true, value: this.getSource(s.id) };
+    if (p.name !== void 0 && !NAME.test(p.name)) return { ok: false, code: "invalid", message: "bad name" };
+    if (p.name !== void 0 && p.name !== s.name && this.sql.exec("SELECT 1 FROM projects WHERE name=?", p.name).toArray().length) return { ok: false, code: "exists", message: "name exists" };
+    this.ctx.storage.transactionSync(() => {
+      if (p.name !== void 0) this.sql.exec("UPDATE projects SET name=? WHERE id=?", p.name, s.id);
+      if (p.title !== void 0) this.sql.exec("UPDATE projects SET title=? WHERE id=?", p.title === "" ? null : p.title, s.id);
+    });
+    return { ok: true, value: this.get(s.id) };
   }
-  async createKey(ref, scope, name) {
-    const s = this.getSource(ref);
-    if (!s) return { ok: false, code: "notfound", message: "source" };
-    if (scope !== "publishable" && scope !== "secret") return { ok: false, code: "invalid", message: "scope must be publishable or secret" };
-    if (new TextEncoder().encode(name ?? "").length > 200) return { ok: false, code: "invalid", message: "name too long" };
-    return { ok: true, value: await this.mintKey(s.id, scope, name ?? "") };
-  }
-  listKeys(ref, scope) {
-    const s = this.getSource(ref);
-    if (!s) return null;
-    return this.sql.exec("SELECT * FROM keys WHERE source=? ORDER BY created_at, key_id", s.id).toArray().filter((k) => !scope || k.scope === scope);
-  }
-  revokeKey(ref, keyId) {
-    const s = this.getSource(ref);
-    if (!s) return { ok: false, code: "notfound", message: "source" };
-    const k = this.sql.exec("SELECT * FROM keys WHERE key_id=? AND source=?", keyId, s.id).toArray()[0];
-    if (!k) return { ok: false, code: "notfound", message: "key" };
-    if (!k.revoked_at) this.sql.exec("UPDATE keys SET revoked_at=? WHERE key_id=?", (/* @__PURE__ */ new Date()).toISOString(), keyId);
-    return { ok: true, value: this.sql.exec("SELECT * FROM keys WHERE key_id=?", keyId).one() };
-  }
-  /** Forget every source and key (used by `slurp cloud destroy`). */
+  /** Forget every project (used by `slurp cloud destroy`). */
   async purge() {
     await this.ctx.storage.deleteAll();
-    this.ensureSchema();
-  }
-  /** Resolve a presented key by SHA-256; revoked keys never resolve. */
-  resolveKey(hash) {
-    const r = this.sql.exec("SELECT k.source, k.scope, s.geo_enabled g FROM keys k JOIN sources s ON s.id=k.source WHERE k.hash=? AND k.revoked_at IS NULL", hash).toArray()[0];
-    return r ? { source: r.source, scope: r.scope, geo: !!r.g } : null;
+    this.sql.exec("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)");
   }
 };
 
-// src/source.ts
+// src/project.ts
 import { DurableObject as DurableObject2 } from "cloudflare:workers";
 var pad20 = /* @__PURE__ */ __name((n) => String(n).padStart(20, "0"), "pad20");
 var MAX_SEQ_PER_ROW = (1 << 20) - 1;
 var ROW_MAX_BYTES = 15e5;
 var encoder = new TextEncoder();
 var RECENT_HASHES = 1e4;
-var SourceDO = class extends DurableObject2 {
+var ProjectDO = class extends DurableObject2 {
   static {
-    __name(this, "SourceDO");
+    __name(this, "ProjectDO");
   }
   sql = this.ctx.storage.sql;
   pendingBytes = 0;
@@ -2054,9 +1597,12 @@ var SourceDO = class extends DurableObject2 {
   rows = 0;
   constructor(ctx, env) {
     super(ctx, env);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS manifest(seq INTEGER PRIMARY KEY, name TEXT NOT NULL, r2key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL);`);
+    if (this.initialized()) this.restore();
+  }
+  initialized() {
+    return this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").toArray().length > 0;
+  }
+  restore() {
     this.table(this.gen());
     let max = Number(this.meta("batch_hwm") ?? 0);
     let bytes = 0;
@@ -2067,6 +1613,67 @@ var SourceDO = class extends DurableObject2 {
     }
     this.nextBatch = max + 1;
     this.pendingBytes = bytes;
+  }
+  projectId() {
+    return this.ctx.id.name ?? "";
+  }
+  /**
+   * Create this project's storage and its first publishable key, or return the existing one. Safe to repeat: it never
+   * changes a key that exists, and `geo` only applies the first time.
+   */
+  init(geo) {
+    if (!this.initialized()) {
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS manifest(seq INTEGER PRIMARY KEY, name TEXT NOT NULL, r2key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS keys(key_id TEXT PRIMARY KEY, scope TEXT NOT NULL, name TEXT NOT NULL, hash TEXT UNIQUE, plain TEXT UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);`);
+      this.setMeta("geo", geo ? "1" : "0");
+      this.restore();
+    }
+    const live = this.sql.exec("SELECT plain FROM keys WHERE scope='publishable' AND revoked_at IS NULL ORDER BY created_at, key_id LIMIT 1").toArray()[0];
+    return { key: live ? live.plain : this.mintPublishable("default").key };
+  }
+  mintPublishable(name) {
+    const key = `slurp_pk_${this.projectId().slice(4)}_${randomHex(24)}`;
+    const keyId = randomHex(8);
+    this.w("INSERT INTO keys VALUES(?,?,?,NULL,?,?,NULL)", keyId, "publishable", name, key, (/* @__PURE__ */ new Date()).toISOString());
+    return { key, keyId };
+  }
+  /** The key's scope, id and name; null when it is unknown or revoked (immediately, with no cache). A publishable key is looked up as is. */
+  async authorize(token) {
+    if (!this.initialized()) return null;
+    const secret = token.startsWith("slurp_sk_");
+    const row = (secret ? this.sql.exec("SELECT key_id, scope, name FROM keys WHERE hash=? AND revoked_at IS NULL", await sha256Hex(token)) : this.sql.exec("SELECT key_id, scope, name FROM keys WHERE plain=? AND revoked_at IS NULL", token)).toArray()[0];
+    return row ? { scope: row.scope, keyId: row.key_id, name: row.name, geo: this.meta("geo") === "1" } : null;
+  }
+  async createKey(scope, name) {
+    if (!this.initialized()) return { ok: false, code: "notfound", message: "project" };
+    if (scope !== "publishable" && scope !== "secret") return { ok: false, code: "invalid", message: "scope must be publishable or secret" };
+    const label = name.trim() === "" ? "default" : name;
+    if (encoder.encode(label).length > 200) return { ok: false, code: "invalid", message: "name too long" };
+    if (scope === "publishable") return { ok: true, value: this.mintPublishable(label) };
+    const key = `slurp_sk_${this.projectId().slice(4)}_${randomHex(24)}`;
+    const hash = await sha256Hex(key);
+    const keyId = randomHex(8);
+    this.w("INSERT INTO keys VALUES(?,?,?,?,NULL,?,NULL)", keyId, "secret", label, hash, (/* @__PURE__ */ new Date()).toISOString());
+    return { ok: true, value: { key, keyId } };
+  }
+  listKeys(scope) {
+    if (!this.initialized()) return [];
+    return this.sql.exec("SELECT * FROM keys ORDER BY created_at, key_id").toArray().filter((k) => !scope || k.scope === scope);
+  }
+  revokeKey(keyId) {
+    if (!this.initialized()) return { ok: false, code: "notfound", message: "project" };
+    const k = this.sql.exec("SELECT * FROM keys WHERE key_id=?", keyId).toArray()[0];
+    if (!k) return { ok: false, code: "notfound", message: "key" };
+    if (!k.revoked_at) this.w("UPDATE keys SET revoked_at=? WHERE key_id=?", (/* @__PURE__ */ new Date()).toISOString(), keyId);
+    return { ok: true, value: this.sql.exec("SELECT * FROM keys WHERE key_id=?", keyId).one() };
+  }
+  geoEnabled() {
+    return this.initialized() && this.meta("geo") === "1";
+  }
+  setGeo(on) {
+    if (this.initialized()) this.setMeta("geo", on ? "1" : "0");
   }
   num(k, d) {
     const v = Number(this.env[k]);
@@ -2128,11 +1735,20 @@ var SourceDO = class extends DurableObject2 {
     if (expiry === null) await this.ctx.storage.deleteAlarm();
     else await this.ctx.storage.setAlarm(Math.max(expiry, Date.now() + 1e3));
   }
-  async ingest(source, body, geo) {
+  /** Ingest for a presented publishable key: one call that authorizes, applies geo only if this project opted in, and stamps the sender. */
+  async ingestKey(token, body, requestGeo) {
+    const a = await this.authorize(token);
+    if (!a) return { ok: false, status: 401, reason: "invalid token" };
+    if (a.scope !== "publishable") return { ok: false, status: 403, reason: "publishable key required" };
+    return this.ingest(a.name, body, a.geo ? requestGeo : null);
+  }
+  /** Ingest records already authorized as `sender` (the sending key's name). */
+  async ingest(sender, body, geo) {
+    if (!this.initialized()) return { ok: false, status: 503, reason: "unavailable", retryAfter: 5 };
     const checked = checkBody(body, geo);
     if ("reason" in checked) return { ok: false, status: checked.reason === RECORD_TOO_LARGE ? 413 : 400, reason: `line ${checked.line}: ${checked.reason}` };
     if (checked.lines.length === 0) return { ok: true, accepted: 0, duplicate: false, publication: this.publication(await this.ctx.storage.getAlarm()) };
-    const hash = await sha256Hex(body);
+    const hash = `${sender}:${await sha256Hex(body)}`;
     const earlier = this.recent.get(hash);
     if (earlier) {
       const outcome = await earlier;
@@ -2142,7 +1758,7 @@ var SourceDO = class extends DurableObject2 {
     if (this.pendingBytes + this.queuedBytes + body.length > cap) return { ok: false, status: 429, reason: "buffer full", retryAfter: 10 };
     const window = this.num("GROUP_COMMIT_MS", 500);
     const done = new Promise((resolve) => {
-      this.queue.push({ lines: checked.lines, atMs: Date.now(), hash, done: resolve });
+      this.queue.push({ lines: checked.lines, atMs: Date.now(), hash, sender, done: resolve });
       this.queuedBytes += body.length;
     });
     this.recent.set(hash, done);
@@ -2168,12 +1784,12 @@ var SourceDO = class extends DurableObject2 {
       let cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
       for (const item of q) {
         for (const line of item.lines) {
-          let text3 = stampOne(line, cur.id, item.atMs, cur.events);
+          let text3 = stampOne(line, cur.id, item.atMs, cur.events, item.sender);
           let size = encoder.encode(text3).length;
           if (cur.events > 0 && (cur.bytes + size > ROW_MAX_BYTES || cur.events > MAX_SEQ_PER_ROW)) {
             rows.push(cur);
             cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
-            text3 = stampOne(line, cur.id, item.atMs, 0);
+            text3 = stampOne(line, cur.id, item.atMs, 0, item.sender);
             size = encoder.encode(text3).length;
           }
           cur.data += text3;
@@ -2241,7 +1857,7 @@ var SourceDO = class extends DurableObject2 {
     const gz = await gzip(text3);
     const sha = await sha256Hex(gz);
     const name = `${pad20(intent.seq)}-${sha}.jsonl.gz`;
-    const r2key = `v1/sources/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`;
+    const r2key = `v1/projects/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`;
     await retry(() => this.env.ARCHIVE.put(r2key, gz, { httpMetadata: { contentType: "application/gzip" } }));
     const row = { seq: intent.seq, name, r2key, size: gz.length, sha256: sha, events, created_at: Date.now() };
     this.ctx.storage.transactionSync(() => {
@@ -2266,6 +1882,7 @@ var SourceDO = class extends DurableObject2 {
     if (old.length === 100 && await this.ctx.storage.getAlarm() === null) await this.ctx.storage.setAlarm(Date.now() + 1e3);
   }
   coverage() {
+    if (!this.initialized()) return null;
     const next = Number(this.meta("next_seq") ?? 1);
     if (next === 1) return null;
     const lo = this.sql.exec("SELECT MIN(seq) m FROM manifest").one().m;
@@ -2273,6 +1890,7 @@ var SourceDO = class extends DurableObject2 {
     return { archiveId: this.archiveId(), firstRetained: String(lo ?? next), latestPublished: String(next - 1), latestPublishedAt: at?.c ?? Date.now() };
   }
   listObjects(after, limit) {
+    if (!this.initialized()) return [];
     return this.sql.exec("SELECT * FROM manifest WHERE seq>? ORDER BY seq LIMIT ?", after, limit).toArray();
   }
   /** Test hook (DEBUG only). */
@@ -2280,11 +1898,12 @@ var SourceDO = class extends DurableObject2 {
     this.failNext = true;
   }
   async stats() {
+    if (!this.initialized()) return { pending: false, rows: 0, pendingBytes: 0, queued: 0, gen: 0, sealing: null, manifest: 0, alarm: null };
     return { pending: this.hasBuffered(), rows: this.rows, pendingBytes: this.pendingBytes, queued: this.queue.length, gen: this.gen(), sealing: this.intent(), manifest: this.sql.exec("SELECT COUNT(*) n FROM manifest").one().n, alarm: await this.ctx.storage.getAlarm() };
   }
-  /** Delete every archive object this source wrote and all of its Durable Object storage (used by `slurp cloud destroy`). */
+  /** Delete every archive object this project wrote and all of its Durable Object storage (used by `slurp cloud destroy`). */
   async purge() {
-    const rows = this.sql.exec("SELECT r2key FROM manifest").toArray();
+    const rows = this.initialized() ? this.sql.exec("SELECT r2key FROM manifest").toArray() : [];
     for (let i = 0; i < rows.length; i += 1e3) await retry(() => this.env.ARCHIVE.delete(rows.slice(i, i + 1e3).map((r) => r.r2key)));
     if (this.timer) {
       clearTimeout(this.timer);
@@ -2317,35 +1936,36 @@ var DEFAULT_MAX_BODY = 10 * 1024 * 1024;
 var SIGNED_URL_TTL_S = 3600;
 var bearer = /* @__PURE__ */ __name((req) => /^Bearer (.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1] ?? null, "bearer");
 var registry = /* @__PURE__ */ __name((env) => env.REGISTRY.get(env.REGISTRY.idFromName("registry")), "registry");
-var sourceDO = /* @__PURE__ */ __name((env, id) => env.SOURCE.get(env.SOURCE.idFromName(id)), "sourceDO");
-var KEY_CACHE_MS = 5e3;
-var keyCache = /* @__PURE__ */ new Map();
-async function authenticate(req, env, allowQueryKey = false) {
+var projectDO = /* @__PURE__ */ __name((env, id) => env.PROJECT.get(env.PROJECT.idFromName(id)), "projectDO");
+var KEY = /^slurp_(?:pk|sk)_([0-9a-f]{16})_[0-9a-f]{48}$/;
+function presentedToken(req, allowQueryKey) {
   let token = bearer(req);
   if (allowQueryKey) {
     const q = new URL(req.url).searchParams.getAll("key");
     if (q.length) {
-      if (q.length !== 1 || !q[0].startsWith("slurp_pk_")) return null;
+      if (q.length !== 1 || !q[0].startsWith("slurp_pk_")) return void 0;
       token = q[0];
     }
   }
-  return principalFor(token, env);
+  return token;
+}
+__name(presentedToken, "presentedToken");
+async function authenticate(req, env, allowQueryKey = false) {
+  const token = presentedToken(req, allowQueryKey);
+  return token ? principalFor(token, env) : null;
 }
 __name(authenticate, "authenticate");
 async function principalFor(token, env) {
   if (!token) return null;
-  if (env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN && timingSafeEqual(token, env.ADMIN_TOKEN)) return { kind: "admin" };
-  const hash = await sha256Hex(token);
-  const hit = keyCache.get(hash);
-  let v = hit && hit.exp > Date.now() ? hit.v : void 0;
-  if (v === void 0) {
-    v = await registry(env).resolveKey(hash);
-    keyCache.set(hash, { exp: Date.now() + KEY_CACHE_MS, v });
-    if (keyCache.size > 1e3) keyCache.delete(keyCache.keys().next().value);
-  }
-  return v ? { kind: "key", ...v } : null;
+  if (isAdmin(token, env)) return { kind: "admin" };
+  const m = KEY.exec(token);
+  if (!m) return null;
+  const project = "prj_" + m[1];
+  const a = await projectDO(env, project).authorize(token);
+  return a ? { kind: "key", project, ...a } : null;
 }
 __name(principalFor, "principalFor");
+var isAdmin = /* @__PURE__ */ __name((token, env) => !!env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN && timingSafeEqual(token, env.ADMIN_TOKEN), "isAdmin");
 var signingSecret = /* @__PURE__ */ __name((env) => hmacHex(env.ADMIN_TOKEN, "slurp-object-url-v1"), "signingSecret");
 var unwrap = /* @__PURE__ */ __name((r) => {
   if (r.ok) return r.value;
@@ -2359,61 +1979,55 @@ var needAdmin = /* @__PURE__ */ __name((c) => {
   if (!c.principal) throw new UnauthenticatedError();
   if (c.principal.kind !== "admin") throw new ForbiddenError();
 }, "needAdmin");
-var info = /* @__PURE__ */ __name((s) => ({ id: s.id, name: s.name, title: s.title ?? void 0, ownerId: s.owner_id, createdAt: s.created_at, geoEnabled: !!s.geo_enabled, role: "owner" }), "info");
-var keyInfo = /* @__PURE__ */ __name((k) => ({ keyId: k.key_id, source: k.source, scope: k.scope, name: k.name, createdAt: k.created_at, revokedAt: k.revoked_at ?? void 0 }), "keyInfo");
+var info = /* @__PURE__ */ __name((s) => ({ id: s.id, name: s.name, title: s.title ?? void 0, createdAt: s.created_at }), "info");
+var keyInfo = /* @__PURE__ */ __name((project, k) => ({ keyId: k.key_id, project, scope: k.scope, name: k.name, createdAt: k.created_at, revokedAt: k.revoked_at ?? void 0, key: k.plain ?? void 0 }), "keyInfo");
 var ingestUrl = /* @__PURE__ */ __name((c) => `${c.origin}/v1/events`, "ingestUrl");
 async function resolveOrThrow(c, ref) {
-  const s = await registry(c.env).getSource(ref);
+  const s = await registry(c.env).get(ref);
   if (!s) throw new NotFoundError();
   return s;
 }
 __name(resolveOrThrow, "resolveOrThrow");
-var noMembers = /* @__PURE__ */ __name(() => {
-  throw new ForbiddenError({ cause: "memberships are not used by a self-hosted deployment; the admin token owns every source" });
-}, "noMembers");
-var sourceService = {
-  async getSource(c, r) {
+var projectService = {
+  async getProject(c, r) {
     needAdmin(c);
-    const s = await resolveOrThrow(c, r.source);
-    return { source: info(s), ingestUrl: ingestUrl(c) };
+    const s = await resolveOrThrow(c, r.project);
+    return { project: info(s), ingestUrl: ingestUrl(c), geoEnabled: await projectDO(c.env, s.id).geoEnabled() };
   },
-  async updateSource(c, r) {
+  async updateProject(c, r) {
     needAdmin(c);
-    return { source: info(unwrap(await registry(c.env).updateSource(r.source, r))) };
+    const s = unwrap(await registry(c.env).update(r.project, r));
+    const stub = projectDO(c.env, s.id);
+    if (r.geoEnabled !== void 0) await stub.setGeo(r.geoEnabled);
+    return { project: info(s), geoEnabled: await stub.geoEnabled() };
   },
-  async addMember() {
-    return noMembers();
-  },
-  async removeMember() {
-    return noMembers();
-  },
-  async listSources(c) {
+  async listProjects(c) {
     needAdmin(c);
-    return { sources: (await registry(c.env).listSources()).map(info) };
+    return { projects: (await registry(c.env).list()).map(info) };
   },
-  async listMemberships() {
-    return { memberships: [] };
-  },
-  async createSource(c, r) {
+  // Two steps that can each be repeated: claim the name in the registry, then set up the project's own object. A crash in
+  // between is finished by calling this again.
+  async createProject(c, r) {
     needAdmin(c);
-    const v = unwrap(await registry(c.env).createSource(r));
-    return { source: info(v.source), publishableKey: v.key, ingestUrl: ingestUrl(c) };
+    const claimed = unwrap(await registry(c.env).claim(r));
+    const { key } = await projectDO(c.env, claimed.project.id).init(!!r.geoEnabled);
+    return { project: info(claimed.project), created: claimed.created, publishableKey: key, ingestUrl: ingestUrl(c) };
   },
   async createKey(c, r) {
     needAdmin(c);
-    return unwrap(await registry(c.env).createKey(r.source, r.scope, r.name));
+    const s = await resolveOrThrow(c, r.project);
+    return unwrap(await projectDO(c.env, s.id).createKey(r.scope, r.name ?? ""));
   },
   async listKeys(c, r) {
     needAdmin(c);
-    const ks = await registry(c.env).listKeys(r.source, r.scope);
-    if (!ks) throw new NotFoundError();
-    return { keys: ks.map(keyInfo) };
+    const s = await resolveOrThrow(c, r.project);
+    if (r.scope !== void 0 && r.scope !== "publishable" && r.scope !== "secret") throw new InvalidArgumentError({ cause: "scope must be publishable or secret" });
+    return { keys: (await projectDO(c.env, s.id).listKeys(r.scope)).map((k) => keyInfo(s.id, k)) };
   },
   async revokeKey(c, r) {
     needAdmin(c);
-    const res = unwrap(await registry(c.env).revokeKey(r.source, r.keyId));
-    keyCache.clear();
-    return { key: keyInfo(res) };
+    const s = await resolveOrThrow(c, r.project);
+    return { key: keyInfo(s.id, unwrap(await projectDO(c.env, s.id).revokeKey(r.keyId))) };
   }
 };
 var healthService = {
@@ -2432,7 +2046,7 @@ var iso = /* @__PURE__ */ __name((ms) => new Date(ms).toISOString(), "iso");
 async function archiveAuth(c, ref) {
   if (!c.principal) throw new UnauthenticatedError();
   const s = await resolveOrThrow(c, ref);
-  if (c.principal.kind === "key" && (c.principal.scope !== "secret" || c.principal.source !== s.id)) throw new ForbiddenError();
+  if (c.principal.kind === "key" && (c.principal.scope !== "secret" || c.principal.project !== s.id)) throw new ForbiddenError();
   return s;
 }
 __name(archiveAuth, "archiveAuth");
@@ -2440,10 +2054,10 @@ var retentionSeconds = /* @__PURE__ */ __name((env) => Number(env.RETENTION_DAYS
 var covOut = /* @__PURE__ */ __name((c, cov) => ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) }), "covOut");
 var archiveService = {
   async listObjects(c, r) {
-    const s = await archiveAuth(c, r.source);
+    const s = await archiveAuth(c, r.project);
     const limit = Math.min(Math.max(r.limit ?? 1e3, 1), 5e3);
     if (r.after != null && !/^\d+$/.test(r.after)) throw new InvalidArgumentError({ cause: "after must be a decimal sequence" });
-    const sd = sourceDO(c.env, s.id);
+    const sd = projectDO(c.env, s.id);
     const cov = await sd.coverage();
     if (!cov) return { objects: [] };
     if (r.after != null && Number(r.after) + 1 < Number(cov.firstRetained)) throw new RetentionGapError();
@@ -2460,48 +2074,19 @@ var archiveService = {
     return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: expiresAt ? iso(expiresAt) : void 0 };
   },
   async getCoverage(c, r) {
-    const s = await archiveAuth(c, r.source);
-    const stub = sourceDO(c.env, s.id);
+    const s = await archiveAuth(c, r.project);
+    const stub = projectDO(c.env, s.id);
     const cov = await stub.coverage();
     const st = await stub.stats();
     const publication = { state: st.pending ? "pending" : "idle", observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1e3), ...st.pending && st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {} };
     return { coverage: cov ? covOut(c, cov) : void 0, publication };
   }
 };
-var selfHosted = /* @__PURE__ */ __name((what) => new UnavailableError({ cause: `${what} is not used by a self-hosted deployment` }), "selfHosted");
 var authService = {
-  async beginLogin() {
-    throw selfHosted("browser login");
-  },
-  async pollLogin() {
-    throw selfHosted("browser login");
-  },
-  async refresh() {
-    throw selfHosted("token refresh");
-  },
-  async logout() {
-    return { ok: true };
-  },
-  async currentUser(c) {
-    needAdmin(c);
-    return { user: { id: "admin", email: "admin@self-hosted" } };
-  }
-};
-var usageService = { async getUsage() {
-  throw selfHosted("usage metering");
-} };
-var billingService = {
-  async getStatus() {
-    throw selfHosted("billing");
-  },
-  async createCheckout() {
-    throw selfHosted("billing");
-  },
-  async createPortal() {
-    throw selfHosted("billing");
-  },
-  async setLimit() {
-    throw selfHosted("billing");
+  async whoami(c) {
+    const p = c.principal;
+    if (!p) throw new UnauthenticatedError();
+    return p.kind === "admin" ? { scope: "admin" } : { scope: p.scope, project: p.project, name: p.name };
   }
 };
 var CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Retry-After, Slurp-Duplicate" };
@@ -2510,18 +2095,20 @@ async function ingest(req, env) {
   if (req.method === "OPTIONS")
     return new Response(null, { status: 204, headers: { ...CORS, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type", "access-control-max-age": "86400" } });
   if (req.method !== "POST") return jsonError(405, "method not allowed", { Allow: "POST, OPTIONS" });
-  const p = await authenticate(req, env, true);
-  if (!p) return jsonError(401, "invalid token");
-  if (p.kind !== "key" || p.scope !== "publishable") return jsonError(403, "publishable key required");
+  const token = presentedToken(req, true);
+  if (!token) return jsonError(401, "invalid token");
+  if (isAdmin(token, env)) return jsonError(403, "publishable key required");
+  const m = KEY.exec(token);
+  if (!m) return jsonError(401, "invalid token");
   const max = Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY;
   const declared = Number(req.headers.get("content-length") ?? 0);
   if (declared > max) return jsonError(413, "body too large");
   const body = new Uint8Array(await req.arrayBuffer());
   if (body.length > max) return jsonError(413, "body too large");
-  const geo = p.geo ? normalizeGeo(req.cf) : null;
+  const geo = normalizeGeo(req.cf);
   let res;
   try {
-    res = await sourceDO(env, p.source).ingest(p.source, body, geo);
+    res = await projectDO(env, "prj_" + m[1]).ingestKey(token, body, geo);
   } catch (e) {
     console.error("ingest failed", e);
     return jsonError(503, "unavailable", { "Retry-After": "5" });
@@ -2555,9 +2142,9 @@ async function purge(req, env, ctx) {
   const body = await req.json().catch(() => ({}));
   if (body.confirm !== "delete-all-data") return jsonError(400, 'send {"confirm":"delete-all-data"} to confirm');
   const reg = registry(env);
-  const sources = await reg.listSources();
+  const projects = await reg.list();
   let archives = 0;
-  for (const s of sources) archives += (await sourceDO(env, s.id).purge()).archives;
+  for (const s of projects) archives += (await projectDO(env, s.id).purge()).archives;
   let strays = 0;
   for (; ; ) {
     const page = await env.ARCHIVE.list({ limit: 1e3 });
@@ -2566,8 +2153,7 @@ async function purge(req, env, ctx) {
     strays += page.objects.length;
   }
   await reg.purge();
-  keyCache.clear();
-  return Response.json({ ok: true, sources: sources.length, archives, strays });
+  return Response.json({ ok: true, projects: projects.length, archives, strays });
 }
 __name(purge, "purge");
 function compatHost(env) {
@@ -2575,9 +2161,9 @@ function compatHost(env) {
     async publishable(token) {
       if (!token?.startsWith("slurp_pk_")) return null;
       const p = await principalFor(token, env);
-      return p?.kind === "key" && p.scope === "publishable" ? { source: p.source, geo: p.geo } : null;
+      return p?.kind === "key" && p.scope === "publishable" ? { project: p.project, sender: p.name, geo: p.geo } : null;
     },
-    ingest: /* @__PURE__ */ __name((source, body, geo) => sourceDO(env, source).ingest(source, body, geo), "ingest"),
+    ingest: /* @__PURE__ */ __name((p, body, geo) => projectDO(env, p.project).ingest(p.sender, body, geo), "ingest"),
     geoFor: /* @__PURE__ */ __name((req, geo) => geo ? normalizeGeo(req.cf) : null, "geoFor"),
     maxBody: Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY
   };
@@ -2617,7 +2203,7 @@ var index_default = {
     if (url.pathname === "/v1/admin/purge") return purge(req, env, ctx);
     if (env.DEBUG === "1" && ctx.principal?.kind === "admin" && url.pathname.startsWith("/__debug/")) {
       const [, , op, id] = url.pathname.split("/");
-      const stub = sourceDO(env, id);
+      const stub = projectDO(env, id);
       if (op === "flush") {
         await stub.flush();
         return Response.json(await stub.stats());
@@ -2640,11 +2226,11 @@ var index_default = {
       }
       if (op === "stats") return Response.json(await stub.stats());
     }
-    return await serveHealthRpc(healthService, ctx, req) ?? await serveSourceRpc(sourceService, ctx, req) ?? await serveArchiveRpc(archiveService, ctx, req) ?? await serveAuthRpc(authService, ctx, req) ?? await serveUsageRpc(usageService, ctx, req) ?? await serveBillingRpc(billingService, ctx, req) ?? new Response("not found", { status: 404 });
+    return await serveHealthRpc(healthService, ctx, req) ?? await serveProjectRpc(projectService, ctx, req) ?? await serveArchiveRpc(archiveService, ctx, req) ?? await serveAuthRpc(authService, ctx, req) ?? new Response("not found", { status: 404 });
   }
 };
 export {
+  ProjectDO,
   RegistryDO,
-  SourceDO,
   index_default as default
 };

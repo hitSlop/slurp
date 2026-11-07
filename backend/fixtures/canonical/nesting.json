@@ -1,5 +1,5 @@
 {
- "description": "Nesting boundary from backend/canonical_test.go TestOpaquePayloadAndWholeBatchValidation: root object -> data object -> values nested d arrays. Valid iff d <= maxValidDepth.",
+ "description": "Nesting boundary: root object -> data object -> values nested d arrays. Valid iff d <= maxValidDepth.",
  "template": "{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}",
  "placeholder": "\"values\":[-0,1e1000,1.2300,9007199254740993123456789]",
  "maxValidDepth": 126,

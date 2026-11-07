@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { gunzipSync } from 'node:zlib'
-import { Source, Archive } from '../../../backend/src/slurp.gen.ts'
+import { Project, Archive } from '../../../backend/src/slurp.gen.ts'
 import { admin, debug, startWorker, type Worker } from '../../../backend/test/harness.ts'
 import { createClient, memoryStorage, version } from '../src/index.ts'
 import type { SlurpClient } from '../src/index.ts'
@@ -45,9 +45,9 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   worker = await startWorker({ MAX_BODY_BYTES: String(maxBody), GROUP_COMMIT_MS: '20' })
   const publicUrl = worker.base
   const alice = admin
-  const account = new Source(publicUrl, fetch)
-  const project = await account.createSource({ name: 'sdk_delivery', requestId: crypto.randomUUID() }, alice)
-  const secret = await account.createKey({ source: project.source.id, scope: 'secret' }, alice)
+  const account = new Project(publicUrl, fetch)
+  const project = await account.createProject({ name: 'sdk_delivery' }, alice)
+  const secret = await account.createKey({ project: project.project.id, scope: 'secret' }, alice)
   const records: {
     method: string | undefined; body: Buffer; at: number; forwarded: boolean
     status: number; headers: Record<string, string>; authorization: string | undefined; contentType: string | undefined; queryKey: boolean
@@ -106,8 +106,8 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   const drain = (client: SlurpClient) => until(async () => { await client.flush(); return client.pending === 0 }, 'SDK did not drain')
   const archive = new Archive(publicUrl, fetch)
   const publish = async (previous = 0) => {
-    await debug(publicUrl, 'seal', project.source.id) // the alarm interval is long; seal on demand
-    const coverage = await archive.getCoverage({ source: project.source.id }, alice)
+    await debug(publicUrl, 'seal', project.project.id) // the alarm interval is long; seal on demand
+    const coverage = await archive.getCoverage({ project: project.project.id }, alice)
     const published = Number(coverage.coverage?.latestPublished ?? 0)
     assert.ok(published > previous, 'nothing new was published')
     return published
@@ -126,7 +126,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.equal(records[0].status, 200)
   assert.equal(records[0].headers['slurp-duplicate'], undefined)
   const persisted = JSON.parse(await readFile(path, 'utf8'))
-  assert.equal(JSON.parse(persisted[`@hitslop/slurp-sdk:v2:${project.publishableKey}`]).batches[0], records[0].body.toString())
+  assert.equal(JSON.parse(persisted[`@hitslop/slurp-sdk:v1:${endpoint}:${project.project.id.slice(4)}`]).batches[0], records[0].body.toString())
   await first.close()
   const restarted = make({ storage: fileStorage(path), onError })
   await drain(restarted)
@@ -350,7 +350,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   let after: string | undefined
   let pages = 0
   do {
-    const page = await archive.listObjects({ source: project.source.id, after, limit: 1 }, { Authorization: `Bearer ${secret.key}` })
+    const page = await archive.listObjects({ project: project.project.id, after, limit: 1 }, { Authorization: `Bearer ${secret.key}` })
     pages++
     for (const object of page.objects) {
       const response = await fetch(object.url)
@@ -371,9 +371,10 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   const wire = new Map(records.filter(record => record.forwarded && record.status === 200).flatMap(record =>
     record.body.toString().trimEnd().split('\n').map(line => { const event = JSON.parse(line); return [event.id, event] as const })))
   for (const event of archived) {
-    const { received_at, received_seq, ...payload } = event
+    const { received_at, received_seq, sender, ...payload } = event
     assert.equal(new Date(received_at).toISOString(), received_at)
     assert.match(received_seq, /^[0-9]+$/)
+    assert.equal(sender, 'default', 'the Worker stamps the name of the key that sent it')
     assert.deepEqual(payload, wire.get(event.id))
     for (const id of [event.id, event.anonymous_id, event.session_id]) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     assert.equal(Number.parseInt(event.id.replaceAll('-', '').slice(0, 12), 16), Date.parse(event.timestamp))

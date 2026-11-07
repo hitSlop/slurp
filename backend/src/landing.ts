@@ -32,7 +32,7 @@ ${setup}
 <li>Install the Slurp CLI.</li>
 <li>Connect it to this Worker with the <code>ADMIN_TOKEN</code> you chose when you deployed. The token is read from standard input, so it never shows up in your shell history:
 <pre><code>slurp connect ${o} --token-stdin</code></pre></li>
-<li>In your app's folder, create a source and get the SDK snippet:
+<li>In your app's folder, create a project and get the SDK snippet:
 <pre><code>slurp setup
 slurp init --name "My app"</code></pre></li>
 </ol>

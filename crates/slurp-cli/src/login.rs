@@ -1,65 +1,41 @@
 //! Terminal adapter for the saved Worker connection (admin token) used by setup and init.
 use crate::terminal::Terminal;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use slurp_app::error::{ErrorCode, Failure};
-use slurp_client::{
-    auth::{SavedCredentials, Session},
-    rpc,
-};
-use std::{path::Path, sync::Arc};
+use slurp_client::{connection, rpc};
 
-pub fn session(backend: &str, home: &Path) -> Result<Session> {
-    Session::new(
-        backend,
-        slurp_client::http_client()?,
-        home.join("cache/service-locks"),
-        Arc::new(SavedCredentials),
-    )
+pub use slurp_client::connection::environment_token;
+
+/// The bearer token for a Worker: `SLURP_TOKEN` or `SLURP_READ_KEY` from the environment, else the one `slurp connect` saved.
+/// Fails with [`connection::NotConnected`] when there is neither.
+pub fn token(backend: &str) -> Result<String> {
+    connection::resolve(backend)
 }
 
-pub fn environment_token() -> Option<String> {
-    ["SLURP_TOKEN", "SLURP_READ_KEY"]
-        .into_iter()
-        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
-}
-pub async fn token(session: &Session) -> Result<String> {
-    if let Some(token) = environment_token() {
-        return Ok(token);
-    }
-    session.access_token().await.map_err(|error| {
-        if error.to_string() == "login required" {
-            anyhow!("not connected to a Worker; run slurp connect <worker-url> --token-stdin (or set SLURP_TOKEN), or import an existing connection once with slurp credentials migrate-keychain")
-        } else { error }
-    })
+/// Ask the Worker what a token is (admin, or a project's secret or publishable key). An `Err` carries the Worker's error code
+/// (1000 or 1001 for a token it does not accept) so callers can tell "rejected" from "could not reach".
+pub async fn whoami(backend: &str, token: &str) -> Result<rpc::WhoamiResponse, rpc::Error> {
+    let http = slurp_client::http_client().map_err(|e| rpc::Error::Transport(e.to_string()))?;
+    rpc::AuthClient::new(backend, http, Some(token.to_owned()))
+        .whoami(&rpc::WhoamiRequest {})
+        .await
 }
 
 /// Make sure this computer is connected to a Worker and return `(backend, token)`.
 ///
 /// A saved or environment token that the Worker accepts is reused. Otherwise an interactive terminal is offered the
 /// chance to connect a Worker (its URL and admin token), and anything else fails with `setup_required` and the command to run.
-pub async fn ensure(
-    backend: &str,
-    home: &Path,
-    ui: &Terminal,
-    no_open: bool,
-) -> Result<(String, String)> {
-    let session = session(backend, home)?;
+pub async fn ensure(backend: &str, ui: &Terminal, no_open: bool) -> Result<(String, String)> {
     ui.credentials()?;
-    match token(&session).await {
+    match token(backend) {
         Ok(token) => {
-            let result =
-                rpc::AuthClient::new(backend, slurp_client::http_client()?, Some(token.clone()))
-                    .current_user(&rpc::CurrentUserRequest {})
-                    .await;
-            match result {
-                Ok(verified) => {
-                    let environment = environment_token().is_some();
+            let environment = environment_token().is_some();
+            match whoami(backend, &token).await {
+                Ok(who) if who.scope == "admin" => {
                     ui.note(
                         "Worker connected",
                         &format!(
-                            "{} as {} ({}).",
-                            backend,
-                            verified.user.email,
+                            "{backend} ({}).",
                             if environment {
                                 "environment credentials"
                             } else {
@@ -69,16 +45,27 @@ pub async fn ensure(
                     )?;
                     return Ok((backend.to_owned(), token));
                 }
-                Err(error) if matches!(error.code(), Some(1000 | 1001)) => {}
+                Ok(who) => {
+                    if environment {
+                        bail!(
+                            "SLURP_TOKEN is a {} key for {backend}; this needs the Worker's admin token",
+                            who.scope
+                        );
+                    }
+                }
+                Err(error) if matches!(error.code(), Some(1000 | 1001)) => {
+                    if environment {
+                        bail!(
+                            "SLURP_TOKEN was rejected by {backend}; use the Worker's admin token"
+                        );
+                    }
+                }
                 Err(_) => bail!(
                     "could not reach or verify the Worker at {backend}; saved connection retained"
                 ),
             }
-            if std::env::var_os("SLURP_TOKEN").is_some() {
-                bail!("SLURP_TOKEN was rejected by {backend}; use the Worker's admin token");
-            }
         }
-        Err(error) if error.to_string().starts_with("not connected") => {}
+        Err(error) if error.downcast_ref::<connection::NotConnected>().is_some() => {}
         Err(error) => return Err(error),
     }
     if !ui.interactive {
@@ -128,7 +115,7 @@ async fn connect_existing(ui: &Terminal) -> Result<(String, String)> {
     let connected = crate::connect::verify_and_save(&url, token).await?;
     ui.note(
         "Worker connected",
-        &format!("{} as {}.", connected.backend, connected.user.email),
+        &format!("{} (admin token).", connected.backend),
     )?;
     Ok((connected.backend, connected.token))
 }

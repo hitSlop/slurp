@@ -63,10 +63,9 @@ pub async fn read_published(
                     bail!("publication gap; expected object {}", cursor + 1)
                 }
                 let temporary = tempfile::tempdir()?;
-                let key = crate::parse_key(&object.name)
-                    .filter(|key| crate::archive::is_jsonl(key.ext))
+                crate::parse_key(&object.name)
                     .ok_or_else(|| anyhow::anyhow!("unsupported archive object name"))?;
-                let path = temporary.path().join(format!("object.{}", key.ext));
+                let path = temporary.path().join("object.jsonl.gz");
                 match remote.download(object, &path).await {
                     Ok((sha, size)) if sha == object.sha256 && size == object.size => {}
                     Ok(_) => bail!("object size/checksum mismatch"),

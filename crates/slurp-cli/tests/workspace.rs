@@ -6,7 +6,7 @@ fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
     let w = Workspace::init(
         temp.path(),
         "http://localhost:8080".into(),
-        "src_test".into(),
+        "prj_test".into(),
         None,
         exe.into(),
     )
@@ -15,7 +15,9 @@ fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
 }
 fn archive(lines: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::NamedTempFile::new().expect("archive file");
-    let bytes = zstd::encode_all(lines.as_bytes(), 1).expect("compress");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut encoder, lines.as_bytes()).expect("compress");
+    let bytes = encoder.finish().expect("compress");
     std::io::Write::write_all(&mut f, &bytes).expect("write");
     f
 }
@@ -50,11 +52,46 @@ fn replay_conflict_and_binding() {
         Workspace::init(
             temp.path(),
             "http://localhost:8080".into(),
-            "src_other".into(),
+            "prj_other".into(),
             None,
             w.duckdb.clone()
         )
         .is_err()
+    );
+}
+/// The event id is the identity. The Worker may archive the same event twice when two senders deliver it; the local database keeps
+/// one copy (the first), and only a different payload under the same id is an error.
+#[test]
+fn an_event_id_sent_by_two_senders_is_one_event_and_a_different_payload_is_a_conflict() {
+    let Some((_temp, w)) = workspace() else {
+        eprintln!("set SLURP_TEST_DUCKDB for native integration tests");
+        return;
+    };
+    let line = |sender: &str, seq: u32, event: &str| {
+        format!(
+            r#"{{"received_at":"2026-11-04T00:00:0{seq}Z","received_seq":"{seq}","sender":"{sender}","id":"same","type":"track","event":"{event}","timestamp":"2026-11-04T00:00:00Z","data":{{}}}}"#
+        )
+    };
+    let both = archive(&format!(
+        "{}\n{}\n",
+        line("web", 1, "signup"),
+        line("ios", 2, "signup")
+    ));
+    w.import("a", 1, "hash", 1, both.path())
+        .expect("the same event from two senders");
+    assert_eq!(
+        w.execute(
+            "SELECT count(*) AS n, any_value(sender) AS sender FROM events",
+            true
+        )
+        .expect("count"),
+        json!([{"n": 1, "sender": "web"}]),
+        "one event, attributed to the first sender"
+    );
+    let other = archive(&line("ios", 3, "purchase"));
+    assert!(
+        w.import("a", 2, "hash2", 2, other.path()).is_err(),
+        "the same id with a different payload is a conflict, whoever sent it"
     );
 }
 #[test]

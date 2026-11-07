@@ -55,11 +55,3 @@ mod optional_sequence {
             .transpose()
     }
 }
-
-#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub struct RemoteCounts {
-    pub api_calls: u64,
-    pub object_gets: u64,
-    pub bytes: u64,
-    pub retries: u64,
-}

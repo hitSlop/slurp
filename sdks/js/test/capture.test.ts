@@ -11,7 +11,9 @@ test('capture preserves queued identities and context, source-scoped reloads, an
     return new Response(null, { status, headers: status === 503 ? { 'Retry-After': '10' } : {} })
   }
   const app = { version: 'before' }
-  const options = { key: 'key-one', endpoint: 'https://events.example/v1/events', sourceId: 'shop',
+  // Keys name their project, so a replacement key from the same project keeps the saved queue and identity.
+  const projectKey = (project: string, random: string) => `slurp_pk_${project.repeat(16)}_${random.repeat(48)}`
+  const options = { key: projectKey('a', '1'), endpoint: 'https://events.example/v1/events',
     storage, fetch: fetcher, context: { app }, flushAt: 100, flushIntervalMs: 60_000 }
   const first = createClient(options)
   const ids = [first.track('anonymous', { nested: { value: 1 } }), first.identify('alice', { plan: 'pro' }), first.track('known')]
@@ -39,12 +41,12 @@ test('capture preserves queued identities and context, source-scoped reloads, an
   assert.equal(records[1].event, undefined)
   await first.close()
   // A rotating publishable key keeps the same identity and exact persisted body.
-  const raw = await storage.getItem('@hitslop/slurp-sdk:v2:https://events.example/v1/events:shop')
+  const raw = await storage.getItem('@hitslop/slurp-sdk:v1:https://events.example/v1/events:aaaaaaaaaaaaaaaa')
   const state = JSON.parse(raw!)
   state.retryAt = 0
-  await storage.setItem('@hitslop/slurp-sdk:v2:https://events.example/v1/events:shop', JSON.stringify(state))
+  await storage.setItem('@hitslop/slurp-sdk:v1:https://events.example/v1/events:aaaaaaaaaaaaaaaa', JSON.stringify(state))
   status = 200
-  const next = createClient({ ...options, key: 'key-two' })
+  const next = createClient({ ...options, key: projectKey('a', '2') })
   const accepted = await next.flush()
   assert.deepEqual(bodies[1], bodies[0])
   assert.deepEqual(accepted, { accepted: 8, rejected: 0, pending: 0, retryAt: null, stopped: false })
@@ -53,8 +55,8 @@ test('capture preserves queued identities and context, source-scoped reloads, an
   const reloaded = JSON.parse(bodies.at(-1)!)
   assert.equal(reloaded.anonymous_id, records[7].anonymous_id)
   await next.close()
-  const separate = createClient({ ...options, sourceId: 'other' })
-  separate.track('different-source')
+  const separate = createClient({ ...options, key: projectKey('b', '1') })
+  separate.track('different-project')
   await separate.flush()
   assert.notEqual(JSON.parse(bodies.at(-1)!).anonymous_id, reloaded.anonymous_id)
   await separate.close()
@@ -74,33 +76,4 @@ test('invalid capture does not switch identity and permanent rejections are obse
   assert.equal(result.stopped, true)
   assert.deepEqual(bodies[0].trim().split('\n').map(line => JSON.parse(line).user_id), ['alice', 'alice'])
   await client.close()
-})
-
-test('quota refusal stops delivery and reports a typed owner-action error', async () => {
-  const { SlurpQuotaError } = await import('../src/index.ts')
-  const errors: Error[] = []
-  let requests = 0
-  const storage = memoryStorage()
-  const options = { key: 'fixture', endpoint: 'https://example.test/events', sourceId: 'quota-test', storage }
-  const client = createClient({ ...options,
-    fetch: async () => { requests++; return new Response(null, { status: 402 }) }, onError: e => errors.push(e) })
-  client.track('one')
-  const result = await client.flush()
-  assert.equal(result.stopped, true)
-  assert.equal(result.rejected, 1)
-  assert.ok(errors[0] instanceof SlurpQuotaError)
-  assert.equal((errors[0] as InstanceType<typeof SlurpQuotaError>).status, 402)
-  await client.flush()
-  assert.equal(requests, 1)
-  await client.close()
-  const before = JSON.parse((await storage.getItem('@hitslop/slurp-sdk:v2:https://example.test/events:quota-test'))!)
-  const resumed = createClient({ ...options, fetch: async () => { requests++; return new Response(null, { status: 200 }) } })
-  resumed.track('after-owner-upgrade')
-  const recovered = await resumed.flush()
-  assert.equal(recovered.accepted, 1)
-  assert.equal(recovered.stopped, false)
-  const after = JSON.parse((await storage.getItem('@hitslop/slurp-sdk:v2:https://example.test/events:quota-test'))!)
-  assert.equal(after.anonymousId, before.anonymousId)
-  assert.equal(after.sessionId, before.sessionId)
-  await resumed.close()
 })

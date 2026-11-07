@@ -20,7 +20,7 @@ cd ~/slurp-walkthrough
 slurp init --name "Slurp live walkthrough"
 ```
 
-Review and accept the proposed data folder. Init opens a local quickstart page with your SDK snippet and saves the source binding and SDK key for the commands below. There is no source ID or key to copy.
+Review and accept the proposed data folder. Init opens a local quickstart page with your SDK snippet and saves the project binding for the commands below. There is no project ID or key to copy.
 
 ## 3. Send six synthetic events
 
@@ -41,7 +41,7 @@ slurp send report_built --user-id demo_alice --data "$SLURP_DEMO_DATA"
 slurp sync
 ```
 
-Successful sends report `Accepted 1 event.` (`accepted: true` in JSON) and your Worker's estimate of its next archive seal. That is a source-level estimate, not confirmation that an individual event is published. An immediate sync may import zero rows. Do not resend events to make them appear.
+Successful sends report `Accepted 1 event.` (`accepted: true` in JSON) and your Worker's estimate of its next archive seal. That is a project-level estimate, not confirmation that an individual event is published. An immediate sync may import zero rows. Do not resend events to make them appear.
 
 ## 4. Pull after the next seal
 
@@ -62,7 +62,7 @@ ORDER BY n DESC
 slurp sync
 ```
 
-Expected totals: `signed_up = 3`, `project_created = 2`, `report_built = 1`. `country` is filled from Cloudflare's request metadata when the source allows geo enrichment. If the archive is not sealed yet, retry **sync** later. The final sync imports nothing when nothing new was sealed.
+Expected totals: `signed_up = 3`, `project_created = 2`, `report_built = 1`. `country` is filled from Cloudflare's request metadata when the project allows geo enrichment. If the archive is not sealed yet, retry **sync** later. The final sync imports nothing when nothing new was sealed.
 
 ## 5. Open a local report
 
@@ -74,4 +74,4 @@ slurp report open .slurp/output/first
 
 The sample report shows all events in this project's database. Choose a fresh output folder for another report.
 
-Project commands also work inside the app's subfolders; the nearest initialized parent determines the project. Use `--workspace /absolute/path/to/app` to select an exact project folder. Sending uses its saved binding without opening DuckDB; sync, SQL and reports need the data drive connected.
+Project commands also work inside the app's subfolders; the nearest initialized parent determines the project. Use `--project /absolute/path/to/app` to select an exact project folder. Sending uses its saved binding without opening DuckDB; sync, SQL and reports need the data drive connected.

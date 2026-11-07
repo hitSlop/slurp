@@ -12,11 +12,11 @@ use std::{
 
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_slurp"))
-        .arg("--workspace")
+        .arg("--project")
         .arg(root)
         .args(args)
         .env_remove("SLURP_BACKEND")
-        .env_remove("SLURP_SOURCE_ID")
+        .env_remove("SLURP_PROJECT_ID")
         .env_remove("SLURP_PUBLISHABLE_KEY")
         .env_remove("SLURP_TOKEN")
         .env_remove("SLURP_READ_KEY")
@@ -39,7 +39,7 @@ fn init(root: &Path, database: Option<PathBuf>) -> Option<Workspace> {
         Workspace::init(
             root,
             "http://localhost:8080".into(),
-            "src_test".into(),
+            "prj_test".into(),
             database,
             exe.into(),
         )
@@ -57,7 +57,7 @@ fn storage_error(error: anyhow::Error) {
 }
 
 #[test]
-fn init_defaults_to_hosted_backend_and_allows_overrides() {
+fn init_defaults_to_the_local_worker_and_allows_overrides() {
     let Some(exe) = std::env::var_os("SLURP_TEST_DUCKDB") else {
         return;
     };
@@ -68,8 +68,8 @@ fn init_defaults_to_hosted_backend_and_allows_overrides() {
             project.path(),
             &[
                 operation,
-                "--source",
-                "src_test",
+                "--connect",
+                "prj_test",
                 "--duckdb",
                 exe.to_str().expect("engine"),
             ],
@@ -85,45 +85,20 @@ fn init_defaults_to_hosted_backend_and_allows_overrides() {
             "http://127.0.0.1:8787"
         );
     }
-    let self_hosted = tempfile::tempdir().expect("self-hosted project");
-    fs::write(
-        self_hosted.path().join("slurp.toml"),
-        "backend = 'http://localhost:8080'\n",
-    )
-    .expect("self-hosted setting");
-    let result = value(cli(
-        self_hosted.path(),
-        &[
-            "init",
-            "--source",
-            "src_test",
-            "--duckdb",
-            exe.to_str().expect("engine"),
-            "--no-open",
-        ],
-    ));
-    assert_eq!(result["initialized"], true);
-    value(cli(self_hosted.path(), &["init", "--no-open"]));
-    assert_eq!(
-        Workspace::load(self_hosted.path())
-            .expect("self-hosted binding")
-            .backend,
-        "http://localhost:8080"
-    );
     let project = tempfile::tempdir().expect("override project");
     let output = Command::new(env!("CARGO_BIN_EXE_slurp"))
-        .arg("--workspace")
+        .arg("--project")
         .arg(project.path())
         .args([
             "init",
-            "--source",
-            "src_test",
+            "--connect",
+            "prj_test",
             "--duckdb",
             exe.to_str().expect("engine"),
             "--no-open",
         ])
         .env("SLURP_BACKEND", "http://localhost:8081")
-        .env_remove("SLURP_SOURCE_ID")
+        .env_remove("SLURP_PROJECT_ID")
         .env("SLURP_HOME", project.path().join("private-home"))
         .stdin(std::process::Stdio::null())
         .output()
@@ -149,8 +124,8 @@ fn external_storage_setup_is_saved_and_never_relocated_implicitly() {
         project.path(),
         &[
             "init",
-            "--source",
-            "src_test",
+            "--connect",
+            "prj_test",
             "--backend",
             "http://localhost:8080",
             "--duckdb",
@@ -178,7 +153,7 @@ fn external_storage_setup_is_saved_and_never_relocated_implicitly() {
         first["next_steps"]
             .as_str()
             .expect("commands")
-            .contains("--workspace")
+            .contains("--project")
     );
     let html = fs::read_to_string(first["setup_page"].as_str().expect("page")).expect("HTML");
     assert!(html.contains(database.to_str().expect("database path")));
@@ -298,7 +273,7 @@ fn init_failure_preserves_existing_data_and_leaves_no_configuration() {
         Workspace::init(
             project.path(),
             "http://localhost:8080".into(),
-            "src_test".into(),
+            "prj_test".into(),
             Some(database.clone()),
             exe.clone().into()
         )
@@ -320,7 +295,7 @@ fn init_failure_preserves_existing_data_and_leaves_no_configuration() {
         Workspace::init(
             project.path(),
             "http://localhost:8080".into(),
-            "src_test".into(),
+            "prj_test".into(),
             Some(database.clone()),
             exe.into()
         )
@@ -362,8 +337,8 @@ fn scripted_init_requires_explicit_agent_notes_and_preserves_instruction_files()
         project.path(),
         &[
             "init",
-            "--source",
-            "src_test",
+            "--connect",
+            "prj_test",
             "--duckdb",
             engine.to_str().expect("engine"),
             "--no-open",
@@ -389,8 +364,8 @@ fn scripted_init_requires_explicit_agent_notes_and_preserves_instruction_files()
         blank.path(),
         &[
             "init",
-            "--source",
-            "src_test",
+            "--connect",
+            "prj_test",
             "--duckdb",
             engine.to_str().expect("engine"),
             "--agent-notes",
@@ -457,8 +432,8 @@ fn init_data_dir_flag_and_conflicts_are_machine_readable() {
         &root,
         &[
             "init",
-            "--source",
-            "src_test",
+            "--connect",
+            "prj_test",
             "--backend",
             "http://localhost:8080",
             "--duckdb",
@@ -488,24 +463,24 @@ fn init_data_dir_flag_and_conflicts_are_machine_readable() {
 }
 
 #[test]
-fn selecting_a_different_source_does_not_embed_environment_keys() {
+fn selecting_a_different_project_does_not_embed_environment_keys() {
     let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
         return;
     };
     let root = tempfile::tempdir().expect("project");
     let output = Command::new(env!("CARGO_BIN_EXE_slurp"))
-        .arg("--workspace")
+        .arg("--project")
         .arg(root.path())
         .args([
             "init",
-            "--source",
-            "src_new",
+            "--connect",
+            "prj_new",
             "--duckdb",
             engine.to_str().expect("engine"),
             "--no-open",
         ])
         .env_remove("SLURP_BACKEND")
-        .env("SLURP_SOURCE_ID", "src_old")
+        .env("SLURP_PROJECT_ID", "prj_old")
         .env("SLURP_PUBLISHABLE_KEY", "slurp_pk_old_fixture")
         .env("SLURP_READ_KEY", "slurp_sk_old_fixture")
         .env("SLURP_HOME", root.path().join("private-home"))
@@ -516,5 +491,5 @@ fn selecting_a_different_source_does_not_embed_environment_keys() {
     let html = fs::read_to_string(result["setup_page"].as_str().expect("page")).expect("HTML");
     assert!(!html.contains("slurp_pk_old_fixture"));
     assert!(!html.contains("slurp_sk_old_fixture"));
-    assert!(html.contains("src_new"));
+    assert!(html.contains("prj_new"));
 }

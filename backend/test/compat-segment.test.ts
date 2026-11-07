@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { gzipSync } from 'node:zlib'
 import { after, before, test } from 'node:test'
-import { debug, newSource, readArchives, startWorker, type Worker } from './harness.ts'
+import { debug, newProject, readArchives, startWorker, type Worker } from './harness.ts'
 
 let w: Worker
 before(async () => { w = await startWorker() })
@@ -13,7 +13,7 @@ const send = (path: string, body: unknown, headers: Record<string, string> = {},
 const archive = async (s: { id: string; sk: string }) => { await debug(w.base, 'seal', s.id); return (await readArchives(w.base, s.id, s.sk)).flatMap(a => a.lines) }
 
 test('single-event endpoints: Basic auth with the publishable key, text/plain bodies (Analytics.js)', async () => {
-  const s = await newSource(w.base, name('segsingle'))
+  const s = await newProject(w.base, name('segsingle'))
   const auth = { authorization: basic(s.pk), 'content-type': 'text/plain' }
   const common = { anonymousId: 'anon-1', timestamp: '2026-11-07T10:00:00.000Z', context: { library: { name: 'analytics.js' }, page: { url: 'https://x.test/' } } }
   assert.equal((await send('/v1/t', { ...common, messageId: 'ajs-t', type: 'track', event: 'Signed Up', properties: { plan: 'pro' } }, auth)).status, 200)
@@ -36,7 +36,7 @@ test('single-event endpoints: Basic auth with the publishable key, text/plain bo
 })
 
 test('batch endpoints /v1/batch (Node) and /v1/b (Swift): key in the body, no Authorization header', async () => {
-  const s = await newSource(w.base, name('segbatch'))
+  const s = await newProject(w.base, name('segbatch'))
   const batch = (prefix: string) => ({
     writeKey: s.pk, sentAt: '2026-11-07T10:00:05.000Z',
     batch: [
@@ -53,7 +53,7 @@ test('batch endpoints /v1/batch (Node) and /v1/b (Swift): key in the body, no Au
 })
 
 test('a retried batch is deduplicated and a bad event does not cost the rest of its batch', async () => {
-  const s = await newSource(w.base, name('segretry'))
+  const s = await newProject(w.base, name('segretry'))
   const body = { writeKey: s.pk, batch: [
     { type: 'track', messageId: 'ok-1', event: 'Good', userId: 'u1', timestamp: '2026-11-07T10:00:00Z' },
     { type: 'track', messageId: 'bad-1', userId: 'u1' },
@@ -72,7 +72,7 @@ test('a retried batch is deduplicated and a bad event does not cost the rest of 
 })
 
 test('events without a messageId get a stable derived id; gzip bodies are accepted', async () => {
-  const s = await newSource(w.base, name('seggz'))
+  const s = await newProject(w.base, name('seggz'))
   const body = { writeKey: s.pk, batch: [{ type: 'track', event: 'NoId', userId: 'u1', timestamp: '2026-11-07T10:00:00Z', properties: { a: 1 } }] }
   const raw = gzipSync(JSON.stringify(body))
   for (let n = 0; n < 2; n++) assert.equal((await send('/v1/batch', null, { 'content-type': 'application/json', 'content-encoding': 'gzip' }, raw)).status, 200)
@@ -81,7 +81,7 @@ test('events without a messageId get a stable derived id; gzip bodies are accept
 })
 
 test('auth: only publishable keys, never secret ones; unknown keys are refused; malformed bodies are 400', async () => {
-  const s = await newSource(w.base, name('segauth'))
+  const s = await newProject(w.base, name('segauth'))
   const ev = { type: 'track', messageId: 'a', event: 'e', userId: 'u' }
   assert.equal((await send('/v1/t', ev, { authorization: basic('slurp_pk_nope') })).status, 401)
   assert.equal((await send('/v1/t', ev, { authorization: basic(s.sk) })).status, 401, 'secret keys are never accepted as write keys')
@@ -92,7 +92,7 @@ test('auth: only publishable keys, never secret ones; unknown keys are refused; 
 })
 
 test('browser plumbing: CORS preflight and the settings document Analytics.js loads', async () => {
-  const s = await newSource(w.base, name('segset'))
+  const s = await newProject(w.base, name('segset'))
   const pre = await fetch(`${w.base}/v1/t`, { method: 'OPTIONS' })
   assert.equal(pre.status, 204)
   assert.match(pre.headers.get('access-control-allow-headers')!, /authorization/i); assert.match(pre.headers.get('access-control-allow-headers')!, /x-retry-count/i)

@@ -1,18 +1,22 @@
 webrpc = v1
 
 name = slurp
-version = v0.5.0
+version = v0.6.0
 basepath = /rpc
 
 # Slurp backend: the public client API (webrpc, POST JSON per method). webrpc-gen v0.49.0 syntax:
 # per-method errors go on indented `+ error A | B` lines below the method signature.
+# Each method is tagged `+ @public` (a client outside this repo may use it: reads and health) or
+# `+ @internal` (CLI and control-plane plumbing). webrpc-gen filters on that: `-match=@public` keeps only the public
+# methods and `-ignore=@internal` drops the internal ones (the `@` is required). The Worker and the CLI are generated from the
+# whole schema; a client published for third parties would be generated with `-match=@public`.
 # SDK ingest is NOT here: POST /v1/events stays a plain HTTP endpoint (raw NDJSON bodies, a
 # byte-exact dedupe hash, 503 + Retry-After). See docs/architecture.md.
 
 # An archive sequence number as a decimal string, so it survives JavaScript numbers (> 2^53).
 type Seq: string
 
-# Where a source's archive stands. Sequences have no holes; objects below firstRetained may
+# Where a project's archive stands. Sequences have no holes; objects below firstRetained may
 # already be deleted.
 struct Coverage
   # The current archive. A different id than the one a library has synced is an archive reset.
@@ -30,7 +34,7 @@ struct Coverage
 struct ArchiveObject
   # The object sequence number.
   - seq: Seq
-  # `<20-digit seq>-<sha256>.jsonl.zst` (the extension names the format).
+  # `<20-digit seq>-<sha256>.jsonl.gz` (gzip NDJSON).
   - name: string
   # Compressed object size in bytes.
   - size: uint64
@@ -39,10 +43,10 @@ struct ArchiveObject
   # A presigned GET. It carries no credentials of the caller; never forward Authorization.
   - url: string
 
-# List immutable archive objects for a source.
+# List immutable archive objects for a project.
 struct ListObjectsRequest
-  # The source to access.
-  - source: string
+  # The project to access.
+  - project: string
   # Exclusive start: the caller's committed checkpoint. Null starts at coverage.firstRetained,
   # which is how a new library bootstraps (never a gap).
   - after?: Seq
@@ -51,7 +55,7 @@ struct ListObjectsRequest
 
 # A page of objects and the archive retention range.
 struct ListObjectsResponse
-  # Null when the source has no archive yet (then objects is empty).
+  # Null when the project has no archive yet (then objects is empty).
   - coverage?: Coverage
     + go.tag.json = coverage
   # Ascending by seq; contiguous unless an object is missing from the bucket. Never null.
@@ -63,10 +67,10 @@ struct ListObjectsResponse
 
 # Read the current retention range.
 struct GetCoverageRequest
-  # The source to access.
-  - source: string
+  # The project to access.
+  - project: string
 
-# A source-level scheduling snapshot, not confirmation that any particular event is published.
+# A project-level scheduling snapshot, not confirmation that any particular event is published.
 struct PublicationStatus
   # idle, pending, publishing, retrying, or blocked.
   - state: string
@@ -83,119 +87,92 @@ struct GetCoverageResponse
   # Available from an ingest gateway, including before the first archive exists.
   - publication?: PublicationStatus
 
-# A source and the caller's role.
-struct SourceInfo
-  # Stable source id.
+# A project: one stream of events that many senders (an iOS app, a website, a webhook) write into.
+struct ProjectInfo
+  # Stable project id (`prj_` and 16 hex digits).
   - id: string
-  # Owner-scoped Slurp alias; editable without changing the id.
+  # Unique alias; editable without changing the id.
   - name: string
   - title?: string
-  - ownerId: string
-  - createdAt: timestamp
-  - geoEnabled: bool
-  # Membership role.
-  - role: string
-
-# One user's membership in a source.
-struct Membership
-  # The signed-in user id.
-  - userId: string
-  # The source to access.
-  - source: string
-  # Membership role.
-  - role: string
-  # When the membership was created.
   - createdAt: timestamp
 
-# Metadata for a publishable or secret key; the secret is never listed.
+# Metadata for a key. Each key is one sender (a source) of events into the project, named for what sends with it.
 struct ApiKey
   # Stable public id derived from the key digest.
   - keyId: string
-  # The source this key can access.
-  - source: string
-  # publishable for ingest, or secret for archive reads.
+  # The project this key can access.
+  - project: string
+  # publishable for sending events, or secret for archive reads.
   - scope: string
-  # A caller-chosen label.
+  # What this key is for ("ios", "web", "github"). Every event it sends is stamped with this as `sender`.
   - name: string
   # When the key was created.
   - createdAt: timestamp
   # When access was revoked; absent for active keys.
   - revokedAt?: timestamp
+  # The key itself, for publishable keys only: they are public by design and can be shown again. Secret keys are never stored.
+  - key?: string
 
-# List the source's members.
-struct ListMembershipsRequest
-  # The source to inspect.
-  - source: string
+struct ListProjectsRequest
 
-# Members ordered by user id.
-struct ListMembershipsResponse
-  # All memberships for the source.
-  - memberships: []Membership
+struct ListProjectsResponse
+  # Projects ordered by id.
+  - projects: []ProjectInfo
 
-# List the signed-in user's sources.
-struct ListSourcesRequest
-
-# Sources visible to the signed-in user.
-struct ListSourcesResponse
-  # Sources ordered by id.
-  - sources: []SourceInfo
-
-# Create a source owned by the signed-in user.
-struct CreateSourceRequest
+# Create a project, or return the existing one with this name (so a retry never makes a second project or changes a key).
+struct CreateProjectRequest
   - title?: string
+  # Applies only when the project is created.
   - geoEnabled?: bool
-  # Slurp alias, using the same rules as local source names.
+  # Slurp alias: 1-63 chars of a-z 0-9 _, starting with a letter.
   - name: string
-  # Client UUID, unique per signed-in user. Persist before sending. Reuse on retries.
-  - requestId: string
 
-struct GetSourceRequest
-  # An immutable id or unambiguous accessible source name.
-  - source: string
-struct GetSourceResponse
-  - source: SourceInfo
-  - ingestUrl: string
-struct UpdateSourceRequest
-  - source: string
-  - name?: string
-  # Empty string clears the optional display title.
-  - title?: string
-  - geoEnabled?: bool
-struct UpdateSourceResponse
-  - source: SourceInfo
-struct SourceMemberRequest
-  - source: string
-  - userId: string
-
-# A new source and its initial ingest credentials.
-struct CreateSourceResponse
-  # The source with the caller's owner role.
-  - source: SourceInfo
-  # Fresh Default publishable key. Each retry revokes only the previous key from this create.
+struct CreateProjectResponse
+  - project: ProjectInfo
+  # False when a project with this name already existed.
+  - created: bool
+  # The project's first active publishable key (a new "default" key when the project is new).
   - publishableKey: string
   # Absolute public URL for POSTing NDJSON events.
   - ingestUrl: string
 
-# Create a key for a source the caller belongs to.
+struct GetProjectRequest
+  # A project id or its name.
+  - project: string
+struct GetProjectResponse
+  - project: ProjectInfo
+  - ingestUrl: string
+  - geoEnabled: bool
+struct UpdateProjectRequest
+  - project: string
+  - name?: string
+  # Empty string clears the optional display title.
+  - title?: string
+  - geoEnabled?: bool
+struct UpdateProjectResponse
+  - project: ProjectInfo
+  - geoEnabled: bool
+
+# Create a key for a project: one per sender you want to tell apart.
 struct CreateKeyRequest
-  # The source this key can access.
-  - source: string
+  # The project this key can access.
+  - project: string
   # Exactly publishable or secret.
   - scope: string
-  # Optional label, at most 200 UTF-8 bytes.
+  # What the key is for, at most 200 UTF-8 bytes. Defaults to "default".
   - name?: string
 
-# A new key; only its SHA256 is stored.
+# A new key. A secret key is shown only now and only its SHA256 is stored; a publishable key can be read again with ListKeys.
 struct CreateKeyResponse
   # Stable public id derived from the key digest.
   - keyId: string
-  # The slurp_pk_… or slurp_sk_… value, returned only once.
+  # The slurp_pk_… or slurp_sk_… value.
   - key: string
 
-# List a source's keys, including revoked keys.
+# List a project's keys, including revoked keys.
 struct ListKeysRequest
-  # The source to inspect.
-  - source: string
+  # The project to inspect.
+  - project: string
   # Optional publishable or secret filter.
   - scope?: string
 
@@ -206,8 +183,8 @@ struct ListKeysResponse
 
 # Revoke either scope of key; repeated calls preserve the revocation time.
 struct RevokeKeyRequest
-  # The source owning the key.
-  - source: string
+  # The project owning the key.
+  - project: string
   # The key's 16 lowercase hex public id.
   - keyId: string
 
@@ -231,170 +208,71 @@ struct VersionResponse
 error 1000 Unauthenticated "authentication required" HTTP 401
 error 1001 Forbidden "not allowed" HTTP 403
 error 2000 InvalidArgument "invalid argument" HTTP 400
-error 2001 AlreadyExists "source name already exists for this owner" HTTP 409
-error 2002 AmbiguousSource "source name is ambiguous; use its id" HTTP 409
+error 2001 AlreadyExists "project name already exists" HTTP 409
 error 3000 NotFound "not found" HTTP 404
 # The sequences after `after` are below the retention floor; call GetCoverage for the range.
 error 4000 RetentionGap "sequences after the checkpoint are past the retention floor" HTTP 410
 error 5000 Unavailable "temporarily unavailable" HTTP 503
 
-# Archive reads, authorized for a session or source secret key.
+# Archive reads, authorized by the admin token or a project's secret key.
 service Archive
   # List archive objects after an optional committed checkpoint.
   - ListObjects(ListObjectsRequest) => (ListObjectsResponse)
+    + @public
     + error Unauthenticated | Forbidden | InvalidArgument | RetentionGap | Unavailable
   # Read the current archive and retention floor.
   - GetCoverage(GetCoverageRequest) => (GetCoverageResponse)
+    + @public
     + error Unauthenticated | Forbidden | InvalidArgument | Unavailable
 
-# Session tokens only (a signed-in user); API keys are refused with Forbidden.
-service Source
-  - GetSource(GetSourceRequest) => (GetSourceResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | AmbiguousSource | Unavailable
-  - UpdateSource(UpdateSourceRequest) => (UpdateSourceResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | AlreadyExists | AmbiguousSource | Unavailable
-  - AddMember(SourceMemberRequest) => (ListMembershipsResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | AmbiguousSource | Unavailable
-  - RemoveMember(SourceMemberRequest) => (ListMembershipsResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | AmbiguousSource | Unavailable
-  # List sources for the signed-in user.
-  - ListSources(ListSourcesRequest) => (ListSourcesResponse)
+# Control plane: the admin token only. Keys are refused with Forbidden.
+service Project
+  - GetProject(GetProjectRequest) => (GetProjectResponse)
+    + @internal
+    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | Unavailable
+  - UpdateProject(UpdateProjectRequest) => (UpdateProjectResponse)
+    + @internal
+    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | AlreadyExists | Unavailable
+  - ListProjects(ListProjectsRequest) => (ListProjectsResponse)
+    + @internal
     + error Unauthenticated | Forbidden | Unavailable
-  # List members of a source the caller belongs to.
-  - ListMemberships(ListMembershipsRequest) => (ListMembershipsResponse)
+  # Create a project and its first "default" publishable key, or return the existing project of that name. Repeating the call
+  # never creates a second project and never changes a key.
+  - CreateProject(CreateProjectRequest) => (CreateProjectResponse)
+    + @internal
     + error Unauthenticated | Forbidden | InvalidArgument | Unavailable
-  # Atomically create a source, owner membership and Default publishable key. The same user's
-  # requestId always returns the original source/name and rotates only this create's key;
-  # other keys are untouched. Concurrent retries serialize; only the latest key remains usable.
-  - CreateSource(CreateSourceRequest) => (CreateSourceResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | AlreadyExists | Unavailable
-  # Create a publishable or secret key, shown once.
+  # Create a publishable or secret key.
   - CreateKey(CreateKeyRequest) => (CreateKeyResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | Unavailable
+    + @internal
+    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | Unavailable
   # List active and revoked keys, optionally filtered by scope.
   - ListKeys(ListKeysRequest) => (ListKeysResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | Unavailable
+    + @internal
+    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | Unavailable
   # Revoke a key without changing an earlier revocation time.
   - RevokeKey(RevokeKeyRequest) => (RevokeKeyResponse)
+    + @internal
     + error Unauthenticated | Forbidden | InvalidArgument | NotFound | Unavailable
 
 # Public server health information.
 service Health
   # Read server, schema and generator versions.
   - Version(VersionRequest) => (VersionResponse)
+    + @public
 
-# Public device authorization and credential exchange. Credentials are never logged.
-struct BeginLoginRequest
+# Which key is this? Any valid key can ask, so a CLI or a bot can check a saved token without trying a real operation.
+struct WhoamiRequest
 
-struct BeginLoginResponse
-  - deviceCode: string
-  - userCode: string
-  - verificationUrl: string
-  - verificationUrlComplete?: string
-  - expiresInSeconds: uint32
-  - intervalSeconds: uint32
-
-struct PollLoginRequest
-  - deviceCode: string
-
-struct AuthUser
-  - id: string
-  - email: string
-  - firstName?: string
-  - lastName?: string
-
-struct AuthCredentials
-  - user: AuthUser
-  - accessToken: string
-  - refreshToken: string
-
-struct PollLoginResponse
-  # pending, complete, denied, expired, or slow_down (increase interval by 5 seconds).
-  - status: string
-  - credentials?: AuthCredentials
-
-struct RefreshRequest
-  - refreshToken: string
-
-struct RefreshResponse
-  - credentials: AuthCredentials
-
-struct LogoutRequest
-
-struct LogoutResponse
-  - ok: bool
-
-struct CurrentUserRequest
-
-struct CurrentUserResponse
-  - user: AuthUser
+struct WhoamiResponse
+  # admin for the Worker's admin token; secret (reads archives) or publishable (sends events) for a project key.
+  - scope: string
+  # The project a key belongs to. Absent for the admin token, which can use every project.
+  - project?: string
+  # The key's name (the sender it stamps on events). Absent for the admin token.
+  - name?: string
 
 service Auth
-  - BeginLogin(BeginLoginRequest) => (BeginLoginResponse)
-    + error Unavailable
-  - PollLogin(PollLoginRequest) => (PollLoginResponse)
-    + error InvalidArgument | Unavailable
-  - Refresh(RefreshRequest) => (RefreshResponse)
-    + error InvalidArgument | Unauthenticated | Unavailable
-  - Logout(LogoutRequest) => (LogoutResponse)
-    + error Unauthenticated | Forbidden | Unavailable
-  - CurrentUser(CurrentUserRequest) => (CurrentUserResponse)
-    + error Unauthenticated | Forbidden | Unavailable
-
-# Owner-only publication usage; integer quantities are decimal strings.
-struct UsageEntry
-  - source: string
-  - sourceName?: string
-  - sourceTitle?: string
-  - day: string
-  - events: string
-  - rawBytes: string
-  - compressedBytes: string
-
-struct GetUsageRequest
-  # UTC calendar month YYYY-MM; defaults to the current month.
-  - month?: string
-
-struct GetUsageResponse
-  - month: string
-  - asOf: timestamp
-  - entries: []UsageEntry
-  - retainedBytes: string
-
-service Usage
-  - GetUsage(GetUsageRequest) => (GetUsageResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | Unavailable
-
-# Owner billing controls. Quantities and USD cents are decimal strings.
-struct BillingStatusRequest
-struct BillingStatusResponse
-  - environment: string
-  - state: string
-  - period: string
-  - startsAt?: timestamp
-  - endsAt?: timestamp
-  - acceptedBytes: string
-  - forgivenBytes: string
-  - includedBytes: string
-  - estimatedCents: string
-  - spendLimitCents: string
-  - currency: string
-  - reporting: string
-  - asOf: timestamp
-struct BillingCheckoutRequest
-  - requestId: string
-struct BillingUrlResponse
-  - url: string
-struct BillingPortalRequest
-struct BillingLimitRequest
-  - cents: string
-error 4001 QuotaExceeded "allowance or spending limit reached" HTTP 402
-service Billing
-  - GetStatus(BillingStatusRequest) => (BillingStatusResponse)
-    + error Unauthenticated | Forbidden | Unavailable
-  - CreateCheckout(BillingCheckoutRequest) => (BillingUrlResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | AlreadyExists | Unavailable
-  - CreatePortal(BillingPortalRequest) => (BillingUrlResponse)
-    + error Unauthenticated | Forbidden | NotFound | Unavailable
-  - SetLimit(BillingLimitRequest) => (BillingStatusResponse)
-    + error Unauthenticated | Forbidden | InvalidArgument | Unavailable
+  # Check the bearer token and say what it can do. Fails with Unauthenticated for an unknown, revoked or missing token.
+  - Whoami(WhoamiRequest) => (WhoamiResponse)
+    + @public
+    + error Unauthenticated | Unavailable

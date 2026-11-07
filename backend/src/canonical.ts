@@ -1,5 +1,5 @@
 /**
- * Canonical capture contract, ported from the Go gateway (validateRecord, stampLines, requestGeo).
+ * The canonical capture contract: record validation, stamping and request geo. The vectors are in backend/fixtures/canonical/.
  *
  * Records are validated and rewritten *textually*: client bytes are never parsed and re-serialized, so
  * arbitrary JSON numbers (9007199254740993123456789, 1e1000, -0, 1.2300) survive exactly.
@@ -8,7 +8,8 @@
 export const MAX_RECORD_BYTES = 1024 * 1024
 export const MAX_DEPTH = 128
 export const RECORD_TOO_LARGE = 'record exceeds 1 MiB'
-const RESERVED = ['received_at', 'received_seq', 'rt', 'rseq', 'ts', 'props']
+// `sender` is stamped by the Worker from the key that sent the record, so a client cannot claim to be another sender.
+const RESERVED = ['received_at', 'received_seq', 'sender']
 const MAX_LINES = 1 << 20
 
 class Reject extends Error {}
@@ -135,8 +136,6 @@ function validTimestamp(v: string): boolean {
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
 }
 
-export interface CheckedRecord { line: string; scanned: Scanned }
-
 /** Validate one record (already UTF-8 decoded). Returns a reason, or null when accepted. */
 export function validateRecord(line: string): { reason: string } | { scanned: Scanned } {
   let sc: Scanned
@@ -150,7 +149,7 @@ export function validateRecord(line: string): { reason: string } | { scanned: Sc
     const v = JSON.parse(line.slice(span[0], span[1])) as string
     return v === '' ? null : v
   }
-  for (const k of RESERVED) if (sc.members.has(k)) return { reason: `reserved or obsolete ${k} field` }
+  for (const k of RESERVED) if (sc.members.has(k)) return { reason: `reserved ${k} field` }
   const id = text('id')
   if (id === null || new TextEncoder().encode(id).length > 256) return { reason: 'id must be a string of 1-256 bytes' }
   const type = text('type')
@@ -177,7 +176,7 @@ export function validateRecord(line: string): { reason: string } | { scanned: Sc
 
 export type Geo = Record<string, string>
 
-/** Trusted enrichment from Cloudflare's `request.cf`; mirrors backend/stamp.go requestGeo normalization. */
+/** Trusted enrichment from Cloudflare's `request.cf`; keeps only country, region and city. */
 export function normalizeGeo(cf: { country?: unknown; region?: unknown; city?: unknown } | null | undefined): Geo | null {
   if (!cf) return null
   const geo: Geo = {}
@@ -234,15 +233,15 @@ export function checkBody(body: Uint8Array, geo: Geo | null): CheckResult {
   return { lines }
 }
 
-/** Stamp one record: prefix received_at/received_seq like Go's stampLines. received_seq is `batchId<<20 | n`. */
-export function stampOne(raw: string, batchId: number, atMs: number, n: number): string {
+/** Stamp one record: prefix received_at, received_seq (`batchId<<20 | n`) and the sending key's name as `sender`. */
+export function stampOne(raw: string, batchId: number, atMs: number, n: number, sender: string): string {
   const line = raw.replace(/^[ \t\r]+/, '')
   const rest = line.slice(1)
   const seq = ((BigInt(batchId) << 20n) | BigInt(n)).toString()
   const comma = /^[ \t\r]*\}/.test(rest) ? '' : ','
-  return `{"received_at":"${new Date(atMs).toISOString()}","received_seq":"${seq}"${comma}${rest}\n`
+  return `{"received_at":"${new Date(atMs).toISOString()}","received_seq":"${seq}","sender":${JSON.stringify(sender)}${comma}${rest}\n`
 }
 
-export function stampLines(lines: string[], batchId: number, atMs: number, firstN = 0): string {
-  return lines.map((l, k) => stampOne(l, batchId, atMs, firstN + k)).join('')
+export function stampLines(lines: string[], batchId: number, atMs: number, sender: string, firstN = 0): string {
+  return lines.map((l, k) => stampOne(l, batchId, atMs, firstN + k, sender)).join('')
 }

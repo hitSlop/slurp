@@ -1,15 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { AppState, Platform } from 'react-native'
+import { chunkedStorage } from './chunked.ts'
 import { createNativeClient, type ReactNativeClient, type ReactNativeOptions } from './native.ts'
 
-export { SlurpQuotaError, memoryStorage } from '@hitslop/slurp-sdk'
+export { memoryStorage } from '@hitslop/slurp-sdk'
 export type { CaptureOptions, FlushResult, SlurpClient, SlurpOptions, StorageAdapter } from '@hitslop/slurp-sdk'
 export { version } from './native.ts'
+export { chunkedStorage } from './chunked.ts'
 export type { ApplicationLike, NetInfoLike, ReactNativeClient, ReactNativeOptions } from './native.ts'
 
 /** Create an independent client. Most apps call `init` once instead. */
 export const createClient = (options: ReactNativeOptions): ReactNativeClient =>
-  createNativeClient(options, { appState: AppState, platform: Platform, storage: AsyncStorage })
+  createNativeClient(options, { appState: AppState, platform: Platform, storage: chunkedStorage(AsyncStorage) })
 
 let defaultClient: ReactNativeClient | undefined
 /** Create or replace the default client used by `track`, `identify`, `screen`, `flush` and `reset`. */

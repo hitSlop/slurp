@@ -6,25 +6,20 @@ export type { StorageAdapter } from './storage.ts'
 export { memoryStorage } from './storage.ts'
 export { version } from './event.ts'
 
-/** A terminal ingestion refusal; billing changes require the project owner. */
-export class SlurpQuotaError extends Error {
-  readonly status = 402
-  constructor() {
-    super('Slurp ingestion stopped: trial, spending limit, or payment needs attention. Ask the owner to run slurp billing status.')
-    this.name = 'SlurpQuotaError'
-  }
-}
 
 export interface SlurpOptions {
   key: string
   endpoint: string
-  sourceId?: string
   context?: Record<string, unknown> | (() => Record<string, unknown>)
   flushAt?: number
   flushIntervalMs?: number
   maxBatchEvents?: number
   maxBatchBytes?: number
   maxQueue?: number
+  /** Most bytes kept while offline, counting events not yet batched and batches not yet acknowledged; the oldest are dropped (and reported) beyond it. Records can be up to 1 MiB each, so a count limit alone is not a size limit. Default 4 MiB, which also stays under the browser's roughly 5 MB localStorage. */
+  maxQueueBytes?: number
+  /** A request with no answer after this many milliseconds is aborted and retried with the same bytes. Default 30000. */
+  requestTimeoutMs?: number
   sessionTimeoutMs?: number
   storage?: StorageAdapter
   fetch?: typeof globalThis.fetch
@@ -58,7 +53,7 @@ export interface SlurpClient {
 }
 
 interface State {
-  version: 2
+  version: 1
   anonymousId: string
   sessionId: string
   lastActivity: number
@@ -68,6 +63,8 @@ interface State {
   retryAt: number
   attempts: number
   stopped: boolean
+  /** A fingerprint of the key that was in use: a different key (after a rotation) clears `stopped`. */
+  keyFingerprint?: string
 }
 
 const count = (body: string) => body.split('\n').length - 1
@@ -82,16 +79,33 @@ function positive(value: number | undefined, fallback: number): number {
   return value
 }
 
-function restore(raw: string): State {
+/** A short stable fingerprint of a key (FNV-1a), so saved state can tell the key was replaced without storing the key. */
+function fingerprint(key: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) { hash ^= key.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0 }
+  return hash.toString(16)
+}
+
+/** True for one complete JSON object. The gateway validates a request as a whole, so one damaged line costs every event batched with it. */
+function isRecord(line: string): boolean {
+  try { const value = JSON.parse(line); return value !== null && typeof value === 'object' && !Array.isArray(value) } catch { return false }
+}
+
+/** Read saved state, keeping only complete records; `damaged` counts the lines that were thrown away. */
+function restore(raw: string): { state: State; damaged: number } {
   const state: State = JSON.parse(raw)
-  if (state.version !== 2 || typeof state.anonymousId !== 'string' || typeof state.sessionId !== 'string' ||
+  if (state.version !== 1 || typeof state.anonymousId !== 'string' || typeof state.sessionId !== 'string' ||
       !Number.isFinite(state.lastActivity) || (state.userId !== undefined && typeof state.userId !== 'string') ||
-      !Array.isArray(state.queue) || !state.queue.every(line => typeof line === 'string' && !line.includes('\n')) ||
-      !Array.isArray(state.batches) || !state.batches.every(body => typeof body === 'string' && body.endsWith('\n')) ||
+      !Array.isArray(state.queue) || !state.queue.every(line => typeof line === 'string') ||
+      !Array.isArray(state.batches) || !state.batches.every(body => typeof body === 'string') ||
       !Number.isFinite(state.retryAt) || !Number.isSafeInteger(state.attempts) || typeof state.stopped !== 'boolean') {
     throw new Error('invalid stored SDK state')
   }
-  return state
+  let damaged = 0
+  const keep = (lines: string[]) => lines.filter(line => { const ok = line !== '' && !line.includes('\n') && isRecord(line); if (!ok && line !== '') damaged++; return ok })
+  state.queue = keep(state.queue)
+  state.batches = state.batches.map(body => keep(body.split('\n').slice(0, -1)).join('\n')).filter(joined => joined !== '').map(joined => joined + '\n')
+  return { state, damaged }
 }
 
 export function createClient(options: SlurpOptions): SlurpClient {
@@ -101,6 +115,9 @@ export function createClient(options: SlurpOptions): SlurpClient {
   const maxBatchEvents = positive(options.maxBatchEvents, 1000)
   const maxBatchBytes = positive(options.maxBatchBytes, 900 * 1024)
   const maxQueue = positive(options.maxQueue, 10_000)
+  const maxQueueBytes = positive(options.maxQueueBytes, 4 * 1024 * 1024)
+  const requestTimeoutMs = positive(options.requestTimeoutMs, 30_000)
+  const keyPrint = fingerprint(options.key)
   const sessionTimeout = positive(options.sessionTimeoutMs, 30 * 60 * 1000)
   let accepted = 0
   let rejected = 0
@@ -109,16 +126,16 @@ export function createClient(options: SlurpOptions): SlurpClient {
     try { options.onError?.(error instanceof Error ? error : new Error(String(error)), dropped) } catch { /* callbacks cannot break delivery */ }
   }
   const storage = options.storage ?? defaultStorage(report)
-  const storageKey = options.sourceId
-    ? `@hitslop/slurp-sdk:v2:${resolveEndpoint(options.endpoint).replace(/[?#].*$/, "").replace(/\/$/, "")}:${options.sourceId}`
-    : `@hitslop/slurp-sdk:v2:${options.key}`
+  // A Slurp key names its project (`slurp_pk_<project>_<random>`), so the saved queue and visitor identity belong to the project
+  // and survive replacing the key. A key of any other shape is its own identity.
+  const identity = /^slurp_pk_([0-9a-f]{16})_[0-9a-f]{48}$/.exec(options.key)?.[1] ?? options.key
+  const storageKey = `@hitslop/slurp-sdk:v1:${resolveEndpoint(options.endpoint).replace(/[?#].*$/, "").replace(/\/$/, "")}:${identity}`
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
   let state: State = {
-    version: 2, anonymousId: uuidv7(), sessionId: uuidv7(), lastActivity: 0,
+    version: 1, anonymousId: uuidv7(), sessionId: uuidv7(), lastActivity: 0,
     queue: [], batches: [], retryAt: 0, attempts: 0, stopped: false,
   }
   let ready = false
-  let quotaRefused = false
   let closed = false
   let closing: Promise<void> | undefined
   let stagedCount = 0
@@ -147,15 +164,44 @@ export function createClient(options: SlurpOptions): SlurpClient {
     timer = setTimeout(() => { clearTimer(); void flush() }, Math.min(delay, 2_147_483_647))
     ;(timer as unknown as { unref?: () => void }).unref?.()
   }
+  // Bytes held, kept incrementally (re-measured whenever whole batches change) so a capture never has to re-encode the queue.
+  let queueBytes = 0
+  let batchBytes = 0
+  const measure = () => {
+    queueBytes = state.queue.reduce((total, line) => total + bytes(line) + 1, 0)
+    batchBytes = state.batches.reduce((total, body) => total + bytes(body), 0)
+  }
   const trim = () => {
-    const dropped = state.queue.length - maxQueue
-    if (dropped > 0) {
-      state.queue.splice(0, dropped)
-      report(new Error('queue full; dropped oldest queued events'), dropped)
+    let dropped = 0
+    const excess = state.queue.length - maxQueue
+    if (excess > 0) {
+      for (const line of state.queue.splice(0, excess)) queueBytes -= bytes(line) + 1
+      dropped += excess
     }
+    while (queueBytes + batchBytes > maxQueueBytes && state.queue.length) {
+      queueBytes -= bytes(state.queue.shift()!) + 1
+      dropped++
+    }
+    // Still too much: the oldest unsent batches go too, but never the one that is on the wire right now.
+    const protectedBatches = sending ? 1 : 0
+    while (queueBytes + batchBytes > maxQueueBytes && state.batches.length > protectedBatches) {
+      dropped += count(state.batches.splice(protectedBatches, 1)[0])
+      measure()
+    }
+    if (dropped > 0) report(new Error('queue full; dropped the oldest queued events'), dropped)
   }
   const hydrate = (raw: string | null) => {
-    if (raw !== null) state = restore(raw)
+    if (raw !== null) {
+      const restored = restore(raw)
+      state = restored.state
+      if (restored.damaged) report(new Error(`dropped ${restored.damaged} damaged saved event(s)`), restored.damaged)
+    }
+    // A replaced key must not inherit the "stopped" state that the old, refused key left behind.
+    if (state.keyFingerprint !== keyPrint) {
+      if (state.stopped) { state.stopped = false; state.attempts = 0; state.retryAt = 0 }
+      state.keyFingerprint = keyPrint
+    }
+    measure()
   }
   let read: string | null | Promise<string | null> = null
   try { read = storage.getItem(storageKey) } catch (error) { report(error) }
@@ -184,9 +230,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
         const waiters = saveWaiters
         saveWaiters = []
         let saved = true
-        // A 402 stops this client, but a fresh client after an owner upgrade
-        // must recover without clearing identities on every user's device.
-        try { await storage.setItem(storageKey, JSON.stringify(quotaRefused ? { ...state, stopped: false } : state)) }
+        try { await storage.setItem(storageKey, JSON.stringify(state)) }
         catch (error) { saved = false; report(error) }
         for (const done of waiters) done(saved)
       }
@@ -207,7 +251,11 @@ export function createClient(options: SlurpOptions): SlurpClient {
       size += next
       length++
     }
-    if (length) state.batches.push(state.queue.splice(0, length).join('\n') + '\n')
+    if (length) {
+      state.batches.push(state.queue.splice(0, length).join('\n') + '\n')
+      queueBytes -= size
+      batchBytes += size
+    }
   }
   const retry = async (response?: Response) => {
     let delay = NaN
@@ -237,9 +285,15 @@ export function createClient(options: SlurpOptions): SlurpClient {
       if (keepalive && bytes(body) > KEEPALIVE_BYTES) return true
       let response: Response | undefined
       controller = new AbortController()
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined
       try {
         const endpoint = keepalive ? new URL(options.endpoint, pageHref()) : undefined
         endpoint?.searchParams.set('key', options.key)
+        // A request that is never answered must not stall delivery for good: abort it and retry the same bytes.
+        const deadline = new Promise<never>((_, reject) => {
+          deadlineTimer = setTimeout(() => { controller?.abort(); reject(new Error(`request timed out after ${requestTimeoutMs} ms`)) }, requestTimeoutMs)
+          ;(deadlineTimer as unknown as { unref?: () => void }).unref?.()
+        })
         response = await Promise.race([
           doFetch(endpoint?.toString() ?? options.endpoint, {
             method: 'POST', headers: keepalive ? { 'Content-Type': 'text/plain' } :
@@ -247,33 +301,36 @@ export function createClient(options: SlurpOptions): SlurpClient {
             body, keepalive, signal: controller.signal,
           }),
           stopped.then(() => undefined),
+          deadline,
         ])
       } catch (error) {
         if (closed) return
         report(error)
         await retry()
         return
-      } finally { controller = undefined }
+      } finally { clearTimeout(deadlineTimer); controller = undefined }
       if (closed || !response) return
       void response.body?.cancel().catch(() => {})
       const status = response.status
-      if (status === 401 || status === 402 || status === 403) {
+      if (status === 401 || status === 403) {
         const dropped = pending()
-        quotaRefused = status === 402
         state.stopped = true
         state.batches = []
         state.queue = []
+        queueBytes = 0
+        batchBytes = 0
         clearTimer()
-        report(status === 402 ? new SlurpQuotaError() : new Error(`ingest ${status}; client stopped`), dropped)
+        report(new Error(`ingest ${status}; client stopped`), dropped)
         await persist()
         return
       }
-      if (status === 429 || status >= 500) {
+      if (status === 408 || status === 429 || status >= 500) {
         report(new Error(`ingest ${status}; retry scheduled`))
         await retry(response)
         return
       }
       state.batches.shift()
+      batchBytes -= bytes(body)
       state.retryAt = 0
       state.attempts = 0
       if (status === 413) {
@@ -282,9 +339,10 @@ export function createClient(options: SlurpOptions): SlurpClient {
         else {
           const middle = Math.ceil(lines.length / 2)
           state.batches.unshift(lines.slice(0, middle).join('\n') + '\n', lines.slice(middle).join('\n') + '\n')
+          measure()
         }
-      } else if (status === 200) accepted += count(body)
-      else if (status !== 200) report(new Error(`ingest ${status}; batch dropped`), count(body))
+      } else if (status >= 200 && status < 300) accepted += count(body)
+      else report(new Error(`ingest ${status}; batch dropped`), count(body))
       if (!(await persist())) { schedule(interval); return }
       if (keepalive) return true
     }
@@ -349,12 +407,14 @@ export function createClient(options: SlurpOptions): SlurpClient {
         anonymous_id: identity.anonymousId ?? anonymousId,
         session_id: identity.sessionId ?? sessionId, data: payload, context: eventContext,
       })
-      if (bytes(line) > MAX_EVENT_BYTES) { report(new Error('event exceeds 1 MiB'), 1); return }
+      const size = bytes(line)
+      if (size > MAX_EVENT_BYTES) { report(new Error('event exceeds 1 MiB'), 1); return }
       state.anonymousId = anonymousId
       state.sessionId = sessionId
       if (identified !== undefined) state.userId = identified
       state.lastActivity = now
       state.queue.push(line)
+      queueBytes += size + 1
       trim()
       if (state.queue.length >= flushAt && state.retryAt <= Date.now()) void flush()
       else schedule(Math.max(0, state.retryAt - Date.now()) || interval)

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<!-- The social card (Open Graph and Twitter) for slurp.run. Rendered to public/og.png by scripts/og-image.mjs; edit, then run `npm run og`. -->
+<style>
+@font-face { font-family: Archivo; src: url("../../../packages/web-shared/assets/Archivo-wdth.woff2"); font-weight: 100 900; font-stretch: 62% 125%; }
+@font-face { font-family: DM; src: url("../../../packages/web-shared/assets/DMSans.ttf"); font-weight: 100 1000; }
+* { box-sizing: border-box; margin: 0; }
+body { width: 1200px; height: 630px; overflow: hidden; position: relative; font-family: DM, sans-serif; color: #17191c;
+  background: radial-gradient(900px 500px at 92% 8%, #ffe9ec, transparent 60%), radial-gradient(700px 420px at 0% 100%, #e8f1fb, transparent 60%), #fbfbfc; }
+.logo { position: absolute; left: 64px; top: 52px; height: 54px; }
+.eyebrow { position: absolute; left: 66px; top: 132px; display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #5b616a; }
+.eyebrow i { width: 11px; height: 11px; border-radius: 50%; background: #e8002a; }
+h1 { position: absolute; left: 62px; top: 172px; width: 700px; white-space: nowrap; font-family: Archivo; font-weight: 800; font-stretch: 75%; font-size: 82px; line-height: .98; letter-spacing: -.01em; }
+h1 .hot { color: #e8002a; }
+.sub { position: absolute; left: 66px; top: 428px; width: 600px; font-size: 24px; line-height: 1.38; color: #4a5058; font-weight: 500; }
+.sub b { color: #17191c; font-weight: 700; }
+.works { position: absolute; left: 66px; bottom: 50px; display: flex; align-items: center; gap: 14px; }
+.works span { font-size: 15px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #6b717a; margin-right: 4px; }
+.works img { width: 38px; height: 38px; object-fit: contain; border-radius: 9px; }
+.report { position: absolute; right: -26px; top: 86px; width: 470px; height: 560px; overflow: hidden; border-radius: 18px; background: #fff; border: 1px solid #dfe3e8; box-shadow: 0 30px 70px #17191c30, 0 4px 14px #17191c14; transform: rotate(3deg); }
+.report img { display: block; width: 100%; margin-top: -22px; }
+.mascot { position: absolute; right: 332px; bottom: -34px; width: 250px; transform: rotate(-4deg); filter: drop-shadow(0 12px 18px #17191c26); }
+.url { position: absolute; right: 64px; bottom: 44px; font-size: 24px; font-weight: 800; color: #17191c; background: #fff; border: 2px solid #17191c; border-radius: 12px; padding: 7px 16px; box-shadow: 4px 4px 0 #e8002a; }
+</style></head><body>
+<img class="logo" src="../../../packages/web-shared/assets/logo.png" alt="Slurp">
+<div class="eyebrow"><i></i>The feedback loop for your coding agent</div>
+<h1>You already have a<br>data science expert.<br><span class="hot">Your coding agent.</span></h1>
+<p class="sub">Events and feedback land in <b>your own Cloudflare account</b>. Your agent analyzes them with <b>DuckDB</b> and ships the fix.</p>
+<div class="works"><span>Works with</span>
+  <img src="../../../packages/web-shared/logos/javascript.svg" alt=""><img src="../../../packages/web-shared/logos/reactnative.svg" alt=""><img src="../../../packages/web-shared/logos/swift.svg" alt=""><img src="../../../packages/web-shared/logos/segment.svg" alt=""><img src="../../../packages/web-shared/logos/sentry.svg" alt=""><img src="../src/assets/duckdb.jpeg" alt="">
+</div>
+<div class="report"><img src="../src/assets/reports/export-health.png" alt=""></div>
+<img class="mascot" src="../../../packages/web-shared/assets/mascot.png" alt="">
+<div class="url">slurp.run</div>
+</body></html>

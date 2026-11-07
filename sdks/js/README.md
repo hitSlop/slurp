@@ -6,7 +6,7 @@ Browser and Node event capture for [Slurp](https://slurp.run), with no runtime d
 npm install @hitslop/slurp-sdk
 ```
 
-`slurp init` in your app prints your project's snippet with the real values filled in: your ingest URL (`https://slurp.<your-subdomain>.workers.dev/v1/events`), your source ID and your publishable key (`slurp_pk_…`, ingest-only, safe in a web page).
+`slurp init` in your app prints your project's snippet with the real values filled in: your ingest URL (`https://slurp.<your-subdomain>.workers.dev/v1/events`) and your publishable key (`slurp_pk_…`, ingest-only, safe in a web page).
 
 Browser:
 
@@ -15,7 +15,6 @@ import { init, track } from '@hitslop/slurp-sdk';
 
 init({
   key: 'slurp_pk_…',
-  sourceId: 'src_…',
   endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events',
 });
 
@@ -29,7 +28,6 @@ import { init, track, flush } from '@hitslop/slurp-sdk';
 
 init({
   key: 'slurp_pk_…',
-  sourceId: 'src_…',
   endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events',
 });
 
@@ -53,13 +51,14 @@ Options besides the required `key` and full `endpoint`:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `sourceId` | None | Public source ID; include it so identity survives publishable-key rotation |
 | `context` | Automatic environment | JSON context or a function producing capture-time context |
 | `flushAt` | 100 | Queue size that triggers a send |
 | `flushIntervalMs` | 5000 | Background flush interval |
 | `maxBatchEvents` | 1000 | Maximum events per request |
 | `maxBatchBytes` | 921600 | UTF-8 body target; an event larger than the target travels alone |
-| `maxQueue` | 10000 | Unbatched queue cap; oldest queued events are dropped and reported; unacknowledged batch bodies remain intact |
+| `maxQueue` | 10000 | Unbatched queue cap by count; oldest queued events are dropped and reported |
+| `maxQueueBytes` | 4194304 | Most bytes kept offline, counting unbatched events and batches not yet acknowledged; the oldest are dropped and reported (never the batch being sent). Records can be up to 1 MiB, so a count limit alone is not a size limit; 4 MiB also stays under browser localStorage |
+| `requestTimeoutMs` | 30000 | A request with no answer after this long is aborted and retried with the same bytes |
 | `sessionTimeoutMs` | 1800000 | Session inactivity timeout |
 | `storage` | Browser localStorage; Node memory | Adapter described below |
 | `fetch` | Global fetch | Fetch implementation |
@@ -68,7 +67,7 @@ Options besides the required `key` and full `endpoint`:
 
 Limits and intervals must be positive safe integers. Browser page hide sends at most 60 KiB; larger bodies stay persisted. Timers are unref'd in Node. `flush()` resolves when queued work is acknowledged, a retry is scheduled, or the client stops. Its result is `{accepted, rejected, pending, retryAt, stopped}`: accepted/rejected are cumulative record counts for this client instance, pending is current retained work, retryAt is an epoch-millisecond deadline or null, and stopped includes closed clients. Acceptance means durable ingest acknowledgment, not publication or read availability. It respects a pending retry deadline, including across reloads; it does not wait for that deadline. `close()` immediately stops timers, listeners and requests and persists outstanding work; call `flush()` first for a normal shutdown. Subsequent `track` calls are dropped and reported.
 
-Batches are raw NDJSON with a trailing newline, sent to `endpoint` with `Content-Type: application/x-ndjson` and `Authorization: Bearer <key>`. Before the first send, the SDK persists the exact completed body. Retries and restarts resend those bytes so the gateway can dedupe a committed request whose response was lost. A 200 acknowledges a batch; 429/503 honor `Retry-After` (seconds or HTTP date), and other 5xx/network errors back off with jitter from 250–500 ms to 30–60 s. A 413 splits existing lines without reserializing them; a rejected singleton is dropped. A 400 or other permanent rejection drops the batch. A 401/403 drops all pending work and permanently stops that client, including when its state is restored. Storage write failures retain work and prevent sending until a snapshot succeeds.
+Batches are raw NDJSON with a trailing newline, sent to `endpoint` with `Content-Type: application/x-ndjson` and `Authorization: Bearer <key>`. Before the first send, the SDK persists the exact completed body. Retries and restarts resend those bytes so the gateway can dedupe a committed request whose response was lost. Any 2xx acknowledges a batch; 408, 429 and 503 and other 5xx responses, network errors and requests with no answer within `requestTimeoutMs` are retried with the same bytes (429 and 503 honor `Retry-After`, seconds or HTTP date; the rest back off with jitter from 250–500 ms to 30–60 s). A 413 splits existing lines without reserializing them; a rejected singleton is dropped. A 400 or other permanent rejection drops the batch. A 401/403 drops all pending work and permanently stops that client, including when its state is restored. Storage write failures retain work and prevent sending until a snapshot succeeds.
 
 Delivery depends on retained storage, gateway dedupe retention, and a running client. Queue overflow, invalid/oversized events, permanent rejections, and failed browser persistence can lose events. Browser localStorage access is guarded; if unavailable it falls back to memory and reports the error. A process exiting before storage writes finish can lose newly queued events; awaiting `flush` or `close` finishes those writes. Neither call guarantees a successful network delivery when a retry is scheduled.
 
@@ -82,7 +81,7 @@ interface StorageAdapter {
 }
 ```
 
-Version-2 storage keys are namespaced by endpoint and public source ID when supplied, with publishable-key fallback otherwise. The incompatible version-1 state remains untouched. Supply `sourceId` for identity continuity across key rotation. Use one active client per endpoint/source and adapter; independent clients can use separate adapters. The default Node adapter is in memory. For restart recovery, use the Node-only entry:
+A Slurp key names its project (`slurp_pk_<project>_<random>`), so saved state is namespaced by endpoint and project: replacing a key from the same project keeps the queue and the visitor identity. A key of any other shape is its own identity. Saved state is validated when it is read: lines that are not complete JSON records are dropped and reported through `onError` rather than sent (the gateway refuses a request that has one malformed line). If you replace a refused key, the client starts sending again instead of staying stopped. Supply `sourceId` for identity continuity across key rotation. Use one active client per endpoint/source and adapter; independent clients can use separate adapters. The default Node adapter is in memory. For restart recovery, use the Node-only entry:
 
 ```js
 import { createClient } from '@hitslop/slurp-sdk';
@@ -90,7 +89,6 @@ import { fileStorage } from '@hitslop/slurp-sdk/node';
 
 const client = createClient({
   key: 'slurp_pk_…',
-  sourceId: 'src_…',
   endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events',
   storage: fileStorage('/tmp/slurp-sdk.json'),
 });
@@ -100,6 +98,20 @@ await client.close();
 ```
 
 The parent directory must exist. `fileStorage` replaces the JSON file atomically using a sibling temporary file and rename (mode 0600). Reuse a single adapter for a file within one process; concurrent processes must use separate files. Atomic replacement protects process restart recovery, without a power-loss/fsync guarantee. The main entry never imports Node modules.
+
+## Feedback widget
+
+A drop-in "Feedback" button for web pages. It opens a small form (message, an optional 1 to 5 rating, an optional email) and sends one `feedback` event, so what people tell you lands next to what they did:
+
+```js
+import { init } from '@hitslop/slurp-sdk';
+import { mountFeedback } from '@hitslop/slurp-sdk/feedback';
+
+init({ key: 'slurp_pk_…', endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events' });
+mountFeedback({ askEmail: true, data: () => ({ plan: currentPlan() }) });
+```
+
+The event is `{ event: 'feedback', data: { message, rating?, email?, ...data() } }` with the usual page context, so in SQL: `SELECT timestamp, data->>'message', data->>'rating' FROM events WHERE event = 'feedback'`. Options: `client` (default: the client from `init`), `label`, `title`, `placeholder`, `ratings` (default true), `askEmail` (default false), `position` (`bottom-right` or `bottom-left`), `accent`, `theme` (`auto` follows the visitor's dark mode; `light` or `dark` match your page), `event`, `data`, `button: false` (open it from your own button with the returned `open()`), `container`. It returns `{ open, close, destroy }`. Text a person types is only ever set as text, never parsed as HTML, and the styles live in a shadow root so they neither affect nor inherit from your page. Browser only.
 
 ## Contributing
 

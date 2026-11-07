@@ -613,7 +613,7 @@ pub fn build_with_params(
             fs::write(temp.path().join("report.pdf"), bytes)?
         }
     }
-    let manifest = json!({"version":1,"source":w.source,"generated_at":chrono::Utc::now(),"inputs":result[0]["inputs"]});
+    let manifest = json!({"version":1,"project":w.project,"generated_at":chrono::Utc::now(),"inputs":result[0]["inputs"]});
     fs::File::create(temp.path().join("manifest.json"))?
         .write_all(serde_json::to_string_pretty(&manifest)?.as_bytes())?;
     if out.exists() {

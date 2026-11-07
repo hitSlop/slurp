@@ -7,6 +7,8 @@
 #   backend/api/generate.sh ts            # only some targets
 #   backend/api/generate.sh --check       # regenerate into a temp dir; exit 1 if any committed file is stale
 #
+# Methods are tagged `+ @public` or `+ @internal` in slurp.ridl (checked below); a client for third parties would be generated with
+# `-match=@public`, the Worker and the CLI from the whole schema.
 # webrpc-gen is pinned below and run with `go run`, so Go is needed only to run the generator (no go.mod in this repo).
 # The typescript template is embedded in webrpc-gen. Output is deterministic: no timestamps.
 set -eu
@@ -33,6 +35,11 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 # shellcheck disable=SC2086
 gen() { (cd "$BACKEND" && $WEBRPC_GEN -schema=api/slurp.ridl "$@" >/dev/null); }
+
+# Every method must say who it is for (`+ @public` or `+ @internal`): webrpc-gen filters on these tags and silently treats an untagged
+# method as neither, so a forgotten tag would leak a control-plane method into a published public-only client.
+untagged=$(awk '/^  - [A-Za-z]+\(/ { if (name != "" && !tagged) print name; name = $2; tagged = 0; next } /^    \+ @(public|internal)$/ { tagged = 1 } END { if (name != "" && !tagged) print name }' "$API/slurp.ridl")
+if [ -n "$untagged" ]; then echo "slurp.ridl: methods without + @public or + @internal: $untagged" >&2; exit 1; fi
 
 stale=0
 for t in $targets; do

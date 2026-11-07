@@ -1,12 +1,15 @@
-import type { IngestResult } from '../source.ts'
+import type { IngestResult } from '../project.ts'
 import type { Geo } from '../canonical.ts'
+
+/** A publishable key resolved: its project, the sender name it stamps, and whether the project opted in to geo. */
+export interface Sender { project: string; sender: string; geo: boolean }
 
 /** What the compatibility adapters need from the Worker: key lookup and the normal ingest path. */
 export interface CompatHost {
-  /** Resolve a publishable key to its source, or null (unknown, revoked, or not publishable). */
-  publishable(token: string | null): Promise<{ source: string; geo: boolean } | null>
-  ingest(source: string, body: Uint8Array, geo: Geo | null): Promise<IngestResult>
-  /** Geo from Cloudflare's own request metadata, only when the source opted in. */
+  /** Resolve a publishable key, or null (unknown, revoked, or not publishable). */
+  publishable(token: string | null): Promise<Sender | null>
+  ingest(sender: Sender, body: Uint8Array, geo: Geo | null): Promise<IngestResult>
+  /** Geo from Cloudflare's own request metadata, only when the project opted in. */
   geoFor(req: Request, geo: boolean): Geo | null
   maxBody: number
 }

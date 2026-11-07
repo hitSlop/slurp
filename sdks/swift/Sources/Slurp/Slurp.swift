@@ -10,8 +10,6 @@ public final class SlurpClient: @unchecked Sendable {
         /// Your publishable key (`slurp_pk_…`): ingest only, safe to ship in an app.
         public var key: String
         public var endpoint: URL
-        /// Your source id (`src_…`). Include it so the visitor identity survives a key rotation.
-        public var sourceId: String?
         /// Send when this many events are queued.
         public var flushAt = 100
         /// Send at least this often (seconds) while the app is running.
@@ -21,11 +19,17 @@ public final class SlurpClient: @unchecked Sendable {
         public var maxBatchBytes = 921_600
         /// Events kept while offline. The oldest are dropped (and reported) beyond this.
         public var maxQueue = 10_000
+        /// Bytes kept while offline, counting queued events and batches not yet acknowledged. The oldest are dropped (and reported)
+        /// beyond this. Events can be up to 1 MiB each, so a count limit alone is not a size limit.
+        public var maxQueueBytes = 50 * 1024 * 1024
+        /// A request with no answer after this many seconds is cancelled and retried with the same bytes.
+        public var requestTimeout: TimeInterval = 30
         /// A new session starts after this much inactivity (seconds).
         public var sessionTimeout: TimeInterval = 1800
-        /// Extra context merged over the automatic device and app context. Called for each event.
+        /// Extra context merged over the automatic device and app context. Called on the thread that records the event.
         public var context: (() -> [String: Any])?
-        /// Called when an event is refused or dropped. `dropped` is zero when work is kept for a retry.
+        /// Called when an event is refused or dropped. `dropped` is zero when work is kept for a retry. Runs on a queue of its own,
+        /// never the SDK's, so it is safe to call back into the client (read `pending`, `flush`, `close`) from here.
         public var onError: ((Error, _ dropped: Int) -> Void)?
         /// Send when the app goes to the background and when it quits. On by default.
         public var flushOnBackground = true
@@ -33,10 +37,9 @@ public final class SlurpClient: @unchecked Sendable {
         /// Where the queue lives. Defaults to Application Support/Slurp/<endpoint and source>.
         public var directory: URL?
 
-        public init(key: String, endpoint: URL, sourceId: String? = nil) {
+        public init(key: String, endpoint: URL) {
             self.key = key
             self.endpoint = endpoint
-            self.sourceId = sourceId
         }
     }
 
@@ -79,6 +82,8 @@ public final class SlurpClient: @unchecked Sendable {
 
     private let config: Configuration
     private let queue = DispatchQueue(label: "run.slurp.client")
+    /// Application callbacks (`onError`, flush completions) run here, so nothing the app does in one can block or re-enter `queue`.
+    private let callbackQueue = DispatchQueue(label: "run.slurp.callbacks")
     private let store: DurableQueue
     private let uploader: Uploader
     private var state: DurableQueue.State
@@ -87,24 +92,51 @@ public final class SlurpClient: @unchecked Sendable {
     private var sending = false
     private var closed = false
     private var timer: DispatchWorkItem?
-    private var waiters: [(FlushResult) -> Void] = []
+    private struct Waiter { var call: (FlushResult) -> Void; var onCallbackQueue: Bool }
+    private var waiters: [Waiter] = []
     private var observers: [NSObjectProtocol] = []
 
-    public init(_ configuration: Configuration) {
+    public convenience init(_ configuration: Configuration) {
+        self.init(configuration, store: nil)
+    }
+
+    /// `store` lets tests supply a queue whose disk operations can be made to fail.
+    init(_ configuration: Configuration, store injected: DurableQueue?) {
         config = configuration
-        var directory = configuration.directory ?? SlurpClient.defaultDirectory(for: configuration)
-        var queueStore = try? DurableQueue(directory: directory)
+        var startupProblems: [(Error, Int)] = []
+        var queueStore = injected
+        if queueStore == nil {
+            let directory = configuration.directory ?? SlurpClient.defaultDirectory(for: configuration)
+            queueStore = try? DurableQueue(directory: directory)
+        }
         if queueStore == nil {
             // Without a writable directory events still flow, they just are not durable.
-            directory = FileManager.default.temporaryDirectory.appendingPathComponent("slurp-\(UUID().uuidString)")
-            queueStore = try? DurableQueue(directory: directory)
-            configuration.onError?(NSError(domain: "Slurp", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not create the queue directory; events will not survive a restart"]), 0)
+            let fallback = FileManager.default.temporaryDirectory.appendingPathComponent("slurp-\(UUID().uuidString)")
+            queueStore = try? DurableQueue(directory: fallback)
+            startupProblems.append((NSError(domain: "Slurp", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not create the queue directory; events will not survive a restart"]), 0))
         }
         store = queueStore!
-        uploader = Uploader(session: configuration.session, endpoint: configuration.endpoint, key: configuration.key)
+        uploader = Uploader(session: configuration.session, endpoint: configuration.endpoint, key: configuration.key, timeout: configuration.requestTimeout)
         let now = Date().timeIntervalSince1970
-        state = store.loadState() ?? DurableQueue.State(anonymousId: Ids.uuidv7(), sessionId: Ids.uuidv7(), lastActivity: now)
+        var restored = store.loadState() ?? DurableQueue.State(anonymousId: Ids.uuidv7(), sessionId: Ids.uuidv7(), lastActivity: now)
+        // A replaced key starts clean: it must not inherit the "stopped" state that the old, refused key left behind.
+        let fingerprint = SlurpClient.fingerprint(configuration.key)
+        if restored.keyFingerprint != fingerprint {
+            if restored.stopped { restored.stopped = false; restored.attempts = 0; restored.retryAt = 0 }
+            restored.keyFingerprint = fingerprint
+        }
+        state = restored
         store.save(state)
+        if store.recoveredDropped > 0 {
+            startupProblems.append((NSError(domain: "Slurp", code: 5, userInfo: [NSLocalizedDescriptionKey: "dropped \(store.recoveredDropped) damaged line(s) from the saved queue"]), store.recoveredDropped))
+        }
+        // The saved queue may be larger than the limits now in force.
+        let trimmed = store.enforceLimits(maxEvents: configuration.maxQueue, maxBytes: configuration.maxQueueBytes)
+        if trimmed > 0 {
+            startupProblems.append((NSError(domain: "Slurp", code: 4, userInfo: [NSLocalizedDescriptionKey: "the saved queue was over its limits; dropped the oldest events"]), trimmed))
+        }
+        rejected += startupProblems.reduce(0) { $0 + $1.1 }
+        for problem in startupProblems { callbackQueue.async { configuration.onError?(problem.0, problem.1) } }
         queue.async {
             // Resume whatever a previous run left behind (respecting any retry deadline).
             if self.state.stopped { return }
@@ -115,11 +147,28 @@ public final class SlurpClient: @unchecked Sendable {
 
     deinit { for token in observers { NotificationCenter.default.removeObserver(token) } }
 
+    /// A short stable fingerprint of a key (FNV-1a), so the saved state can tell that the key was replaced without storing the key.
+    private static func fingerprint(_ key: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in key.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return String(hash, radix: 16)
+    }
+
+    /// A Slurp key names its project (`slurp_pk_<project>_<random>`), so saved state belongs to the project and survives replacing the
+    /// key. A key of any other shape is its own identity.
+    static func identity(of key: String) -> String {
+        let parts = key.split(separator: "_", omittingEmptySubsequences: false)
+        let hex = Set("0123456789abcdef")
+        guard parts.count == 4, parts[0] == "slurp", parts[1] == "pk", parts[2].count == 16, parts[3].count == 48,
+              parts[2].allSatisfy({ hex.contains($0) }), parts[3].allSatisfy({ hex.contains($0) }) else { return key }
+        return String(parts[2])
+    }
+
     private static func defaultDirectory(for configuration: Configuration) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         // FNV-1a: a short, stable folder name without needing CryptoKit.
         var hash: UInt64 = 0xcbf29ce484222325
-        for byte in "\(configuration.endpoint.absoluteString)|\(configuration.sourceId ?? configuration.key)".utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        for byte in "\(configuration.endpoint.absoluteString)|\(Self.identity(of: configuration.key))".utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
         return base.appendingPathComponent("Slurp", isDirectory: true).appendingPathComponent(String(hash, radix: 16), isDirectory: true)
     }
 
@@ -148,6 +197,8 @@ public final class SlurpClient: @unchecked Sendable {
     private func capture(type: String, event: String?, data: [String: Any], userId: String?) -> String {
         let id = Ids.uuidv7()
         let at = Date()
+        // The app's closure runs here, on the caller's thread, never inside the SDK queue where it could re-enter the client.
+        let extraContext = config.context?() ?? [:]
         queue.async {
             if self.closed || self.state.stopped { return self.report(NSError(domain: "Slurp", code: 2, userInfo: [NSLocalizedDescriptionKey: "client is closed or stopped; event dropped"]), dropped: 1) }
             var next = self.state
@@ -158,7 +209,7 @@ public final class SlurpClient: @unchecked Sendable {
                 next.userId = userId
             }
             var context = DeviceContext.make()
-            for (key, value) in self.config.context?() ?? [:] { context[key] = value }
+            for (key, value) in extraContext { context[key] = value }
             let line: String
             do {
                 line = try EventEncoder.line(id: id, type: type, event: event, timestamp: at, userId: next.userId, anonymousId: next.anonymousId, sessionId: next.sessionId, data: data, context: context)
@@ -170,7 +221,7 @@ public final class SlurpClient: @unchecked Sendable {
             self.state = next
             if identityChanged { self.store.save(next) }
             if !self.store.append(line) { self.report(NSError(domain: "Slurp", code: 3, userInfo: [NSLocalizedDescriptionKey: "could not write the event to disk; it is kept in memory only"]), dropped: 0) }
-            let dropped = self.store.trim(to: self.config.maxQueue)
+            let dropped = self.store.enforceLimits(maxEvents: self.config.maxQueue, maxBytes: self.config.maxQueueBytes)
             if dropped > 0 { self.report(NSError(domain: "Slurp", code: 4, userInfo: [NSLocalizedDescriptionKey: "queue full; dropped the oldest events"]), dropped: dropped) }
             if self.store.queued.count >= self.config.flushAt && self.state.retryAt <= Date().timeIntervalSince1970 { self.pump() }
             else { self.schedule(after: max(self.config.flushInterval, self.state.retryAt - Date().timeIntervalSince1970)) }
@@ -194,7 +245,7 @@ public final class SlurpClient: @unchecked Sendable {
     /// Send everything queued. The completion runs when it is all acknowledged, a retry has been scheduled, or the client stopped.
     public func flush(completion: ((FlushResult) -> Void)? = nil) {
         queue.async {
-            if let completion = completion { self.waiters.append(completion) }
+            if let completion = completion { self.waiters.append(Waiter(call: completion, onCallbackQueue: true)) }
             self.pump()
         }
     }
@@ -228,7 +279,9 @@ public final class SlurpClient: @unchecked Sendable {
         let done = waiters
         waiters = []
         let outcome = result()
-        for waiter in done { waiter(outcome) }
+        for waiter in done {
+            if waiter.onCallbackQueue { callbackQueue.async { waiter.call(outcome) } } else { waiter.call(outcome) }
+        }
     }
 
     private func schedule(after delay: TimeInterval) {
@@ -242,7 +295,8 @@ public final class SlurpClient: @unchecked Sendable {
     /// Tell the app about a problem; `dropped` events count as rejected.
     private func report(_ error: Error, dropped: Int) {
         rejected += dropped
-        config.onError?(error, dropped)
+        guard let handler = config.onError else { return }
+        callbackQueue.async { handler(error, dropped) }
     }
 
     /// Send the next batch, then the one after it, until nothing is left or a retry is due later.
@@ -276,31 +330,44 @@ public final class SlurpClient: @unchecked Sendable {
             store.save(state)
             pump()
         case .tooLarge:
-            if !store.splitBatch(batch) {
+            switch store.splitBatch(batch) {
+            case .split:
+                pump()
+            case .single:
                 store.deleteBatch(batch)
                 report(NSError(domain: "Slurp", code: 413, userInfo: [NSLocalizedDescriptionKey: "an event was too large for the Worker and was dropped"]), dropped: count)
+                pump()
+            case .storageFailure:
+                // The halves could not be written. The batch is still whole on disk: keep it and try again later.
+                scheduleRetry(after: nil, because: "could not split a batch the Worker found too large (storage error); retrying")
             }
-            pump()
         case .drop(let status):
             store.deleteBatch(batch)
             report(NSError(domain: "Slurp", code: status, userInfo: [NSLocalizedDescriptionKey: "the Worker rejected a batch (HTTP \(status)); \(count) events dropped"]), dropped: count)
             pump()
         case .stop(let status):
+            let waiting = store.pendingCount()
             store.clear()
             state.stopped = true
             store.save(state)
-            report(NSError(domain: "Slurp", code: status, userInfo: [NSLocalizedDescriptionKey: "the Worker refused the key (HTTP \(status)); sending is stopped and queued events were dropped"]), dropped: count)
+            report(NSError(domain: "Slurp", code: status, userInfo: [NSLocalizedDescriptionKey: "the Worker refused the key (HTTP \(status)); sending is stopped and queued events were dropped"]), dropped: waiting)
             timer?.cancel()
             finishWaiters()
         case .retry(let after):
-            state.attempts += 1
-            let delay = after ?? Uploader.backoff(attempts: state.attempts)
-            state.retryAt = Date().timeIntervalSince1970 + delay
-            store.save(state)
-            report(NSError(domain: "Slurp", code: 0, userInfo: [NSLocalizedDescriptionKey: "could not deliver; retrying in \(Int(delay.rounded(.up))) s"]), dropped: 0)
-            schedule(after: delay)
-            finishWaiters()
+            scheduleRetry(after: after, because: nil)
         }
+    }
+
+    /// Back off (or wait the `Retry-After` the Worker asked for) and try the same batch again.
+    private func scheduleRetry(after: TimeInterval?, because reason: String?) {
+        state.attempts += 1
+        let delay = after ?? Uploader.backoff(attempts: state.attempts)
+        state.retryAt = Date().timeIntervalSince1970 + delay
+        store.save(state)
+        let message = reason ?? "could not deliver; retrying in \(Int(delay.rounded(.up))) s"
+        report(NSError(domain: "Slurp", code: 0, userInfo: [NSLocalizedDescriptionKey: message]), dropped: 0)
+        schedule(after: delay)
+        finishWaiters()
     }
 
     // MARK: app lifecycle
@@ -323,9 +390,13 @@ public final class SlurpClient: @unchecked Sendable {
     private func flushBeforeSuspension() {
         queue.async { self.store.save(self.state) }
         let upload: () -> Void = {
+            // An internal waiter, called directly: it must not queue behind an app callback that might be blocked.
             let done = DispatchSemaphore(value: 0)
-            self.flush { _ in done.signal() }
-            _ = done.wait(timeout: .now() + 20)
+            self.queue.async {
+                self.waiters.append(Waiter(call: { _ in done.signal() }, onCallbackQueue: false))
+                self.pump()
+            }
+            _ = done.wait(timeout: .now() + 8)
         }
         #if os(macOS)
         upload()

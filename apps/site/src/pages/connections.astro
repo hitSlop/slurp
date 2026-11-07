@@ -8,7 +8,7 @@ import WorksWith from '../components/WorksWith.astro';
 import {githubUrl,defaultBranch} from '../lib/links.mjs';
 import snippets from '../../../../docs/onboarding/snippets.json';
 const worker='https://slurp.YOUR-SUBDOMAIN.workers.dev';
-const fill=(t:string)=>t.replaceAll('YOUR_INGEST_URL',worker+'/v1/events').replaceAll('YOUR_ORIGIN',worker).replaceAll('YOUR_HOST',worker.replace('https://','')).replaceAll('YOUR_SOURCE_ID','src_…').replaceAll('YOUR_PUBLISHABLE_KEY','slurp_pk_…').replaceAll('YOUR_SENTRY_KEY','HEX_OF_YOUR_PUBLISHABLE_KEY');
+const fill=(t:string)=>t.replaceAll('YOUR_INGEST_URL',worker+'/v1/events').replaceAll('YOUR_ORIGIN',worker).replaceAll('YOUR_HOST',worker.replace('https://','')).replaceAll('YOUR_PROJECT_ID','prj_…').replaceAll('YOUR_PUBLISHABLE_KEY','slurp_pk_…');
 const recipes=[['JavaScript and TypeScript','npm install @hitslop/slurp-sdk','sdk'],['React Native and Expo','npm install @hitslop/slurp-react-native @react-native-async-storage/async-storage','reactNative'],['Swift','Xcode: File → Add Package Dependencies → https://github.com/hitSlop/slurp','swift'],['Segment SDKs','Keep your SDK; your publishable key is the write key','segment'],['Sentry SDKs','Keep your SDK; change the DSN','sentry']] as const;
 const sections=[{id:'sdks',label:'Install an SDK'},{id:'today',label:'Works today'},{id:'roadmap',label:'Exploring'},{id:'jev',label:'Jev'}];
 ---

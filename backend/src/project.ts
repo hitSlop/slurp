@@ -1,11 +1,15 @@
 import { DurableObject } from 'cloudflare:workers'
 import { type Env, sha256Hex, randomHex, gzip, retry } from './util.ts'
 import { checkBody, RECORD_TOO_LARGE, stampOne, type Geo } from './canonical.ts'
+import type { Result } from './registry.ts'
 
 export type Publication = { state: 'pending' | 'idle'; observedAt: string; intervalSeconds: number; estimatedAt?: string }
 export type IngestResult =
   | { ok: true; accepted: number; duplicate: boolean; publication: Publication }
-  | { ok: false; status: 400 | 413 | 429 | 503; reason: string; retryAfter?: number }
+  | { ok: false; status: 400 | 401 | 403 | 413 | 429 | 503; reason: string; retryAfter?: number }
+export type KeyRow = { key_id: string; scope: string; name: string; hash: string | null; plain: string | null; created_at: string; revoked_at: string | null }
+/** What a presented key is allowed to do. `geo` is whether this project opted in to request-location enrichment. */
+export type Authorized = { scope: 'publishable' | 'secret'; keyId: string; name: string; geo: boolean }
 export type ManifestRow = { seq: number; name: string; r2key: string; size: number; sha256: string; events: number; created_at: number }
 export type Coverage = { archiveId: string; firstRetained: string; latestPublished: string; latestPublishedAt: number }
 
@@ -16,10 +20,13 @@ const ROW_MAX_BYTES = 1_500_000
 const encoder = new TextEncoder()
 const RECENT_HASHES = 10_000
 
-interface Queued { lines: string[]; atMs: number; hash: string; done: (r: IngestResult) => void }
+interface Queued { lines: string[]; atMs: number; hash: string; sender: string; done: (r: IngestResult) => void }
 
 /**
- * One Durable Object per source: durable batch buffer, alarm-driven sealing to R2, manifest.
+ * One Durable Object per project: its keys, its durable batch buffer, alarm-driven sealing to R2, and the manifest. A key
+ * says which project it belongs to, so a request goes straight to this object with no global lookup first.
+ *
+ * Nothing is written until `init` runs, so a made-up project id in a forged key costs nothing: the object stays empty.
  *
  * Billing-aware design (rows written is what Durable Object SQLite bills):
  *  - group commit: concurrent requests inside GROUP_COMMIT_MS are written as one row; acked after the commit;
@@ -27,7 +34,7 @@ interface Queued { lines: string[]; atMs: number; hash: string; done: (r: Ingest
  *    then DROPs it, because DELETE bills per row and DROP TABLE does not;
  *  - the seal intent is persisted before the R2 put, so a crash replays the same frozen rows under the same seq.
  */
-export class SourceDO extends DurableObject<Env> {
+export class ProjectDO extends DurableObject<Env> {
   sql = this.ctx.storage.sql
   pendingBytes = 0
   nextBatch = 1
@@ -43,9 +50,13 @@ export class SourceDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS manifest(seq INTEGER PRIMARY KEY, name TEXT NOT NULL, r2key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL);`)
+    if (this.initialized()) this.restore()
+  }
+
+  private initialized(): boolean {
+    return this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").toArray().length > 0
+  }
+  private restore() {
     this.table(this.gen())
     let max = Number(this.meta('batch_hwm') ?? 0)
     let bytes = 0
@@ -56,6 +67,67 @@ export class SourceDO extends DurableObject<Env> {
     this.nextBatch = max + 1
     this.pendingBytes = bytes
   }
+  private projectId(): string { return this.ctx.id.name ?? '' }
+
+  /**
+   * Create this project's storage and its first publishable key, or return the existing one. Safe to repeat: it never
+   * changes a key that exists, and `geo` only applies the first time.
+   */
+  init(geo: boolean): { key: string } {
+    if (!this.initialized()) {
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS manifest(seq INTEGER PRIMARY KEY, name TEXT NOT NULL, r2key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS keys(key_id TEXT PRIMARY KEY, scope TEXT NOT NULL, name TEXT NOT NULL, hash TEXT UNIQUE, plain TEXT UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);`)
+      this.setMeta('geo', geo ? '1' : '0')
+      this.restore()
+    }
+    const live = this.sql.exec("SELECT plain FROM keys WHERE scope='publishable' AND revoked_at IS NULL ORDER BY created_at, key_id LIMIT 1").toArray()[0] as { plain: string } | undefined
+    return { key: live ? live.plain : this.mintPublishable('default').key }
+  }
+
+  private mintPublishable(name: string): { key: string; keyId: string } {
+    const key = `slurp_pk_${this.projectId().slice(4)}_${randomHex(24)}`
+    const keyId = randomHex(8)
+    this.w('INSERT INTO keys VALUES(?,?,?,NULL,?,?,NULL)', keyId, 'publishable', name, key, new Date().toISOString())
+    return { key, keyId }
+  }
+
+  /** The key's scope, id and name; null when it is unknown or revoked (immediately, with no cache). A publishable key is looked up as is. */
+  async authorize(token: string): Promise<Authorized | null> {
+    if (!this.initialized()) return null
+    const secret = token.startsWith('slurp_sk_')
+    const row = (secret
+      ? this.sql.exec('SELECT key_id, scope, name FROM keys WHERE hash=? AND revoked_at IS NULL', await sha256Hex(token))
+      : this.sql.exec('SELECT key_id, scope, name FROM keys WHERE plain=? AND revoked_at IS NULL', token)).toArray()[0] as { key_id: string; scope: 'publishable' | 'secret'; name: string } | undefined
+    return row ? { scope: row.scope, keyId: row.key_id, name: row.name, geo: this.meta('geo') === '1' } : null
+  }
+
+  async createKey(scope: string, name: string): Promise<Result<{ key: string; keyId: string }>> {
+    if (!this.initialized()) return { ok: false, code: 'notfound', message: 'project' }
+    if (scope !== 'publishable' && scope !== 'secret') return { ok: false, code: 'invalid', message: 'scope must be publishable or secret' }
+    const label = name.trim() === '' ? 'default' : name
+    if (encoder.encode(label).length > 200) return { ok: false, code: 'invalid', message: 'name too long' }
+    if (scope === 'publishable') return { ok: true, value: this.mintPublishable(label) }
+    const key = `slurp_sk_${this.projectId().slice(4)}_${randomHex(24)}`
+    const hash = await sha256Hex(key)
+    const keyId = randomHex(8)
+    this.w('INSERT INTO keys VALUES(?,?,?,?,NULL,?,NULL)', keyId, 'secret', label, hash, new Date().toISOString())
+    return { ok: true, value: { key, keyId } }
+  }
+  listKeys(scope?: string): KeyRow[] {
+    if (!this.initialized()) return []
+    return (this.sql.exec('SELECT * FROM keys ORDER BY created_at, key_id').toArray() as KeyRow[]).filter(k => !scope || k.scope === scope)
+  }
+  revokeKey(keyId: string): Result<KeyRow> {
+    if (!this.initialized()) return { ok: false, code: 'notfound', message: 'project' }
+    const k = this.sql.exec('SELECT * FROM keys WHERE key_id=?', keyId).toArray()[0] as KeyRow | undefined
+    if (!k) return { ok: false, code: 'notfound', message: 'key' }
+    if (!k.revoked_at) this.w('UPDATE keys SET revoked_at=? WHERE key_id=?', new Date().toISOString(), keyId)
+    return { ok: true, value: this.sql.exec('SELECT * FROM keys WHERE key_id=?', keyId).one() as KeyRow }
+  }
+  geoEnabled(): boolean { return this.initialized() && this.meta('geo') === '1' }
+  setGeo(on: boolean) { if (this.initialized()) this.setMeta('geo', on ? '1' : '0') }
 
   private num(k: string, d: number): number { const v = Number((this.env as any)[k]); return Number.isFinite(v) ? v : d }
   private w(query: string, ...bindings: any[]) {
@@ -98,11 +170,21 @@ export class SourceDO extends DurableObject<Env> {
     else await this.ctx.storage.setAlarm(Math.max(expiry, Date.now() + 1000))
   }
 
-  async ingest(source: string, body: Uint8Array, geo: Geo | null): Promise<IngestResult> {
+  /** Ingest for a presented publishable key: one call that authorizes, applies geo only if this project opted in, and stamps the sender. */
+  async ingestKey(token: string, body: Uint8Array, requestGeo: Geo | null): Promise<IngestResult> {
+    const a = await this.authorize(token)
+    if (!a) return { ok: false, status: 401, reason: 'invalid token' }
+    if (a.scope !== 'publishable') return { ok: false, status: 403, reason: 'publishable key required' }
+    return this.ingest(a.name, body, a.geo ? requestGeo : null)
+  }
+
+  /** Ingest records already authorized as `sender` (the sending key's name). */
+  async ingest(sender: string, body: Uint8Array, geo: Geo | null): Promise<IngestResult> {
+    if (!this.initialized()) return { ok: false, status: 503, reason: 'unavailable', retryAfter: 5 }
     const checked = checkBody(body, geo)
     if ('reason' in checked) return { ok: false, status: checked.reason === RECORD_TOO_LARGE ? 413 : 400, reason: `line ${checked.line}: ${checked.reason}` }
     if (checked.lines.length === 0) return { ok: true, accepted: 0, duplicate: false, publication: this.publication(await this.ctx.storage.getAlarm()) }
-    const hash = await sha256Hex(body)
+    const hash = `${sender}:${await sha256Hex(body)}`
     const earlier = this.recent.get(hash)
     if (earlier) {
       // An identical body is already stored or still being committed. Wait for that commit: never acknowledge a retry
@@ -114,7 +196,7 @@ export class SourceDO extends DurableObject<Env> {
     if (this.pendingBytes + this.queuedBytes + body.length > cap) return { ok: false, status: 429, reason: 'buffer full', retryAfter: 10 }
     const window = this.num('GROUP_COMMIT_MS', 500)
     const done = new Promise<IngestResult>(resolve => {
-      this.queue.push({ lines: checked.lines, atMs: Date.now(), hash, done: resolve })
+      this.queue.push({ lines: checked.lines, atMs: Date.now(), hash, sender, done: resolve })
       this.queuedBytes += body.length
     })
     this.recent.set(hash, done)
@@ -136,12 +218,12 @@ export class SourceDO extends DurableObject<Env> {
       let cur = { id: this.nextBatch++, data: '', events: 0, bytes: 0 }
       for (const item of q) {
         for (const line of item.lines) {
-          let text = stampOne(line, cur.id, item.atMs, cur.events)
+          let text = stampOne(line, cur.id, item.atMs, cur.events, item.sender)
           let size = encoder.encode(text).length
           if (cur.events > 0 && (cur.bytes + size > ROW_MAX_BYTES || cur.events > MAX_SEQ_PER_ROW)) {
             rows.push(cur)
             cur = { id: this.nextBatch++, data: '', events: 0, bytes: 0 }
-            text = stampOne(line, cur.id, item.atMs, 0)
+            text = stampOne(line, cur.id, item.atMs, 0, item.sender)
             size = encoder.encode(text).length
           }
           cur.data += text
@@ -202,7 +284,7 @@ export class SourceDO extends DurableObject<Env> {
     const gz = await gzip(text)
     const sha = await sha256Hex(gz)
     const name = `${pad20(intent.seq)}-${sha}.jsonl.gz`
-    const r2key = `v1/sources/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`
+    const r2key = `v1/projects/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`
     await retry(() => this.env.ARCHIVE.put(r2key, gz, { httpMetadata: { contentType: 'application/gzip' } }))
     const row: ManifestRow = { seq: intent.seq, name, r2key, size: gz.length, sha256: sha, events, created_at: Date.now() }
     this.ctx.storage.transactionSync(() => {
@@ -229,6 +311,7 @@ export class SourceDO extends DurableObject<Env> {
   }
 
   coverage(): Coverage | null {
+    if (!this.initialized()) return null
     const next = Number(this.meta('next_seq') ?? 1)
     if (next === 1) return null
     const lo = (this.sql.exec('SELECT MIN(seq) m FROM manifest').one() as { m: number | null }).m
@@ -236,16 +319,18 @@ export class SourceDO extends DurableObject<Env> {
     return { archiveId: this.archiveId(), firstRetained: String(lo ?? next), latestPublished: String(next - 1), latestPublishedAt: at?.c ?? Date.now() }
   }
   listObjects(after: number, limit: number): ManifestRow[] {
+    if (!this.initialized()) return []
     return this.sql.exec('SELECT * FROM manifest WHERE seq>? ORDER BY seq LIMIT ?', after, limit).toArray() as ManifestRow[]
   }
   /** Test hook (DEBUG only). */
   async failNextFlush(): Promise<void> { this.failNext = true }
   async stats() {
+    if (!this.initialized()) return { pending: false, rows: 0, pendingBytes: 0, queued: 0, gen: 0, sealing: null, manifest: 0, alarm: null }
     return { pending: this.hasBuffered(), rows: this.rows, pendingBytes: this.pendingBytes, queued: this.queue.length, gen: this.gen(), sealing: this.intent(), manifest: (this.sql.exec('SELECT COUNT(*) n FROM manifest').one() as { n: number }).n, alarm: await this.ctx.storage.getAlarm() }
   }
-  /** Delete every archive object this source wrote and all of its Durable Object storage (used by `slurp cloud destroy`). */
+  /** Delete every archive object this project wrote and all of its Durable Object storage (used by `slurp cloud destroy`). */
   async purge(): Promise<{ archives: number }> {
-    const rows = this.sql.exec('SELECT r2key FROM manifest').toArray() as { r2key: string }[]
+    const rows = (this.initialized() ? this.sql.exec('SELECT r2key FROM manifest').toArray() : []) as { r2key: string }[]
     for (let i = 0; i < rows.length; i += 1000) await retry(() => this.env.ARCHIVE.delete(rows.slice(i, i + 1000).map(r => r.r2key)))
     if (this.timer) { clearTimeout(this.timer); this.timer = null }
     this.queue = []

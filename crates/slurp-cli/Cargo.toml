@@ -25,7 +25,6 @@ clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 uuid = { version = "1", features = ["v4", "v7"] }
 tempfile = "3"
-zstd = "0.13"
 include_dir = "0.7"
 serde_norway = "0.9.42"
 pulldown-cmark = "0.13"
@@ -40,3 +39,6 @@ console = "0.16"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"
+
+[dev-dependencies]
+flate2 = "1"

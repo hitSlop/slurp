@@ -52,22 +52,20 @@ pub fn destination() -> Result<PathBuf> {
     Ok(slurp_client::config::home()?.join("bin/duckdb"))
 }
 
-/// Find a managed executable, including installations under earlier default locations.
+/// Find the managed DuckDB executable under the Slurp home.
 ///
 /// # Errors
 /// Returns an error if the home cannot be resolved or an installed engine is incompatible.
 pub fn managed_engine() -> Result<Option<PathBuf>> {
     let home = slurp_client::config::home()?;
-    for location in std::iter::once(home.clone()).chain(slurp_client::config::legacy_homes(&home)) {
-        let path = location.join("bin/duckdb");
-        if path.is_file() {
-            check_engine(&path)?;
-            return Ok(Some(path));
-        }
+    let path = home.join("bin/duckdb");
+    if path.is_file() {
+        check_engine(&path)?;
+        return Ok(Some(path));
     }
     Ok(None)
 }
-/// Find a qualified executable from an override, saved preference, PATH, or prior install.
+/// Find a qualified executable from an override, saved preference, PATH, or the managed install.
 ///
 /// # Errors
 /// Returns an error when an explicitly selected executable is unavailable or incompatible.
@@ -170,7 +168,7 @@ pub fn install() -> Result<PathBuf> {
 pub struct PageContext {
     pub project_name: Option<String>,
     pub backend: Option<String>,
-    pub source: Option<String>,
+    pub project: Option<String>,
     pub ingest_url: Option<String>,
     pub publishable_key: Option<String>,
     pub read_key: Option<String>,

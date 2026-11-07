@@ -16,18 +16,47 @@ use std::path::PathBuf;
 #[command(
     version,
     about = "Sync your self-hosted events into DuckDB and build reports",
-    after_help = "Worker commands: cloud, connect, logout, whoami, source, send, identify, read, credentials.\nUse slurp source --help for source/key management; Worker commands accept --backend."
+    after_help = "Worker commands: cloud, connect, logout, whoami, project, send, identify, read.\nUse slurp project --help for project and key management."
 )]
 struct Cli {
+    /// The Worker to talk to. Defaults to the project's binding, then your saved connection.
+    #[arg(long, global = true)]
+    backend: Option<String>,
     #[arg(long, global = true)]
     json: bool,
     #[arg(short = 'o', long, global = true, value_parser = ["auto", "text", "json"], default_value = "auto")]
     output: String,
     /// Select an exact project folder instead of finding the nearest parent project.
-    #[arg(long, global = true)]
+    #[arg(long = "project", global = true)]
     workspace: Option<PathBuf>,
     #[command(subcommand)]
     command: Operation,
+}
+#[derive(Subcommand)]
+enum Notify {
+    /// Slack: a bot token (SLACK_BOT_TOKEN, scopes chat:write and files:write) can attach a file; an incoming webhook (SLACK_WEBHOOK_URL) posts text only.
+    Slack {
+        /// The message; use - to read it from stdin.
+        #[arg(long)]
+        text: String,
+        /// Channel (use the channel id, like C0123ABCD, to attach a file). Required with SLACK_BOT_TOKEN.
+        #[arg(long, env = "SLACK_CHANNEL")]
+        channel: Option<String>,
+        /// A report image or PDF to attach (bot token only).
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Title for the attached file.
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Discord: a webhook (DISCORD_WEBHOOK_URL), with an optional attached file. Messages are limited to 2000 characters.
+    Discord {
+        /// The message; use - to read it from stdin.
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
 }
 #[derive(Subcommand)]
 enum Operation {
@@ -48,6 +77,15 @@ enum Operation {
     Health,
     Describe,
     Sync,
+    /// Post a message, and optionally a report image, to Slack or Discord. Credentials come from the environment (SLACK_BOT_TOKEN, SLACK_WEBHOOK_URL, DISCORD_WEBHOOK_URL).
+    #[command(subcommand)]
+    Notify(Notify),
+    /// Serve this project's events to an AI client over the Model Context Protocol (stdio). Add it to Claude Code, Cursor, Codex or Claude Desktop.
+    Mcp {
+        /// Also expose send_event and identify, which write to the real event stream. Off by default.
+        #[arg(long)]
+        allow_send: bool,
+    },
     Sql {
         #[arg(required_unless_present = "file", conflicts_with = "file")]
         query: Option<String>,
@@ -62,14 +100,14 @@ enum Operation {
     Report(Report),
     #[command(subcommand)]
     Agent(Agent),
+    /// Commands that talk to your Worker: cloud, connect, logout, whoami, project, send, identify, read.
+    #[command(flatten)]
+    Worker(service::Command),
 }
 #[derive(Subcommand)]
 enum ProjectCommand {
-    List,
     /// Remove only a registry entry; project files and event data stay in place.
-    Forget {
-        directory: PathBuf,
-    },
+    Forget { directory: PathBuf },
 }
 #[derive(Subcommand)]
 enum Agent {
@@ -131,12 +169,17 @@ enum Report {
     },
 }
 fn main() -> std::process::ExitCode {
-    let args: Vec<_> = std::env::args_os().collect();
-    if service::handles(&args) {
-        return service::main(args);
-    }
     let cli = Cli::parse();
     service::configure_output(&cli.output, cli.json);
+    if let Operation::Worker(command) = cli.command {
+        let global = service::Global {
+            backend: cli.backend,
+            output: cli.output,
+            json: cli.json,
+            workspace: cli.workspace,
+        };
+        return service::main(global, command);
+    }
     let presentation = match &cli.command {
         Operation::Init(_) => output::Kind::Init,
         Operation::Sync => output::Kind::Sync,
@@ -204,6 +247,49 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         }
         Operation::Setup(options) => {
             return onboarding::run(options, cli.json || cli.output == "json");
+        }
+        Operation::Notify(target) => {
+            let config = slurp_app::notify::Config::from_env();
+            let read_text = |text: String| -> Result<String> {
+                if text == "-" {
+                    let mut buffer = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buffer)?;
+                    Ok(buffer.trim_end().to_owned())
+                } else {
+                    Ok(text)
+                }
+            };
+            let result = match target {
+                Notify::Slack {
+                    text,
+                    channel,
+                    file,
+                    title,
+                } => {
+                    let text = read_text(text)?;
+                    let file = file
+                        .as_deref()
+                        .map(slurp_app::notify::Attachment::read)
+                        .transpose()?;
+                    tokio::runtime::Runtime::new()?.block_on(slurp_app::notify::slack(
+                        &config,
+                        &text,
+                        channel.as_deref(),
+                        file,
+                        title.as_deref(),
+                    ))?
+                }
+                Notify::Discord { text, file } => {
+                    let text = read_text(text)?;
+                    let file = file
+                        .as_deref()
+                        .map(slurp_app::notify::Attachment::read)
+                        .transpose()?;
+                    tokio::runtime::Runtime::new()?
+                        .block_on(slurp_app::notify::discord(&config, &text, file))?
+                }
+            };
+            return Ok(result);
         }
         Operation::Agent(Agent::Setup { out, all, force }) => {
             slurp_app::skills::install(&out, force, all)?;
@@ -275,25 +361,18 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     ctrlc::set_handler(move || cancellation.cancel())?;
     match cli.command {
         Operation::Sync => {
-            let token = login::environment_token();
-            tokio::runtime::Runtime::new()?.block_on(async {
-                let auth = if let Some(t) = token {
-                    t
-                } else {
-                    let home = service::home()?;
-                    let session = slurp_client::auth::Session::new(
-                        &w.backend,
-                        slurp_client::http_client()?,
-                        home.join("cache/service-locks"),
-                        std::sync::Arc::new(slurp_client::auth::SavedCredentials),
-                    )?;
-                    login::token(&session).await?
-                };
-                w.sync(&auth).await
-            })
+            let auth = login::token(&w.backend)?;
+            tokio::runtime::Runtime::new()?.block_on(async { w.sync(&auth).await })
+        }
+        Operation::Mcp { allow_send } => {
+            // stdout carries only protocol messages; nothing is printed afterwards.
+            let server =
+                slurp_app::mcp::Server::new(&w, root.clone(), std::env::current_exe()?, allow_send);
+            server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
+            std::process::exit(0);
         }
         Operation::Doctor | Operation::Status => Ok(
-            json!({"version":w.version,"source":w.source,"backend":w.backend,"database":w.database,"events":w.execute("SELECT count(*) AS count FROM events",true)?,"last_delivery":w.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1",true)?}),
+            json!({"version":w.version,"project":w.project,"backend":w.backend,"database":w.database,"events":w.execute("SELECT count(*) AS count FROM events",true)?,"last_delivery":w.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1",true)?}),
         ),
         Operation::Health => slurp_app::health::run(&w),
         Operation::Describe => w.execute("DESCRIBE events", true),

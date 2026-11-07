@@ -11,9 +11,6 @@
 //! ```
 use serde_json::{Number, Value};
 
-/// The keys a format block (or a metric block) may contain.
-pub const FORMAT_KEYS: [&str; 4] = ["decimals", "prefix", "suffix", "compact"];
-
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NumberFormat {
     pub decimals: Option<usize>,

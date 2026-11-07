@@ -25,11 +25,20 @@ pub struct Settings {
     pub duckdb: Option<PathBuf>,
 }
 
-/// Save machine preferences while retaining comments and unrelated TOML settings.
-///
-/// # Errors
-/// Returns an error for invalid configuration or an unwritable Slurp home.
-pub fn save_machine(home: &Path, backend: &str, library: &Path, duckdb: &Path) -> Result<()> {
+fn set(document: &mut toml_edit::DocumentMut, name: &str, text: &str) {
+    let decoration = document
+        .get(name)
+        .and_then(toml_edit::Item::as_value)
+        .map(|value| value.decor().clone());
+    let mut value = toml_edit::Value::from(text);
+    if let Some(decoration) = decoration {
+        *value.decor_mut() = decoration;
+    }
+    document[name] = toml_edit::Item::Value(value);
+}
+
+/// Change config.toml under a lock, retaining its comments and unrelated settings.
+fn edit(home: &Path, change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<()>) -> Result<()> {
     use fs2::FileExt;
     prepare(home)?;
     let lock = fs::OpenOptions::new()
@@ -46,28 +55,7 @@ pub fn save_machine(home: &Path, backend: &str, library: &Path, duckdb: &Path) -
         Err(error) => return Err(error.into()),
     };
     let mut document: toml_edit::DocumentMut = text.parse().context("reading system settings")?;
-    fn set(document: &mut toml_edit::DocumentMut, name: &str, text: &str) {
-        let decoration = document
-            .get(name)
-            .and_then(toml_edit::Item::as_value)
-            .map(|value| value.decor().clone());
-        let mut value = toml_edit::Value::from(text);
-        if let Some(decoration) = decoration {
-            *value.decor_mut() = decoration;
-        }
-        document[name] = toml_edit::Item::Value(value);
-    }
-    set(
-        &mut document,
-        "backend",
-        &config::normalize_backend(backend)?,
-    );
-    set(
-        &mut document,
-        "library_dir",
-        library.to_string_lossy().as_ref(),
-    );
-    set(&mut document, "duckdb", duckdb.to_string_lossy().as_ref());
+    change(&mut document)?;
     let mut file = tempfile::NamedTempFile::new_in(home)?;
     file.as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -77,7 +65,31 @@ pub fn save_machine(home: &Path, backend: &str, library: &Path, duckdb: &Path) -
     Ok(())
 }
 
-/// Read system settings without creating files, preserving earlier service preferences.
+/// Save machine preferences while retaining comments and unrelated TOML settings.
+///
+/// # Errors
+/// Returns an error for invalid configuration or an unwritable Slurp home.
+pub fn save_machine(home: &Path, backend: &str, library: &Path, duckdb: &Path) -> Result<()> {
+    edit(home, |document| {
+        set(document, "backend", &config::normalize_backend(backend)?);
+        set(document, "library_dir", library.to_string_lossy().as_ref());
+        set(document, "duckdb", duckdb.to_string_lossy().as_ref());
+        Ok(())
+    })
+}
+
+/// Make this Worker the machine's default, the one new projects and cloud commands use.
+///
+/// # Errors
+/// Returns an error for an invalid URL or an unwritable Slurp home.
+pub fn set_backend(home: &Path, backend: &str) -> Result<()> {
+    edit(home, |document| {
+        set(document, "backend", &config::normalize_backend(backend)?);
+        Ok(())
+    })
+}
+
+/// Read system settings without creating files.
 ///
 /// # Errors
 /// Returns an error for invalid TOML, invalid backend URLs, or unreadable settings.
@@ -88,12 +100,10 @@ pub fn settings(home: &Path) -> Result<Settings> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Settings::default(),
         Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
     };
-    let backend = match settings.backend.take() {
-        Some(backend) => backend,
-        None => config::load(home)?
-            .backend
-            .unwrap_or_else(|| config::DEFAULT_BACKEND.to_owned()),
-    };
+    let backend = settings
+        .backend
+        .take()
+        .unwrap_or_else(|| config::DEFAULT_BACKEND.to_owned());
     settings.backend = Some(config::normalize_backend(&backend)?);
     Ok(settings)
 }
@@ -104,7 +114,7 @@ fn prepare(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create default settings only when absent, preserving user edits and earlier preferences.
+/// Create default settings only when absent, preserving user edits.
 ///
 /// # Errors
 /// Returns an error if settings are invalid or cannot be persisted.
@@ -136,7 +146,7 @@ pub struct Project {
     pub name: String,
     pub root: PathBuf,
     pub backend: String,
-    pub source: String,
+    pub project: String,
     pub database: PathBuf,
     pub duckdb: PathBuf,
     pub registered_at: String,
@@ -214,7 +224,7 @@ pub fn register(home: &Path, root: &Path, workspace: &Workspace) -> Result<()> {
                 .unwrap_or_else(|| root.display().to_string()),
             root: root.clone(),
             backend: workspace.backend.clone(),
-            source: workspace.source.clone(),
+            project: workspace.project.clone(),
             database: workspace.database.clone(),
             duckdb: workspace.duckdb.clone(),
             registered_at: previous

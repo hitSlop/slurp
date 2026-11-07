@@ -8,7 +8,8 @@
     "check": "astro check && node --test test/*.test.mjs",
     "preview": "astro preview --host 127.0.0.1",
     "deploy": "astro build && wrangler deploy",
-    "deploy:built": "wrangler deploy"
+    "deploy:built": "wrangler deploy",
+    "og": "node scripts/og-image.mjs"
   },
   "dependencies": {
     "astro": "7.4.5"

@@ -4,6 +4,7 @@
 //
 // Open loop: requests are issued on a schedule whether or not earlier ones finished, so a slow server shows up as latency
 // and errors instead of quietly lowering the rate. Each request is one ingest batch (JSON lines). Use a throwaway Worker.
+import http from 'node:http'
 import https from 'node:https'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { parseArgs } from 'node:util'
@@ -14,7 +15,7 @@ const { values: opt, positionals } = parseArgs({
     steps: { type: 'string', default: '50,100,200' },     // requests per second, one step each
     seconds: { type: 'string', default: '30' },            // length of each step
     events: { type: 'string', default: '20' },             // events per request
-    source: { type: 'string', default: '' },               // an existing source name; default creates one
+    project: { type: 'string', default: '' },              // an existing project name; default creates one
     'wait-seal': { type: 'string', default: '0' },         // seconds to wait for the final seal before reading archive sizes
   },
 })
@@ -22,11 +23,13 @@ const base = (positionals[0] ?? '').replace(/\/$/, '')
 const admin = process.env.SLURP_TOKEN
 if (!base || !admin) { console.error('usage: SLURP_TOKEN=... node load.mjs <worker url> [--steps 50,100] [--seconds 30]'); process.exit(2) }
 const url = new URL(base)
-const agent = new https.Agent({ keepAlive: true, maxSockets: 512 })
+// A local `wrangler dev` Worker is plain http; a deployed one is https.
+const transport = url.protocol === 'http:' ? http : https
+const agent = new transport.Agent({ keepAlive: true, maxSockets: 512 })
 
 const request = (path, { method = 'POST', headers = {}, body } = {}) => new Promise((resolve) => {
   const started = performance.now()
-  const req = https.request({ agent, host: url.host, path, method, headers: { ...headers, 'content-length': body ? Buffer.byteLength(body) : 0 } }, (res) => {
+  const req = transport.request({ agent, hostname: url.hostname, port: url.port || undefined, path, method, headers: { ...headers, 'content-length': body ? Buffer.byteLength(body) : 0 } }, (res) => {
     const chunks = []
     res.on('data', (c) => chunks.push(c))
     res.on('end', () => resolve({ status: res.statusCode, ms: performance.now() - started, text: Buffer.concat(chunks).toString() }))
@@ -50,14 +53,14 @@ const batch = (n) => Array.from({ length: n }, event).join('\n')
 
 const pct = (sorted, p) => sorted.length ? +sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))].toFixed(0) : null
 
-const name = opt.source || 'load_' + randomBytes(3).toString('hex')
-const created = opt.source ? null : await rpc('Source', 'CreateSource', { name, requestId: randomUUID() })
-const sourceId = created?.source?.id ?? (await rpc('Source', 'GetSource', { source: name })).source.id
+const name = opt.project || 'load_' + randomBytes(3).toString('hex')
+const created = opt.project ? null : await rpc('Project', 'CreateProject', { name })
+const projectId = created?.project?.id ?? (await rpc('Project', 'GetProject', { project: name })).project.id
 const pk = created?.publishableKey
-if (!pk) { console.error('need a fresh source (omit --source) to get an ingest key'); process.exit(2) }
+if (!pk) { console.error('need a fresh project (omit --project) to get an ingest key'); process.exit(2) }
 
 const perRequest = Number(opt.events), seconds = Number(opt.seconds)
-const report = { worker: base, source: name, eventsPerRequest: perRequest, steps: [] }
+const report = { worker: base, project: name, eventsPerRequest: perRequest, steps: [] }
 for (const rate of opt.steps.split(',').map(Number)) {
   const results = [], inflight = new Set()
   const t0 = performance.now()
@@ -87,7 +90,7 @@ for (const rate of opt.steps.split(',').map(Number)) {
 
 const wait = Number(opt['wait-seal'])
 if (wait) { console.error(`waiting ${wait}s for the final seal`); await new Promise((r) => setTimeout(r, wait * 1000)) }
-const listing = await rpc('Archive', 'ListObjects', { source: sourceId, limit: 1000 }).catch((e) => ({ error: String(e) }))
+const listing = await rpc('Archive', 'ListObjects', { project: projectId, limit: 1000 }).catch((e) => ({ error: String(e) }))
 const objects = listing.objects ?? []
 const total = report.steps.reduce((n, s) => n + s.ok, 0) * perRequest
 report.archive = { objects: objects.length, bytes: objects.reduce((n, o) => n + Number(o.size ?? o.sizeBytes ?? 0), 0), eventsAccepted: total }

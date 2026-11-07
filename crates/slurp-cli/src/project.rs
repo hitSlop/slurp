@@ -42,14 +42,14 @@ pub fn resolve(start: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
         } else {
             start.join(path)
         };
-        let root = root.canonicalize().context("resolving --workspace")?;
+        let root = root.canonicalize().context("resolving --project")?;
         Workspace::read_binding(&root).with_context(|| {
             format!(
-                "--workspace must select an initialized project folder: {}",
+                "--project must select an initialized project folder: {}",
                 root.display()
             )
         })?;
         return Ok(root);
     }
-    discover(start)?.ok_or_else(|| Failure::new(ErrorCode::WorkspaceUnavailable, "no Slurp project found; run inside an initialized app, pass --workspace PATH, or use --source for explicit ingestion").into())
+    discover(start)?.ok_or_else(|| Failure::new(ErrorCode::WorkspaceUnavailable, "no Slurp project found; run inside an initialized app, pass --project PATH, or use --source for explicit ingestion").into())
 }

@@ -25,7 +25,7 @@ const MIN_WRANGLER: (u32, u32) = (4, 100);
 pub enum Command {
     /// Deploy a Worker and R2 bucket to your Cloudflare account and connect this computer to it.
     Init(InitArgs),
-    /// Show your deployment: reachability, version and sources.
+    /// Show your deployment: reachability, version and projects.
     Status(WorkerArg),
     /// Check wrangler, your Cloudflare login, the Worker and your saved connection, with a fix for each problem.
     Doctor(WorkerArg),
@@ -350,6 +350,11 @@ pub struct Bundle {
     pub code: &'static [u8],
     pub build: String,
     pub compatibility_date: String,
+    /// The Durable Object bindings and migrations, the R2 binding name and observability, all copied from backend/wrangler.jsonc.
+    pub durable_objects: Value,
+    pub migrations: Value,
+    pub r2_binding: String,
+    pub observability: Value,
     pub vars: serde_json::Map<String, Value>,
 }
 pub fn bundle() -> Result<Bundle> {
@@ -363,14 +368,29 @@ pub fn bundle() -> Result<Bundle> {
             .context("the Worker build info is missing from this build")?
             .contents(),
     )?;
+    let text = |key: &str| {
+        meta[key]
+            .as_str()
+            .map(str::to_owned)
+            .with_context(|| format!("the Worker build info has no {key}; rebuild the CLI"))
+    };
+    let value = |key: &str| {
+        meta.get(key)
+            .cloned()
+            .with_context(|| format!("the Worker build info has no {key}; rebuild the CLI"))
+    };
     Ok(Bundle {
         code,
-        build: meta["build"].as_str().unwrap_or("unknown").to_owned(),
-        compatibility_date: meta["compatibility_date"]
-            .as_str()
-            .unwrap_or("2026-10-01")
-            .to_owned(),
-        vars: meta["vars"].as_object().cloned().unwrap_or_default(),
+        build: text("build")?,
+        compatibility_date: text("compatibility_date")?,
+        durable_objects: value("durable_objects")?,
+        migrations: value("migrations")?,
+        r2_binding: text("r2_binding")?,
+        observability: value("observability")?,
+        vars: meta["vars"]
+            .as_object()
+            .cloned()
+            .context("the Worker build info has no vars; rebuild the CLI")?,
     })
 }
 
@@ -393,14 +413,11 @@ fn wrangler_config(
         "name": worker,
         "main": "index.js",
         "compatibility_date": bundle.compatibility_date,
-        "durable_objects": {"bindings": [
-            {"name": "REGISTRY", "class_name": "RegistryDO"},
-            {"name": "SOURCE", "class_name": "SourceDO"},
-        ]},
-        "migrations": [{"tag": "v1", "new_sqlite_classes": ["RegistryDO", "SourceDO"]}],
-        "r2_buckets": [{"binding": "ARCHIVE", "bucket_name": bucket}],
+        "durable_objects": bundle.durable_objects,
+        "migrations": bundle.migrations,
+        "r2_buckets": [{"binding": bundle.r2_binding, "bucket_name": bucket}],
         "vars": vars,
-        "observability": {"enabled": true},
+        "observability": bundle.observability,
     })
 }
 
@@ -739,34 +756,32 @@ async fn wait_until_configured(url: &str) -> Result<()> {
 }
 
 async fn saved_token(backend: &str) -> Result<String> {
-    let home = slurp_client::config::home()?;
-    let session = crate::login::session(backend, &home)?;
-    crate::login::token(&session).await
+    crate::login::token(backend)
 }
 
 async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
     let receipt = pick_receipt(target.worker.as_deref())?;
     let latest = bundle()?.build;
     let health = health(&receipt.url).await.ok();
-    let mut sources = vec![];
+    let mut projects = vec![];
     if let Ok(token) = saved_token(&receipt.url).await {
         let http = slurp_client::http_client()?;
         let client =
-            slurp_client::rpc::SourceClient::new(&receipt.url, http.clone(), Some(token.clone()));
+            slurp_client::rpc::ProjectClient::new(&receipt.url, http.clone(), Some(token.clone()));
         if let Ok(list) = client
-            .list_sources(&slurp_client::rpc::ListSourcesRequest {})
+            .list_projects(&slurp_client::rpc::ListProjectsRequest {})
             .await
         {
             let archive = slurp_client::rpc::ArchiveClient::new(&receipt.url, http, Some(token));
-            for source in list.sources {
+            for project in list.projects {
                 let coverage = archive
                     .get_coverage(&slurp_client::rpc::GetCoverageRequest {
-                        source: source.id.clone(),
+                        project: project.id.clone(),
                     })
                     .await
                     .ok()
                     .and_then(|c| c.coverage);
-                sources.push(json!({"id": source.id, "name": source.name, "latest_published": coverage.and_then(|c| c.latest_published)}));
+                projects.push(json!({"id": project.id, "name": project.name, "latest_published": coverage.and_then(|c| c.latest_published)}));
             }
         }
     }
@@ -780,7 +795,7 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
         "configured": health.as_ref().is_some_and(|h| h["configured"] == true),
         "build": deployed_build, "latest_build": latest,
         "up_to_date": deployed_build.as_deref() == Some(latest.as_str()),
-        "deployed_at": receipt.deployed_at, "sources": sources,
+        "deployed_at": receipt.deployed_at, "projects": projects,
     });
     if machine {
         crate::service::emit(&value)?;
@@ -804,9 +819,9 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
             },
         );
         line("Bucket", receipt.bucket.clone());
-        for s in &sources {
+        for s in &projects {
             line(
-                "Source",
+                "Project",
                 format!(
                     "{} {} (published through seq {})",
                     s["id"].as_str().unwrap_or(""),
@@ -815,8 +830,8 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
                 ),
             );
         }
-        if sources.is_empty() {
-            line("Sources", "none yet; run slurp init in an app".into());
+        if projects.is_empty() {
+            line("Projects", "none yet; run slurp init in an app".into());
         }
     }
     Ok(0)
@@ -910,14 +925,9 @@ async fn doctor(target: &WorkerArg, machine: bool) -> Result<u8> {
                     "Run `slurp connect <url> --token-stdin`",
                 ),
                 Ok(token) => {
-                    let ok = slurp_client::rpc::AuthClient::new(
-                        &receipt.url,
-                        slurp_client::http_client()?,
-                        Some(token),
-                    )
-                    .current_user(&slurp_client::rpc::CurrentUserRequest {})
-                    .await
-                    .is_ok();
+                    let ok = crate::login::whoami(&receipt.url, &token)
+                        .await
+                        .is_ok_and(|who| who.scope == "admin");
                     add(
                         "saved admin token works",
                         ok,
@@ -1005,7 +1015,7 @@ async fn destroy(args: &DestroyArgs, ui: &Terminal, machine: bool) -> Result<u8>
         ui.note(
             "This deletes everything",
             &format!(
-                "Worker {}, every source and archive it holds, and the R2 bucket {}.\nData already synced to your DuckDB files is not touched. This cannot be undone.",
+                "Worker {}, every project and archive it holds, and the R2 bucket {}.\nData already synced to your DuckDB files is not touched. This cannot be undone.",
                 receipt.worker, receipt.bucket
             ),
         )?;
@@ -1025,7 +1035,7 @@ async fn destroy(args: &DestroyArgs, ui: &Terminal, machine: bool) -> Result<u8>
     let token = saved_token(&receipt.url)
         .await
         .context("destroy needs the saved admin token")?;
-    progress.step("Deleting all sources and archives");
+    progress.step("Deleting all projects and archives");
     let purge = slurp_client::http_client()?
         .post(format!("{}/v1/admin/purge", receipt.url))
         .bearer_auth(&token)
@@ -1060,8 +1070,7 @@ async fn destroy(args: &DestroyArgs, ui: &Terminal, machine: bool) -> Result<u8>
         explain("deleting the R2 bucket", &bucket.text, account)
     );
     let _ = std::fs::remove_file(receipts_dir()?.join(format!("{}.json", receipt.worker)));
-    let home = slurp_client::config::home()?;
-    let _ = crate::login::session(&receipt.url, &home)?.logout().await;
+    let _ = slurp_client::connection::forget(&receipt.url);
     crate::service::emit(&json!({"destroyed": receipt.worker, "bucket": receipt.bucket}))?;
     Ok(0)
 }
@@ -1125,8 +1134,41 @@ mod tests {
         assert!(bundle.code.len() > 10_000);
         assert_eq!(bundle.build.len(), 12);
         let config = wrangler_config(&bundle, "w", "b", &bundle.vars);
+        assert_eq!(config["name"], "w");
         assert_eq!(config["r2_buckets"][0]["bucket_name"], "b");
-        assert_eq!(config["migrations"][0]["new_sqlite_classes"][1], "SourceDO");
+    }
+
+    /// What the CLI deploys must be what `wrangler dev` and the Deploy button use: the same bindings, classes, migrations,
+    /// variables and compatibility date as backend/wrangler.jsonc.
+    #[test]
+    fn the_shipped_deployment_config_matches_the_workers_wrangler_config() {
+        let text = include_str!("../../../backend/wrangler.jsonc");
+        let wrangler: Value = serde_json::from_str(
+            &text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("wrangler.jsonc");
+        let bundle = bundle().unwrap();
+        let config = wrangler_config(&bundle, "w", "b", &bundle.vars);
+        for key in [
+            "compatibility_date",
+            "durable_objects",
+            "migrations",
+            "vars",
+            "observability",
+        ] {
+            assert_eq!(
+                config[key], wrangler[key],
+                "{key} differs from backend/wrangler.jsonc; run node backend/scripts/bundle.mjs"
+            );
+        }
+        assert_eq!(
+            config["r2_buckets"][0]["binding"],
+            wrangler["r2_buckets"][0]["binding"]
+        );
     }
 
     #[test]

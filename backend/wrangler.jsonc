@@ -5,10 +5,10 @@
   "durable_objects": {
     "bindings": [
       { "name": "REGISTRY", "class_name": "RegistryDO" },
-      { "name": "SOURCE", "class_name": "SourceDO" }
+      { "name": "PROJECT", "class_name": "ProjectDO" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "SourceDO"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "ProjectDO"] }],
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "slurp-archive" }],
   "vars": {
     "SEAL_INTERVAL_MS": "600000",

@@ -1,4 +1,3 @@
-import { buildPage } from '../report/page';
 import { compile } from 'vega-lite';
 import type { TopLevelSpec } from 'vega-lite';
 import { parse, View, logger as vegaLogger } from 'vega';
@@ -146,7 +145,6 @@ export async function compileChart(
   }
 }
 
-export { buildPage };
 Object.assign(globalThis, {
-  slurpChart: { compile: compileChart, page: buildPage },
+  slurpChart: { compile: compileChart },
 });

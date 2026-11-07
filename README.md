@@ -88,11 +88,11 @@ slurp sync                   # archives are sealed about every 10 minutes
 slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 ```
 
-Each project binds one source to one DuckDB file, stored locally or on an external drive. SQL, report definitions and project metadata stay with your app. No daemon is required. DuckDB 2.x is used for analysis.
+Each project is one event stream on your Worker (many senders can write to it: a website, an app, a webhook) bound to one DuckDB file, stored locally or on an external drive. SQL, report definitions and project metadata stay with your app. No daemon is required. DuckDB 2.x is used for analysis.
 
 ## Send events
 
-Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the next archive seal (about 10 minutes by default). `slurp init` prints your real ingest URL, source ID and publishable key; a publishable key can only send events, so it is safe in a web page.
+Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the next archive seal (about 10 minutes by default). `slurp init` prints your real ingest URL and publishable key; a publishable key can only send events, so it is safe in a web page.
 
 | Send from | Install | Status |
 |---|---|---|
@@ -113,13 +113,12 @@ import { init, track, identify, flush } from '@hitslop/slurp-sdk';
 
 init({
   endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events',
-  sourceId: 'src_…',
   key: 'slurp_pk_…',
 });
 
 identify('user_42', { plan: 'pro' });
 track('signed_up', { plan: 'pro' });
-track('feedback', { message: 'Exporting a 4K video fails at 90%', rating: 2 }); // feedback is just another event
+track('feedback', { message: 'Exporting a 4K video fails at 90%', rating: 2 }); // feedback is just another event (or mount the drop-in widget: @hitslop/slurp-sdk/feedback)
 await flush(); // in scripts, send queued events before exiting
 ```
 
@@ -128,7 +127,7 @@ await flush(); // in scripts, send queued events before exiting
 ```ts
 import { init, track, screen } from '@hitslop/slurp-react-native';
 
-init({ endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events', sourceId: 'src_…', key: 'slurp_pk_…' });
+init({ endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events', key: 'slurp_pk_…' });
 screen('Home');
 track('purchase_completed', { total: 49 });
 ```
@@ -138,7 +137,7 @@ track('purchase_completed', { total: 49 });
 ```swift
 import Slurp
 
-SlurpClient.configure(.init(key: "slurp_pk_…", endpoint: URL(string: "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events")!, sourceId: "src_…"))
+SlurpClient.configure(.init(key: "slurp_pk_…", endpoint: URL(string: "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events")!))
 SlurpClient.shared.screen("Home")
 SlurpClient.shared.track("purchase_completed", ["total": 49])
 ```
@@ -154,10 +153,10 @@ const [analytics] = await AnalyticsBrowser.load({ writeKey: 'slurp_pk_…', cdnU
 let config = Configuration(writeKey: "slurp_pk_…").apiHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1").cdnHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1")
 ```
 
-**Already using Sentry?** Change the DSN. Errors are stored whole as `error` events and read with the `errors` view; there is no symbolication or issue UI. The DSN's public key is your publishable key in hex (the setup page shows the finished DSN; or `printf %s 'slurp_pk_…' | xxd -p | tr -d '\n'`):
+**Already using Sentry?** Change the DSN. Errors are stored whole as `error` events and read with the `errors` view; there is no symbolication or issue UI. The DSN's public key is your publishable key as is (the setup page shows the finished DSN):
 
 ```js
-Sentry.init({ dsn: 'https://HEX_OF_YOUR_PUBLISHABLE_KEY@slurp.YOUR-SUBDOMAIN.workers.dev/1' });
+Sentry.init({ dsn: 'https://slurp_pk_…@slurp.YOUR-SUBDOMAIN.workers.dev/1' });
 ```
 
 ```sql
@@ -183,6 +182,15 @@ curl -X POST "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events" \
 
 Retrying the exact same bytes is safe: the Worker answers `Slurp-Duplicate: 1`. The event format is described in [docs/architecture.md](docs/architecture.md#contracts).
 
+## Connect your agent
+
+```sh
+slurp agent setup --out .agents/skills/slurp        # skills for any coding agent that runs commands
+claude mcp add slurp -- slurp mcp --project "$PWD" # or MCP: Claude Code, Cursor, Codex, Claude Desktop, Windsurf
+```
+
+`slurp mcp` lets an AI client describe the schema, run read-only SQL (in a sandbox that cannot read local files), sync and build reports; `--allow-send` also lets it send events, tagged `context.source = "mcp"`. To post results to your team, `slurp notify slack --channel C0123ABCD --file report/report.png --text "Weekly report"` (Slack bot token) or `slurp notify discord ...` (webhook), run from cron for a scheduled report. Tools, config for each client and a schedule recipe: [docs/integrations.md](docs/integrations.md).
+
 ## Community
 
 Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bugs and feature requests: [GitHub issues](https://github.com/hitSlop/slurp/issues). The site is [slurp.run](https://slurp.run).
@@ -204,7 +212,7 @@ Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bu
 pnpm install                      # website, landing, SDK
 pnpm --filter slurp-setup build   # the quickstart page the CLI embeds (crates/slurp-cli/assets/setup.html)
 pnpm --filter slurp-site build
-cargo test --workspace
+cargo test --project
 (cd backend && npm install && npm test)   # Worker tests under wrangler dev, incl. the real CLI
 (cd sdks/js && node --test test/*.test.ts)
 backend/api/generate.sh --check   # regenerate webrpc clients (needs Go; webrpc-gen is pinned in the script)

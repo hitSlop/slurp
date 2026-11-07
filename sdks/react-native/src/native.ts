@@ -22,7 +22,7 @@ export interface ApplicationLike { nativeApplicationVersion?: string | null; nat
 export interface NativeEnvironment { appState: AppStateLike; platform: PlatformLike; storage: StorageAdapter }
 
 export interface ReactNativeOptions extends Omit<SlurpOptions, 'storage' | 'flushOnHide'> {
-  /** Where the queue and visitor identity live between launches. Defaults to AsyncStorage, so events survive the app being closed or killed. */
+  /** Where the queue and visitor identity live between launches. Defaults to AsyncStorage (split into small pieces, see `chunkedStorage`), so events survive the app being closed or killed. */
   storage?: StorageAdapter
   /** Optional `@react-native-community/netinfo`: send what is queued as soon as the connection returns. */
   netInfo?: NetInfoLike
@@ -63,6 +63,8 @@ export function createNativeClient(options: ReactNativeOptions, env: NativeEnvir
     })
   }
   const core = createCoreClient({
+    // AsyncStorage holds about 6 MB in total on Android and is shared with the app, so keep less queued than the web default.
+    maxQueueBytes: 2 * 1024 * 1024,
     ...rest,
     storage: storage ?? env.storage,
     flushOnHide: false,

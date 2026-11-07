@@ -6,14 +6,13 @@ React Native and Expo event capture for [Slurp](https://slurp.run). Events go to
 npm install @hitslop/slurp-react-native @react-native-async-storage/async-storage
 ```
 
-`slurp init` prints your ingest URL, source ID and publishable key (`slurp_pk_…`, ingest-only, safe to ship in an app).
+`slurp init` prints your ingest URL and publishable key (`slurp_pk_…`, ingest-only, safe to ship in an app).
 
 ```ts
 import { init, track, identify, screen } from '@hitslop/slurp-react-native';
 
 init({
   key: 'slurp_pk_…',
-  sourceId: 'src_…',
   endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events',
 });
 
@@ -33,7 +32,7 @@ Queued events are sent:
 - when the app returns to `active`;
 - when the network comes back, if you pass NetInfo.
 
-Failures back off with jitter and honor `Retry-After`, including across relaunches. Events are never truncated; one larger than 1 MiB is dropped and reported through `onError`.
+Failures (408, 429, 5xx, no network, or no answer within `requestTimeoutMs`) back off with jitter and honor `Retry-After`, including across relaunches, and always resend the identical bytes. Events are never truncated; one larger than 1 MiB is dropped and reported through `onError`. At most `maxQueueBytes` (default **2 MiB** here, 4 MiB on the web) are kept offline, oldest dropped first and reported.
 
 ## Options
 
@@ -50,7 +49,7 @@ Everything in the [core SDK options](../js#readme) works (`flushAt`, `maxQueue`,
 import NetInfo from '@react-native-community/netinfo';
 import * as Application from 'expo-application';
 
-init({ key, sourceId, endpoint, netInfo: NetInfo, application: Application });
+init({ key, endpoint, netInfo: NetInfo, application: Application });
 ```
 
 Every event carries `context.os` (`{name, version}`), `context.app`, `context.device.model` when the platform reports one, `context.locale`, `context.timezone` and `context.screen` (the last `screen()` name). `screen(name, data)` records an event named `screen` with `{name, ...data}`; call it from your navigation library's state-change callback.
@@ -58,6 +57,8 @@ Every event carries `context.os` (`{name, version}`), `context.app`, `context.de
 `track`, `identify`, `screen`, `flush` and `reset` use the client from `init`. `createClient(options)` returns an independent client with the same methods plus `close()`, which removes its listeners.
 
 ## Notes and limits
+
+- **AsyncStorage's limits are respected.** On Android AsyncStorage cannot read a single value larger than about 2 MB and holds about 6 MB in total for your whole app. The SDK saves its queue as one value, so the default storage is wrapped in `chunkedStorage`, which splits it into pieces of at most 256 KB and switches to a new set atomically (a crash leaves the old or the new value readable, never a torn mix). If you pass your own `storage`, keep the queue small (`maxQueueBytes`) or wrap it with `chunkedStorage(storage)`.
 
 - It has no native modules: it uses React Native's `AppState` and `Platform`, AsyncStorage, and optional NetInfo and expo-application. It works in Expo and bare projects. `react-native` and `@react-native-async-storage/async-storage` are peer dependencies; install them in your app.
 - Hermes ships `TextEncoder` from React Native 0.74; older versions use a built-in fallback. Ids use `crypto.getRandomValues` when present and `Math.random` otherwise (they only need to be unique).

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { gzipSync } from 'node:zlib'
 import { after, before, test } from 'node:test'
-import { debug, newSource, readArchives, startWorker, type Worker } from './harness.ts'
-import { decodeSentryKey, parseEnvelope, sentryKeyFor } from '../src/compat/sentry.ts'
+import { debug, newProject, readArchives, startWorker, type Worker } from './harness.ts'
+import { parseEnvelope } from '../src/compat/sentry.ts'
 
 let w: Worker
 before(async () => { w = await startWorker() })
@@ -19,12 +19,9 @@ const errorEvent = (id: string, extra: object = {}) => ({
   ...extra,
 })
 
-test('the DSN key is the publishable key, hex-encoded, so the SDK accepts it', () => {
-  const pk = 'slurp_pk_-6z1HjNk5AiSBac0SDRmCVwgs_eM5bG8'
-  const hex = sentryKeyFor(pk)
-  assert.match(hex, /^[0-9a-f]+$/)
-  assert.equal(decodeSentryKey(hex), pk); assert.equal(decodeSentryKey(pk), pk)
-  assert.equal(decodeSentryKey(sentryKeyFor('slurp_sk_secret')), null); assert.equal(decodeSentryKey('abc'), null); assert.equal(decodeSentryKey('zz'), null)
+test('a publishable key is only word characters, so every Sentry SDK accepts it as a DSN public key', () => {
+  const pk = `slurp_pk_${'a1'.repeat(8)}_${'0f'.repeat(24)}`
+  assert.match(pk, /^\w+$/)
 })
 
 test('envelope parsing: length-prefixed and implicit-length items, blank lines, unknown types', () => {
@@ -37,8 +34,8 @@ test('envelope parsing: length-prefixed and implicit-length items, blank lines, 
 })
 
 test('an error event is stored whole, with the user and library lifted into the record', async () => {
-  const s = await newSource(w.base, name('sentry'))
-  const key = sentryKeyFor(s.pk)
+  const s = await newProject(w.base, name('sentry'))
+  const key = s.pk
   const event = errorEvent('0123456789abcdef0123456789abcdef')
   const res = await post('/api/1/envelope/', enc({ event_id: event.event_id, sent_at: '2026-11-07T10:00:00Z' }, { type: 'event' }, event), { 'x-sentry-auth': `Sentry sentry_version=7, sentry_client=x/1, sentry_key=${key}` })
   assert.equal(res.status, 200); assert.deepEqual(await res.json(), { id: event.event_id })
@@ -49,24 +46,24 @@ test('an error event is stored whole, with the user and library lifted into the 
   assert.deepEqual(rec.data, event, 'the Sentry event is kept exactly as sent')
 })
 
-test('credentials: header, query string, envelope DSN and raw key all work; missing, wrong, conflicting or secret keys are 403', async () => {
-  const s = await newSource(w.base, name('sentryauth'))
-  const key = sentryKeyFor(s.pk)
+test('credentials: header, query string, envelope DSN all carry the publishable key as is; missing, wrong, conflicting or secret keys are 403', async () => {
+  const s = await newProject(w.base, name('sentryauth'))
+  const key = s.pk
   const body = (id: string, dsn?: string) => enc({ event_id: id, ...(dsn ? { dsn } : {}) }, { type: 'event' }, errorEvent(id))
   assert.equal((await post(`/api/1/envelope/?sentry_key=${key}&sentry_version=7`, body('a'.repeat(32)), { 'content-type': 'text/plain' })).status, 200, 'query string (browser SDKs avoid a preflight)')
   assert.equal((await post('/api/1/envelope/', body('b'.repeat(32), `http://${key}@host.test/1`))).status, 200, 'DSN in the envelope header')
-  assert.equal((await post('/api/1/envelope/', body('c'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${s.pk}` })).status, 200, 'raw publishable key')
+  assert.equal((await post('/api/1/envelope/', body('c'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${s.pk}` })).status, 200, 'the key as is (there is no encoding)')
   assert.equal((await post('/api/1/envelope/', body('d'.repeat(32)))).status, 403, 'no credentials')
-  assert.equal((await post('/api/1/envelope/', body('e'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${sentryKeyFor('slurp_pk_unknown')}` })).status, 403)
-  assert.equal((await post('/api/1/envelope/', body('f'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${sentryKeyFor(s.sk)}` })).status, 403, 'secret keys never work')
-  const other = await newSource(w.base, name('sentryother'))
-  assert.equal((await post(`/api/1/envelope/?sentry_key=${key}`, body('g'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${sentryKeyFor(other.pk)}` })).status, 403, 'credentials must agree')
+  assert.equal((await post('/api/1/envelope/', body('e'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${`slurp_pk_${'0'.repeat(16)}_${'0'.repeat(48)}`}` })).status, 403)
+  assert.equal((await post('/api/1/envelope/', body('f'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${s.sk}` })).status, 403, 'secret keys never work')
+  const other = await newProject(w.base, name('sentryother'))
+  assert.equal((await post(`/api/1/envelope/?sentry_key=${key}`, body('g'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${other.pk}` })).status, 403, 'credentials must agree')
   assert.equal((await archive(s)).length, 3)
 })
 
 test('items are mapped or dropped on purpose; messages are not errors; gzip and legacy /store/ work', async () => {
-  const s = await newSource(w.base, name('sentryitems'))
-  const key = sentryKeyFor(s.pk)
+  const s = await newProject(w.base, name('sentryitems'))
+  const key = s.pk
   const auth = { 'x-sentry-auth': `Sentry sentry_key=${key}` }
   const id = (c: string) => c.repeat(32)
   const message = { event_id: id('1'), timestamp: '2026-11-07T10:00:00Z', level: 'info', message: 'hello', exception: { values: [{ value: 'hello', mechanism: { type: 'generic', synthetic: true } }] } }
@@ -86,8 +83,8 @@ test('items are mapped or dropped on purpose; messages are not errors; gzip and 
 })
 
 test('retries dedupe; an oversize event is dropped without failing the request; malformed input is 400; CORS preflight', async () => {
-  const s = await newSource(w.base, name('sentryedge'))
-  const auth = { 'x-sentry-auth': `Sentry sentry_key=${sentryKeyFor(s.pk)}` }
+  const s = await newProject(w.base, name('sentryedge'))
+  const auth = { 'x-sentry-auth': `Sentry sentry_key=${s.pk}` }
   const body = enc({ event_id: 'a'.repeat(32) }, { type: 'event' }, errorEvent('a'.repeat(32)))
   for (let n = 0; n < 2; n++) assert.equal((await post('/api/1/envelope/', body, auth)).status, 200)
   const huge = enc({ event_id: 'b'.repeat(32) }, { type: 'event' }, errorEvent('b'.repeat(32), { extra: { blob: 'x'.repeat(1_100_000) } }))

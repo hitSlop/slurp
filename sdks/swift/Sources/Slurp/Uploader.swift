@@ -13,6 +13,8 @@ struct Uploader {
     let session: URLSession
     let endpoint: URL
     let key: String
+    /// A request that gets no answer within this many seconds is cancelled and retried with the same bytes.
+    var timeout: TimeInterval = 30
 
     static func classify(status: Int, retryAfter: String?, now: Date = Date()) -> UploadOutcome {
         switch status {
@@ -44,16 +46,40 @@ struct Uploader {
     }
 
     /// Send the exact bytes of a batch. The same bytes are resent on retry so the Worker can recognise a request it already stored.
+    /// The completion runs exactly once: with the Worker's answer, or `.retry` if the request fails or times out.
     func send(_ body: Data, completion: @escaping (UploadOutcome) -> Void) {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = body
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
         request.setValue("application/x-ndjson", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        session.dataTask(with: request) { _, response, error in
-            guard error == nil, let http = response as? HTTPURLResponse else { return completion(.retry(after: nil)) }
-            completion(Uploader.classify(status: http.statusCode, retryAfter: http.value(forHTTPHeaderField: "Retry-After")))
-        }.resume()
+        let once = Once(completion)
+        let task = session.dataTask(with: request) { _, response, error in
+            guard error == nil, let http = response as? HTTPURLResponse else { once.call(.retry(after: nil)); return }
+            once.call(Uploader.classify(status: http.statusCode, retryAfter: http.value(forHTTPHeaderField: "Retry-After")))
+        }
+        // URLSession's own timeout does not cover every transport (or a custom URLProtocol), so enforce the deadline here too.
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            if once.call(.retry(after: nil)) { task.cancel() }
+        }
+        task.resume()
+    }
+}
+
+/// Runs a completion at most once, from any thread.
+private final class Once {
+    private let lock = NSLock()
+    private var completion: ((UploadOutcome) -> Void)?
+    init(_ completion: @escaping (UploadOutcome) -> Void) { self.completion = completion }
+    /// True if this call was the one that ran the completion.
+    @discardableResult
+    func call(_ outcome: UploadOutcome) -> Bool {
+        lock.lock()
+        let run = completion
+        completion = nil
+        lock.unlock()
+        run?(outcome)
+        return run != nil
     }
 }

@@ -9,7 +9,7 @@ fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
     let w = Workspace::init(
         temp.path(),
         "http://localhost:8080".into(),
-        "src_fixture".into(),
+        "prj_fixture".into(),
         None,
         exe.into(),
     )
@@ -142,6 +142,52 @@ fn markdown_constructs_are_styled_and_unsafe_html_stays_text() {
     let height = height / SCALE; // the PNG is drawn at 2x; layout heights are in layout pixels
     assert_eq!(width, 840 * SCALE);
     within(height, 950, "markdown fixture");
+}
+
+/// The PDF comes from the same pipeline as the HTML, with real selectable text (not a picture of it).
+#[test]
+fn a_report_builds_a_pdf_whose_text_can_be_selected() {
+    let Some((temp, w)) = workspace() else { return };
+    let out = temp.path().join("pdf");
+    report::build(
+        &w,
+        &fixture("reports", "markdown.md"),
+        &out,
+        false,
+        false,
+        true,
+    )
+    .unwrap_or_else(|e| panic!("markdown.md should build a pdf: {e:#}"));
+    let pdf = out.join("report.pdf");
+    let bytes = std::fs::read(&pdf).expect("pdf");
+    assert_eq!(&bytes[..5], b"%PDF-");
+    let html = std::fs::read_to_string(out.join("report.html")).unwrap();
+    assert!(html.contains("<table>"));
+    match std::process::Command::new("pdftotext")
+        .args([pdf.to_str().unwrap(), "-"])
+        .output()
+    {
+        Ok(output) => {
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stdout).unwrap();
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            // The heading and the body text of the fixture are in the PDF as text.
+            let first_heading = html
+                .split("<h1")
+                .nth(1)
+                .and_then(|rest| rest.split('>').nth(1))
+                .and_then(|rest| rest.split('<').next())
+                .expect("a heading");
+            assert!(
+                text.contains(first_heading.trim()),
+                "missing {first_heading:?} in {text}"
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("pdftotext unavailable; checked only that the PDF was written");
+        }
+        Err(error) => panic!("pdftotext: {error}"),
+    }
 }
 
 /// Every mistake is reported, with its line and a hint, and nothing is rendered.

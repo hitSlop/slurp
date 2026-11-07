@@ -9,7 +9,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const fixture = (name: string) => JSON.parse(readFileSync(join(here, '../fixtures/canonical', `${name}.json`), 'utf8'))
 const enc = new TextEncoder()
 
-test('record vectors (ported from the Go canonical tests)', () => {
+test('record vectors', () => {
   for (const r of fixture('records').records) {
     const bytes = r.line_b64 !== undefined ? Buffer.from(r.line_b64, 'base64') : enc.encode(r.line)
     const res = checkBody(bytes, null)
@@ -26,7 +26,7 @@ test('a record is accepted whole up to exactly 1 MiB and refused above it', () =
   assert.ok('reason' in over && /exceeds 1 MiB/.test(over.reason))
 })
 
-test('nesting boundary matches the Go gateway (root -> data -> values nested d arrays)', () => {
+test('nesting boundary (root -> data -> values nested d arrays)', () => {
   const n = fixture('nesting')
   for (const d of n.tried) {
     const line = n.template.replace(n.placeholder, `"values":${'['.repeat(d)}0${']'.repeat(d)}`)
@@ -36,9 +36,10 @@ test('nesting boundary matches the Go gateway (root -> data -> values nested d a
 
 test('stamping keeps client bytes verbatim', () => {
   for (const c of fixture('stamp').cases) {
-    const out = stampLines([c.line.trimStart() === c.line ? c.line : c.line], c.batchId, c.at)
+    const out = stampLines([c.line], c.batchId, c.at, 'ios')
     assert.ok(out.startsWith(c.mustStartWith), out)
     for (const s of c.mustContain) assert.ok(out.includes(s), `${c.name}: ${out}`)
+    assert.ok(out.includes('"sender":"ios"'), 'the sending key is stamped')
     assert.ok(out.endsWith('\n'))
     JSON.parse(out.trim().replace(/9007199254740993123456789|1e1000/g, '1'))
   }

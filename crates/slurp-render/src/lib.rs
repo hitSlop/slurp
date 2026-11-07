@@ -1,5 +1,4 @@
 //! The app's chart code, embedded once and evaluated only on first chart use.
-use resvg::{tiny_skia, usvg};
 use rquickjs::{Context, Promise, Runtime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -205,13 +204,16 @@ pub fn custom_palette(definition: &serde_json::Value) -> Result<Palette> {
                 .ok_or_else(|| ChartError::new(format!("extends: unknown built-in theme {id}")))?;
             match serde_json::to_value(base).map_err(ChartError::new)? {
                 Value::Object(map) => map,
-                _ => unreachable!("a palette is an object"),
+                _ => {
+                    return Err(ChartError::new(format!(
+                        "extends: built-in theme {id} is not a theme object"
+                    )));
+                }
             }
         }
         Some(_) => return Err(ChartError::new("extends must be a theme id")),
         None => serde_json::Map::new(),
     };
-    let extending = fields.contains_key("bg");
     for (key, value) in file {
         if key != "extends" {
             fields.insert(key.clone(), value.clone());
@@ -229,7 +231,6 @@ pub fn custom_palette(definition: &serde_json::Value) -> Result<Palette> {
     }
     let series = match fields.get("series") {
         Some(Value::Array(items)) if !items.is_empty() && items.len() <= 20 => items.clone(),
-        _ if extending => unreachable!("built-in palettes have series"),
         _ => return Err(ChartError::new("series must be a list of 1 to 20 colours")),
     };
     let (bg, fg, accent) = (
@@ -395,24 +396,6 @@ impl Engine {
             deadline,
         })
     }
-    fn page(&self, input: &str) -> Result<String> {
-        *self.deadline.lock().unwrap() = Instant::now() + TIMEOUT;
-        self.context.with(|ctx| {
-            ctx.globals()
-                .set("inputJSON", input)
-                .map_err(ChartError::new)?;
-            ctx.eval("slurpChart.page(...JSON.parse(inputJSON))")
-                .map_err(|e| {
-                    let exception = ctx.catch();
-                    ChartError::new(
-                        exception
-                            .as_exception()
-                            .and_then(|e| e.message())
-                            .unwrap_or_else(|| e.to_string()),
-                    )
-                })
-        })
-    }
     fn compile(&self, input: &str) -> Result<Output> {
         *self.deadline.lock().unwrap() = Instant::now() + TIMEOUT;
         self.context.with(|ctx| {
@@ -443,7 +426,6 @@ impl Engine {
 #[derive(Default)]
 pub struct ChartRenderer {
     engine: Option<Engine>,
-    fonts: Option<Arc<fontdb::Database>>,
     page_fonts: Option<takumi::prelude::Fonts>,
 }
 impl ChartRenderer {
@@ -483,100 +465,16 @@ impl ChartRenderer {
             }
         }
     }
-    /// Reuse the same bounded QuickJS host for chart compilation and page HTML.
-    pub fn page_html(
-        &mut self,
-        definition: &impl Serialize,
-        run: &impl Serialize,
-        charts: &impl Serialize,
-        theme: Theme,
-    ) -> Result<String> {
-        let input =
-            serde_json::to_string(&(definition, run, charts, theme)).map_err(ChartError::new)?;
-        if input.len() > MAX_INPUT {
-            return Err(ChartError::new("page input exceeds 32 MiB"));
-        }
-        if self.engine.is_none() {
-            self.engine = Some(Engine::new()?);
-        }
-        let result = self.engine.as_ref().unwrap().page(&input);
-        if result.is_err() {
-            self.engine = None;
-        } else {
-            self.engine.as_ref().unwrap().runtime.run_gc();
-        }
-        result
-    }
     pub fn render_page(&mut self, html: &str, png: bool, pdf: bool) -> Result<RenderedPage> {
         if self.page_fonts.is_none() {
             self.page_fonts = Some(page::fonts()?);
         }
         page::render(html, self.page_fonts.as_ref().unwrap(), png, pdf)
     }
-    pub fn to_png(&mut self, svg: &str, scale: f32) -> Result<Vec<u8>> {
-        validate_scale(scale)?;
-        let fonts = self.fonts.get_or_insert_with(|| {
-            let mut db = fontdb::Database::new();
-            db.load_font_data(include_bytes!("../assets/GeistVariable.ttf").to_vec());
-            db.load_font_data(include_bytes!("../assets/GeistMonoVariable.ttf").to_vec());
-            db.load_system_fonts();
-            db.set_sans_serif_family("Geist");
-            Arc::new(db)
-        });
-        let options = usvg::Options {
-            font_family: "Geist".into(),
-            fontdb: fonts.clone(),
-            image_href_resolver: usvg::ImageHrefResolver {
-                resolve_data: Box::new(|_, _, _| None),
-                resolve_string: Box::new(|_, _| None),
-            },
-            ..usvg::Options::default()
-        };
-        let tree = usvg::Tree::from_str(svg, &options).map_err(ChartError::new)?;
-        let width = (tree.size().width() * scale).ceil() as u32;
-        let height = (tree.size().height() * scale).ceil() as u32;
-        if u64::from(width) * u64::from(height) > MAX_PIXELS {
-            return Err(ChartError::new("chart image exceeds 64 megapixels"));
-        }
-        let mut pixmap = tiny_skia::Pixmap::new(width, height)
-            .ok_or_else(|| ChartError::new("invalid chart image dimensions"))?;
-        resvg::render(
-            &tree,
-            tiny_skia::Transform::from_scale(scale, scale),
-            &mut pixmap.as_mut(),
-        );
-        pixmap.encode_png().map_err(ChartError::new)
-    }
-}
-pub fn validate_scale(scale: f32) -> Result<()> {
-    if !scale.is_finite() || scale <= 0.0 || scale > 16.0 {
-        return Err(ChartError::new(
-            "scale must be greater than 0 and at most 16",
-        ));
-    }
-    Ok(())
 }
 pub fn versions() -> Value {
     serde_json::from_str(include_str!("../assets/versions.json")).expect("generated versions")
 }
-/// Vega emits numeric root width/height attributes. These include axes and legends.
-pub fn dimensions(svg: &str) -> Result<(u32, u32)> {
-    let root = svg.split('>').next().unwrap_or_default();
-    let attr = |key| -> Result<u32> {
-        let value = root
-            .split(&format!(" {key}=\""))
-            .nth(1)
-            .and_then(|v| v.split('"').next())
-            .ok_or_else(|| ChartError::new("SVG dimensions missing"))?;
-        let n: f32 = value.parse().map_err(ChartError::new)?;
-        if !n.is_finite() || n <= 0.0 || n > 65536.0 {
-            return Err(ChartError::new("invalid SVG dimensions"));
-        }
-        Ok(n.ceil() as u32)
-    };
-    Ok((attr("width")?, attr("height")?))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -592,9 +490,7 @@ mod tests {
     #[test]
     fn lazy_host_has_no_io_and_interrupts() {
         let renderer = ChartRenderer::new();
-        assert!(
-            renderer.engine.is_none() && renderer.fonts.is_none() && renderer.page_fonts.is_none()
-        );
+        assert!(renderer.engine.is_none() && renderer.page_fonts.is_none());
         let engine = Engine::new().unwrap();
         engine.context.with(|ctx| {
             let capabilities: String = ctx.eval("JSON.stringify(['fetch','require','process','document','console','readFile','loadFile'].map(k=>typeof globalThis[k]))").unwrap();
@@ -606,5 +502,42 @@ mod tests {
             assert!(ctx.eval::<(),_>("for (;;) {}").is_err());
             ctx.catch();
         });
+    }
+
+    #[test]
+    fn invalid_series_in_a_theme_is_an_error_never_a_panic() {
+        let theme = |series: serde_json::Value, extends: bool| {
+            let mut definition = serde_json::json!({"bg": "#ffffff", "fg": "#111111", "accent": "#2563eb", "series": series});
+            if extends {
+                definition =
+                    serde_json::json!({"extends": "pro-light", "series": definition["series"]});
+            }
+            custom_palette(&definition)
+        };
+        for extends in [false, true] {
+            for bad in [
+                serde_json::json!([]),
+                serde_json::json!(vec!["#000000"; 21]),
+                serde_json::json!("not a list"),
+                serde_json::json!(null),
+                serde_json::json!({"a": 1}),
+            ] {
+                let error =
+                    theme(bad.clone(), extends).expect_err(&format!("{bad} extends={extends}"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("series must be a list of 1 to 20 colours"),
+                    "{error}"
+                );
+            }
+            assert!(theme(serde_json::json!(["#2563eb", "#16a34a"]), extends).is_ok());
+        }
+        assert!(custom_palette(&serde_json::json!({"extends": "no-such-theme"})).is_err());
+        assert!(custom_palette(&serde_json::json!({"extends": 7})).is_err());
+        assert!(
+            custom_palette(&serde_json::json!({"extends": "pro-light", "bg": 5})).is_err(),
+            "a wrong-typed override is reported, not ignored"
+        );
     }
 }

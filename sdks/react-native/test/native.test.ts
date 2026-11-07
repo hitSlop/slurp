@@ -19,7 +19,7 @@ function fakes(overrides: Partial<NativeEnvironment> = {}) {
   const fetchDown = (async () => response(503)) as any
   return { env, listeners, sent, fetchOk, fetchDown, change: (state: string) => listeners.forEach(l => l(state)) }
 }
-const base = { key: 'slurp_pk_test', sourceId: 'src_rn', endpoint, flushIntervalMs: 60_000 }
+const base = { key: 'slurp_pk_test', endpoint, flushIntervalMs: 60_000 }
 
 test('events carry device and app context; screen() names the screen for later events', async () => {
   const f = fakes()

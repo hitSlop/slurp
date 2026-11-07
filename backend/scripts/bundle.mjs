@@ -21,7 +21,17 @@ try {
   const code = readFileSync(join(out, 'index.js'), 'utf8').replace(/\/\/# sourceMappingURL=.*$/m, '').trimEnd() + '\n'
   const build = createHash('sha256').update(code).digest('hex').slice(0, 12)
   const config = JSON.parse(readFileSync(join(backend, 'wrangler.jsonc'), 'utf8').replace(/^\s*\/\/.*$/gm, ''))
-  const meta = JSON.stringify({ build, compatibility_date: config.compatibility_date, vars: config.vars }, null, 2) + '\n'
+  // Everything the CLI needs to deploy this bundle comes from wrangler.jsonc, so the two cannot drift. The CLI supplies only the
+  // Worker name and the bucket name.
+  const meta = JSON.stringify({
+    build,
+    compatibility_date: config.compatibility_date,
+    durable_objects: config.durable_objects,
+    migrations: config.migrations,
+    r2_binding: config.r2_buckets[0].binding,
+    observability: config.observability,
+    vars: config.vars,
+  }, null, 2) + '\n'
   if (check) {
     const stale = !existsSync(join(assets, 'index.js')) || readFileSync(join(assets, 'index.js'), 'utf8') !== code || readFileSync(join(assets, 'build.json'), 'utf8') !== meta
     if (stale) { console.error('stale: crates/slurp-cli/assets/worker (run node backend/scripts/bundle.mjs)'); process.exit(1) }

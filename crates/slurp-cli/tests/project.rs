@@ -1,16 +1,17 @@
 use slurp_app::{Cancellation, Workspace, project};
 use std::{fs, path::Path};
 
-fn binding(root: &Path, source: &str) {
+fn binding(root: &Path, project: &str) {
     fs::create_dir_all(root.join(".slurp")).expect("metadata folder");
     let workspace = Workspace {
         version: 1,
         backend: "https://slurp.example.workers.dev".into(),
-        source: source.into(),
+        project: project.into(),
         database: root.join("unavailable/events.duckdb"),
         duckdb: "/unavailable/duckdb".into(),
         cancellation: Cancellation::default(),
         extensions: Vec::new(),
+        sandbox: false,
     };
     fs::write(
         root.join(".slurp/project.toml"),
@@ -22,7 +23,7 @@ fn binding(root: &Path, source: &str) {
 #[test]
 fn discovery_uses_nearest_metadata_without_opening_storage() {
     let outer = tempfile::tempdir().expect("project");
-    binding(outer.path(), "src_outer");
+    binding(outer.path(), "prj_outer");
     let inner = outer.path().join("apps/inner");
     let child = inner.join("src/lib");
     fs::create_dir_all(&child).expect("nested folders");
@@ -30,7 +31,7 @@ fn discovery_uses_nearest_metadata_without_opening_storage() {
         project::discover(&child).expect("outer discovery"),
         Some(outer.path().canonicalize().expect("outer"))
     );
-    binding(&inner, "src_inner");
+    binding(&inner, "prj_inner");
     assert_eq!(
         project::discover(&child).expect("inner discovery"),
         Some(inner.canonicalize().expect("inner"))
@@ -38,8 +39,8 @@ fn discovery_uses_nearest_metadata_without_opening_storage() {
     assert_eq!(
         Workspace::read_binding(&inner)
             .expect("metadata only")
-            .source,
-        "src_inner"
+            .project,
+        "prj_inner"
     );
     assert_eq!(
         project::resolve(&child, Some(outer.path())).expect("explicit project"),
@@ -66,7 +67,7 @@ fn discovery_does_not_guess_from_the_registry_or_skip_broken_links() {
             .is_none()
     );
     assert!(project::resolve(root.path(), None).is_err());
-    binding(root.path(), "src_outer");
+    binding(root.path(), "prj_outer");
     let child = root.path().join("child");
     fs::create_dir_all(child.join(".slurp")).expect("inner metadata directory");
     std::os::unix::fs::symlink(child.join("missing"), child.join(".slurp/project.toml"))

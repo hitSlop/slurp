@@ -8,13 +8,13 @@ use std::{
 
 fn cli(root: &Path, user_home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_slurp"))
-        .arg("--workspace")
+        .arg("--project")
         .arg(root)
         .args(args)
         .env("HOME", user_home)
         .env_remove("SLURP_HOME")
         .env_remove("SLURP_BACKEND")
-        .env_remove("SLURP_SOURCE_ID")
+        .env_remove("SLURP_PROJECT_ID")
         .env_remove("SLURP_TOKEN")
         .env_remove("SLURP_READ_KEY")
         .env_remove("SLURP_PUBLISHABLE_KEY")
@@ -54,8 +54,8 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
         user.path(),
         &[
             "init",
-            "--source",
-            "src_system",
+            "--connect",
+            "prj_system",
             "--duckdb",
             engine.to_str().expect("engine"),
             "--data-dir",
@@ -71,7 +71,7 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
     assert_eq!(first[0]["backend"], "http://localhost:8080");
     assert_eq!(first[0]["storage_available"], true);
     value(cli(project.path(), user.path(), &["init", "--no-open"]));
-    let again = value(cli(project.path(), user.path(), &["projects", "list"]));
+    let again = value(cli(project.path(), user.path(), &["projects"]));
     assert_eq!(first, again, "repeat setup keeps one stable registration");
     assert_eq!(
         fs::read_to_string(home.join("config.toml")).expect("preserved settings"),
@@ -111,8 +111,8 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
         user.path(),
         &[
             "init",
-            "--source",
-            "src_another",
+            "--connect",
+            "prj_another",
             "--duckdb",
             engine.to_str().expect("engine"),
         ],
@@ -141,60 +141,6 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
 }
 
 #[test]
-fn old_preferences_and_duckdb_are_reused_without_moving_them() {
-    let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
-        return;
-    };
-    let user = tempfile::tempdir().expect("user home");
-    let project = tempfile::tempdir().expect("project");
-    let legacy = user.path().join(".local/share/slurp");
-    fs::create_dir_all(legacy.join("service")).expect("old preferences");
-    let old = r#"{"backend":"http://localhost:8080","sources":[]}"#;
-    fs::write(legacy.join("service/client.json"), old).expect("saved preference");
-    fs::create_dir_all(legacy.join("bin")).expect("old install");
-    let executable = legacy.join("bin/duckdb");
-    std::os::unix::fs::symlink(engine, &executable).expect("existing engine");
-    let output = Command::new(env!("CARGO_BIN_EXE_slurp"))
-        .arg("--workspace")
-        .arg(project.path())
-        .args(["init", "--source", "src_legacy", "--no-open"])
-        .env("HOME", user.path())
-        .env("PATH", "/usr/bin:/bin")
-        .env_remove("SLURP_HOME")
-        .env_remove("SLURP_BACKEND")
-        .env_remove("SLURP_SOURCE_ID")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("legacy setup");
-    let result = value(output);
-    assert_eq!(result["initialized"], true);
-    let saved = Workspace::load(project.path()).expect("saved workspace");
-    assert_eq!(saved.backend, "http://localhost:8080");
-    assert_eq!(saved.duckdb, executable);
-    assert!(
-        result["setup_page"]
-            .as_str()
-            .expect("page")
-            .contains("/.slurp/setup/")
-    );
-    assert_eq!(
-        fs::read_to_string(legacy.join("service/client.json")).expect("old settings"),
-        old
-    );
-    assert!(executable.is_file());
-    assert!(!user.path().join(".slurp/bin/duckdb").exists());
-    use std::os::unix::fs::PermissionsExt;
-    assert_eq!(
-        fs::metadata(user.path().join(".slurp/config.toml"))
-            .expect("settings")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-}
-
-#[test]
 fn registry_updates_are_serialized_and_corrupt_indexes_are_preserved() {
     let home = tempfile::tempdir().expect("registry home");
     let projects = tempfile::tempdir().expect("projects");
@@ -207,11 +153,12 @@ fn registry_updates_are_serialized_and_corrupt_indexes_are_preserved() {
                 let workspace = Workspace {
                     version: 1,
                     backend: "https://slurp.example.workers.dev".into(),
-                    source: format!("src_{i}"),
+                    project: format!("prj_{i}"),
                     database: root.join("events.duckdb"),
                     duckdb: "duckdb".into(),
                     cancellation: Cancellation::default(),
                     extensions: Vec::new(),
+                    sandbox: false,
                 };
                 system::register(home, &root, &workspace).expect("register concurrently");
             });

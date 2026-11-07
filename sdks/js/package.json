@@ -35,6 +35,10 @@
     "./node": {
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./feedback": {
+      "types": "./dist/feedback.d.ts",
+      "default": "./dist/feedback.js"
     }
   },
   "files": [
@@ -54,6 +58,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "devDependencies": {
+    "jsdom": "^31.0.0",
     "typescript": "5.9.3"
   }
 }

@@ -1,6 +1,6 @@
 export interface Env {
   REGISTRY: DurableObjectNamespace<import('./registry.ts').RegistryDO>
-  SOURCE: DurableObjectNamespace<import('./source.ts').SourceDO>
+  PROJECT: DurableObjectNamespace<import('./project.ts').ProjectDO>
   ARCHIVE: R2Bucket
   /** Admin bearer token for the control plane. Also derives the signing key for download URLs. */
   ADMIN_TOKEN: string

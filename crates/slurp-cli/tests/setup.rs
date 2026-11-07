@@ -5,7 +5,7 @@ fn personal_page_is_private_and_script_safe() {
     let dir = tempfile::tempdir().expect("temporary root");
     let page = dir.path().join("private/index.html");
     let context = PageContext {
-        source: Some("src_test".into()),
+        project: Some("prj_test".into()),
         publishable_key: Some("slurp_pk_fake</script><script>bad()</script>".into()),
         ..Default::default()
     };
@@ -63,7 +63,7 @@ fn machine_setup_ignores_current_project_and_never_embeds_credentials() {
         ])
         .env("SLURP_HOME", &home)
         .env_remove("SLURP_BACKEND")
-        .env("SLURP_SOURCE_ID", "src_test")
+        .env("SLURP_PROJECT_ID", "prj_test")
         .env("SLURP_PUBLISHABLE_KEY", "slurp_pk_fixture")
         .env("SLURP_TOKEN", "human_session_fixture")
         .stdin(std::process::Stdio::null())
@@ -79,7 +79,7 @@ fn machine_setup_ignores_current_project_and_never_embeds_credentials() {
     assert!(!text.contains("human_session_fixture"));
     let result: serde_json::Value = serde_json::from_str(&text).expect("JSON result");
     assert_eq!(result["local_ready"], true);
-    assert_eq!(result["authenticated"], false);
+    assert_eq!(result["connected"], false);
     assert!(result.get("setup_page").is_none());
     assert!(!home.join("setup").exists());
     assert!(!home.join("projects.json").exists());
@@ -132,7 +132,7 @@ fn missing_default_library_never_falls_back_to_project_storage() {
     std::fs::rename(&library, root.path().join("disconnected")).expect("disconnect library");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_slurp"))
         .current_dir(root.path())
-        .args(["init", "--source", "src_test", "--no-open"])
+        .args(["init", "--connect", "prj_test", "--no-open"])
         .env("SLURP_HOME", &home)
         .env_remove("SLURP_BACKEND")
         .stdin(std::process::Stdio::null())

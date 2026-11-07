@@ -1,5 +1,5 @@
 {
- "description": "Geo enrichment. normalize: input is request.cf. Rules from backend/stamp.go requestGeo (trusted ingress only; country uppercased and must be 2 letters, XX and T1 dropped; values <= 256 chars; provider/basis added). splice: geo is added to context without changing any other byte; the Go test requires wide numbers to survive.",
+ "description": "Geo enrichment. normalize: input is request.cf. Rules (trusted ingress only; country uppercased and must be 2 letters, XX and T1 dropped; values <= 256 chars; provider/basis added). splice: geo is added to context without changing any other byte; the Go test requires wide numbers to survive.",
  "normalize": [
   {
    "name": "full",

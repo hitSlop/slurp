@@ -2,7 +2,7 @@
 
 Slurp takes events from its own SDKs, from plain HTTP, and from the Segment and Sentry SDKs you may already use: point them at your Worker and change nothing else. Everything lands in the same archive, and `slurp sync` pulls it into one DuckDB table.
 
-Your values come from `slurp init` (or the setup page it opens): the **ingest URL** (`https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events`), the **source ID** (`src_…`) and the **publishable key** (`slurp_pk_…`, ingest-only, safe in a web page or an app). Below, `WORKER` is your Worker's origin (`https://slurp.YOUR-SUBDOMAIN.workers.dev`) and `HOST` is the same without `https://`.
+Your values come from `slurp init` (or the setup page it opens): the **ingest URL** (`https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events`) and the **publishable key** (`slurp_pk_…`, ingest-only, safe in a web page or an app). Below, `WORKER` is your Worker's origin (`https://slurp.YOUR-SUBDOMAIN.workers.dev`) and `HOST` is the same without `https://`.
 
 ## What works
 
@@ -29,13 +29,15 @@ npm install @hitslop/slurp-sdk
 ```js
 import { init, track, identify, flush } from '@hitslop/slurp-sdk';
 
-init({ endpoint: 'WORKER/v1/events', sourceId: 'src_…', key: 'slurp_pk_…' });
+init({ endpoint: 'WORKER/v1/events', key: 'slurp_pk_…' });
 identify('user_42', { plan: 'pro' });
 track('signed_up', { plan: 'pro' });
 await flush(); // in scripts, send queued events before exiting
 ```
 
 Options, storage adapters and delivery rules: [sdks/js](../sdks/js/README.md).
+
+For a feedback form, `import { mountFeedback } from '@hitslop/slurp-sdk/feedback'` adds a drop-in "Feedback" button that sends a `feedback` event (message, optional rating and email); see [the widget](../sdks/js/README.md#feedback-widget).
 
 ### React Native and Expo
 
@@ -46,7 +48,7 @@ npm install @hitslop/slurp-react-native @react-native-async-storage/async-storag
 ```ts
 import { init, track, identify, screen } from '@hitslop/slurp-react-native';
 
-init({ endpoint: 'WORKER/v1/events', sourceId: 'src_…', key: 'slurp_pk_…' });
+init({ endpoint: 'WORKER/v1/events', key: 'slurp_pk_…' });
 screen('Home');
 track('purchase_completed', { total: 49 });
 ```
@@ -60,7 +62,7 @@ In Xcode choose **File → Add Package Dependencies…** and enter `https://gith
 ```swift
 import Slurp
 
-SlurpClient.configure(.init(key: "slurp_pk_…", endpoint: URL(string: "WORKER/v1/events")!, sourceId: "src_…"))
+SlurpClient.configure(.init(key: "slurp_pk_…", endpoint: URL(string: "WORKER/v1/events")!))
 SlurpClient.shared.screen("Home")
 SlurpClient.shared.track("purchase_completed", ["total": 49])
 ```
@@ -110,14 +112,10 @@ Limits: events are re-serialized rather than stored byte for byte (so a number b
 
 ## Use the Sentry SDK you already have
 
-Change the DSN. Sentry SDKs only allow letters, digits and `_` in the DSN's public key, and Slurp keys can contain `-`, so the public key is your publishable key **written in hex**. The setup page shows the finished DSN for your source; to compute it yourself:
-
-```sh
-printf %s 'slurp_pk_…' | xxd -p | tr -d '\n'
-```
+Change the DSN. The public key in the DSN is your publishable key as is (it is only letters, digits and `_`, which is all Sentry SDKs allow there). The setup page shows the finished DSN for your project:
 
 ```js
-Sentry.init({ dsn: 'https://HEX_KEY@HOST/1' }); // the trailing /1 is ignored
+Sentry.init({ dsn: 'https://slurp_pk_…@HOST/1' }); // the trailing /1 is ignored
 ```
 
 The Worker accepts `POST /api/<project>/envelope/` and the legacy `/api/<project>/store/`, with the key in `X-Sentry-Auth`, the query string or the envelope's DSN header, plain or gzipped.

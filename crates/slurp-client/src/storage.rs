@@ -1,4 +1,4 @@
-//! Backend/source credentials live in a private file by default, never in event storage.
+//! Backend credentials live in a private file by default, never in event storage.
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -6,7 +6,7 @@ use std::{
     fs,
     io::Write,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 /// Explicit credential-store selection. Missing files never cause a Keychain fallback.
@@ -40,18 +40,11 @@ fn selected_at(home: &Path) -> Result<Store> {
     }
 }
 
-fn fixture_path() -> Option<PathBuf> {
-    std::env::var_os("SLURP_TEST_SERVICE_SECRETS").map(PathBuf::from)
-}
-
 /// Read from the selected store without prompting when file storage is selected.
 ///
 /// # Errors
 /// Returns an error for invalid settings, unsafe file access, or denied native access.
 pub fn get(account: &str) -> Result<Option<String>> {
-    if let Some(path) = fixture_path() {
-        return Ok(read_file(&path)?.remove(account));
-    }
     match selected()? {
         Store::File => {
             Ok(read_file(&crate::config::home()?.join("credentials.json"))?.remove(account))
@@ -65,11 +58,6 @@ pub fn get(account: &str) -> Result<Option<String>> {
 /// # Errors
 /// Returns an error if the selected store cannot be safely read or written.
 pub fn set(account: &str, value: &str) -> Result<()> {
-    if let Some(path) = fixture_path() {
-        return update_file(&path, |values| {
-            values.insert(account.into(), value.into());
-        });
-    }
     match selected()? {
         Store::File => update_file(&crate::config::home()?.join("credentials.json"), |values| {
             values.insert(account.into(), value.into());
@@ -85,9 +73,6 @@ pub fn set(account: &str, value: &str) -> Result<()> {
 /// # Errors
 /// Returns an error if the selected store cannot be safely read or written.
 pub fn delete(account: &str) -> Result<()> {
-    if let Some(path) = fixture_path() {
-        return remove_file_account(&path, account);
-    }
     match selected()? {
         Store::File => {
             remove_file_account(&crate::config::home()?.join("credentials.json"), account)
@@ -197,80 +182,6 @@ fn remove_file_account(path: &Path, account: &str) -> Result<()> {
     update_file(path, |values| {
         values.remove(account);
     })
-}
-
-/// Non-secret result of an explicit, copy-only Keychain import.
-#[derive(Debug, Serialize)]
-pub struct Migration {
-    pub imported: usize,
-    pub already_saved: usize,
-    pub not_found: usize,
-    pub credentials_file: PathBuf,
-}
-
-/// Import the selected backend's saved session and cached source SDK keys once.
-/// Existing file values win. Keychain entries are retained; ordinary reads never import.
-///
-/// # Errors
-/// Returns an error for invalid settings, denied Keychain access, or an unsafe/unwritable file.
-pub fn migrate_keychain(home: &Path, backend: &str) -> Result<Migration> {
-    ensure!(
-        selected_at(home)? == Store::File,
-        "set credential_store = \"file\" in config.toml before importing from Keychain"
-    );
-    let backend = crate::config::normalize_backend(backend)?;
-    let mut accounts = vec![backend.clone()];
-    for cached in crate::config::load(home)?.sources {
-        if cached.backend == backend {
-            accounts.push(crate::config::publishable_account(
-                &backend,
-                &cached.source.id,
-            ));
-        }
-    }
-    accounts.sort();
-    accounts.dedup();
-    import_accounts(&home.join("credentials.json"), &accounts, native_get)
-}
-fn import_accounts(
-    path: &Path,
-    accounts: &[String],
-    read: impl Fn(&str) -> Result<Option<String>>,
-) -> Result<Migration> {
-    let existing = read_file(path)?;
-    let mut incoming = BTreeMap::new();
-    let mut result = Migration {
-        imported: 0,
-        already_saved: 0,
-        not_found: 0,
-        credentials_file: path.to_path_buf(),
-    };
-    // Complete reads before writing, so denied access cannot leave a half-imported file.
-    for account in accounts {
-        if existing.contains_key(account) {
-            result.already_saved += 1;
-            continue;
-        }
-        match read(account)? {
-            Some(value) => {
-                incoming.insert(account.clone(), value);
-            }
-            None => result.not_found += 1,
-        }
-    }
-    if !incoming.is_empty() {
-        update_file(path, |values| {
-            for (account, value) in incoming {
-                if let std::collections::btree_map::Entry::Vacant(entry) = values.entry(account) {
-                    entry.insert(value);
-                    result.imported += 1;
-                } else {
-                    result.already_saved += 1;
-                }
-            }
-        })?;
-    }
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -389,63 +300,5 @@ mod tests {
         fs::remove_file(path.with_extension("lock")).expect("remove lock");
         std::os::unix::fs::symlink(&path, path.with_extension("lock")).expect("lock link");
         assert!(update_file(&path, |_| {}).is_err());
-    }
-
-    #[test]
-    fn keychain_import_is_explicit_repeatable_and_never_replaces_saved_values() {
-        let dir = tempfile::tempdir().expect("home");
-        let path = dir.path().join("credentials.json");
-        let accounts = vec![
-            "backend".into(),
-            "publishable:backend#src_one".into(),
-            "missing".into(),
-        ];
-        let read = |account: &str| {
-            Ok(if account == "missing" {
-                None
-            } else {
-                Some(format!("secret-{account}"))
-            })
-        };
-        let first = import_accounts(&path, &accounts, read).expect("import");
-        assert_eq!(
-            (first.imported, first.already_saved, first.not_found),
-            (2, 0, 1)
-        );
-        update_file(&path, |values| {
-            values.insert("backend".into(), "newer-file-session".into());
-        })
-        .expect("refresh");
-        let again = import_accounts(&path, &accounts, |account| {
-            assert_eq!(
-                account, "missing",
-                "saved values must not touch Keychain again"
-            );
-            Ok(None)
-        })
-        .expect("repeat");
-        assert_eq!(
-            (again.imported, again.already_saved, again.not_found),
-            (0, 2, 1)
-        );
-        assert_eq!(
-            read_file(&path).expect("file")["backend"],
-            "newer-file-session"
-        );
-        assert!(
-            !serde_json::to_string(&again)
-                .expect("safe summary")
-                .contains("secret-")
-        );
-        let before = fs::read(&path).expect("before");
-        let error = import_accounts(&path, &["first".into(), "denied".into()], |account| {
-            if account == "denied" {
-                Err(anyhow!("Keychain access denied"))
-            } else {
-                Ok(Some("never-partially-saved".into()))
-            }
-        });
-        assert!(error.is_err());
-        assert_eq!(fs::read(&path).expect("after"), before);
     }
 }

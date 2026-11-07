@@ -1,4 +1,4 @@
-//! Optional source-level scheduling hints, independent of archive correctness.
+//! Optional project-level scheduling hints, independent of archive correctness.
 use crate::rpc::PublicationStatus;
 
 /// Discard unsupported or incomplete hints without making an accepted write or sync fail.
@@ -41,9 +41,9 @@ mod tests {
             .is_some()
         );
         assert!(validated(None).is_none());
-        // Older gateways omit the entire field.
-        let old: crate::rpc::GetCoverageResponse =
-            serde_json::from_str(r#"{"coverage":null}"#).expect("old response");
-        assert!(old.publication.is_none());
+        // The field is optional on the wire.
+        let bare: crate::rpc::GetCoverageResponse = serde_json::from_str(r#"{"coverage":null}"#)
+            .expect("response without a publication hint");
+        assert!(bare.publication.is_none());
     }
 }

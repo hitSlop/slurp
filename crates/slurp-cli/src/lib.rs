@@ -20,6 +20,8 @@ pub mod system;
 use error::{ErrorCode, Failure};
 pub mod health;
 pub mod helpers;
+pub mod mcp;
+pub mod notify;
 pub mod report;
 pub mod report_check;
 pub mod report_format;
@@ -52,7 +54,7 @@ pub struct SyncProgress {
 pub struct Workspace {
     pub version: u32,
     pub backend: String,
-    pub source: String,
+    pub project: String,
     pub database: PathBuf,
     pub duckdb: PathBuf,
     #[serde(skip)]
@@ -60,6 +62,11 @@ pub struct Workspace {
     /// Community extensions loaded into every query run through this value (see [`Workspace::with_extensions`]).
     #[serde(skip)]
     pub extensions: Vec<String>,
+    /// Read-only queries run with DuckDB's external file access switched off and its settings locked, so SQL written by an
+    /// agent cannot read local files (`read_csv('/etc/...')`) or change its own limits. Off for `slurp sql`, where joining a
+    /// local file is a feature; on for the MCP server (see [`Workspace::sandboxed`]).
+    #[serde(skip)]
+    pub sandbox: bool,
 }
 /// Replace the bare `Infinity`, `-Infinity` and `NaN` words DuckDB writes for non-finite doubles with `null`, leaving
 /// everything inside strings alone.
@@ -95,16 +102,16 @@ pub fn literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 impl Workspace {
-    /// Initialize a fresh database and source binding. Existing files are never overwritten.
+    /// Initialize a fresh database and project binding. Existing files are never overwritten.
     pub fn init(
         root: &Path,
         backend: String,
-        source: String,
+        project: String,
         database: Option<PathBuf>,
         duckdb: PathBuf,
     ) -> Result<Self> {
-        if !source.starts_with("src_") {
-            bail!("use a stable src_ source ID")
+        if !project.starts_with("prj_") {
+            bail!("use a stable prj_ project ID")
         }
         let backend = slurp_client::config::normalize_backend(&backend)?;
         let root = root.canonicalize()?;
@@ -129,13 +136,14 @@ impl Workspace {
         let mut w = Self {
             version: 1,
             backend,
-            source,
+            project,
             database: staging.path().join("events.duckdb"),
             duckdb,
             cancellation: Cancellation::default(),
             extensions: Vec::new(),
+            sandbox: false,
         };
-        w.execute_inner(&format!("BEGIN; CREATE SCHEMA _slurp; CREATE TABLE _slurp.identity(version INTEGER, backend VARCHAR, source VARCHAR); INSERT INTO _slurp.identity VALUES(1,{},{}); CREATE TABLE _slurp.deliveries(archive VARCHAR, sequence BIGINT, sha256 VARCHAR, bytes UBIGINT, imported_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(archive,sequence)); CREATE TABLE events(id VARCHAR PRIMARY KEY, type VARCHAR, event VARCHAR, timestamp TIMESTAMPTZ, user_id VARCHAR, anonymous_id VARCHAR, session_id VARCHAR, data JSON, context JSON, received_at TIMESTAMPTZ, received_seq VARCHAR, raw_record JSON, fingerprint VARCHAR); COMMIT;",literal(&w.backend),literal(&w.source)),false, true)?;
+        w.execute_inner(&format!("BEGIN; CREATE SCHEMA _slurp; CREATE TABLE _slurp.identity(version INTEGER, backend VARCHAR, project VARCHAR); INSERT INTO _slurp.identity VALUES(1,{},{}); CREATE TABLE _slurp.deliveries(archive VARCHAR, sequence BIGINT, sha256 VARCHAR, bytes UBIGINT, imported_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(archive,sequence)); CREATE TABLE events(id VARCHAR PRIMARY KEY, type VARCHAR, event VARCHAR, timestamp TIMESTAMPTZ, user_id VARCHAR, anonymous_id VARCHAR, session_id VARCHAR, data JSON, context JSON, received_at TIMESTAMPTZ, received_seq VARCHAR, sender VARCHAR, raw_record JSON, fingerprint VARCHAR); COMMIT;",literal(&w.backend),literal(&w.project)),false, true)?;
         w.execute_inner(&helpers::script(), false, true)?;
         fs::create_dir_all(root.join(".slurp/reports"))?;
         let mut destination = fs::OpenOptions::new()
@@ -187,8 +195,8 @@ impl Workspace {
         }
         slurp_client::config::normalize_backend(&w.backend)?;
         anyhow::ensure!(
-            w.source.starts_with("src_"),
-            "project configuration requires a stable source ID"
+            w.project.starts_with("prj_"),
+            "project configuration requires a stable project ID"
         );
         Ok(w)
     }
@@ -209,13 +217,19 @@ impl Workspace {
         }
         Ok(w)
     }
+    /// A copy whose read-only queries cannot touch files outside the database (see the `sandbox` field).
+    pub fn sandboxed(&self) -> Self {
+        let mut w = self.clone();
+        w.sandbox = true;
+        w
+    }
     /// Load and verify a workspace without creating missing storage.
     pub fn load(root: &Path) -> Result<Self> {
         let w = Self::read_binding(root)?;
         storage::require_database(&w.database)?;
         setup::check_engine(&w.duckdb)?;
-        let identity = w.execute("SELECT version,backend,source FROM _slurp.identity", true)?;
-        if identity != json!([{"version":1,"backend":w.backend,"source":w.source}]) {
+        let identity = w.execute("SELECT version,backend,project FROM _slurp.identity", true)?;
+        if identity != json!([{"version":1,"backend":w.backend,"project":w.project}]) {
             bail!(Failure::new(
                 ErrorCode::BindingMismatch,
                 "database binding mismatch"
@@ -254,6 +268,11 @@ impl Workspace {
         for name in &self.extensions {
             // Names were checked against the allow-list in `with_extensions`.
             cmd.arg("-cmd").arg(format!("LOAD {name};"));
+        }
+        if readonly && self.sandbox {
+            // After the extensions are loaded (loading needs file access), and before any user SQL runs.
+            cmd.arg("-cmd")
+                .arg("SET enable_external_access = false; SET lock_configuration = true;");
         }
         if readonly {
             cmd.arg("-readonly");
@@ -393,6 +412,7 @@ impl Workspace {
             let obj = producer.as_object_mut().context("invalid event")?;
             obj.remove("received_at");
             obj.remove("received_seq");
+            obj.remove("sender");
             if let Some(context) = obj.get_mut("context").and_then(Value::as_object_mut) {
                 context.remove("geo");
                 if context.is_empty() {
@@ -415,7 +435,7 @@ CREATE TEMP TABLE delivery_check AS SELECT CASE WHEN EXISTS(SELECT 1 FROM _slurp
 CREATE TEMP TABLE stage AS SELECT json_extract_string(record,'$.id') AS id, record, fingerprint FROM read_json({f}, columns={{record:'JSON',fingerprint:'VARCHAR'}},format='newline_delimited');
 CREATE TEMP TABLE event_check AS SELECT CASE WHEN EXISTS(SELECT id FROM stage GROUP BY id HAVING count(DISTINCT fingerprint)>1) OR EXISTS(SELECT 1 FROM stage s JOIN events e USING(id) WHERE s.fingerprint<>e.fingerprint) THEN error('conflicting_event_id') ELSE NULL END;
 CREATE TEMP TABLE import_stats AS SELECT count(*) AS total,count(DISTINCT s.id) FILTER(WHERE e.id IS NULL) AS imported FROM stage s LEFT JOIN events e USING(id);
-INSERT INTO events SELECT id,record->>'type',record->>'event',(record->>'timestamp')::TIMESTAMPTZ,record->>'user_id',record->>'anonymous_id',record->>'session_id',record->'data',record->'context',(record->>'received_at')::TIMESTAMPTZ,record->>'received_seq',record,fingerprint FROM stage QUALIFY row_number() OVER(PARTITION BY id)=1 ON CONFLICT DO NOTHING;
+INSERT INTO events SELECT id,record->>'type',record->>'event',(record->>'timestamp')::TIMESTAMPTZ,record->>'user_id',record->>'anonymous_id',record->>'session_id',record->'data',record->'context',(record->>'received_at')::TIMESTAMPTZ,record->>'received_seq',record->>'sender',record,fingerprint FROM stage QUALIFY row_number() OVER(PARTITION BY id)=1 ON CONFLICT DO NOTHING;
 INSERT INTO _slurp.deliveries(archive,sequence,sha256,bytes) VALUES({a},{seq},{h},{bytes}) ON CONFLICT DO NOTHING;
 COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false)
     }
@@ -432,7 +452,7 @@ COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false
     ) -> Result<Value> {
         storage::require_database(&self.database)?;
         use slurp_client::Remote;
-        let remote = slurp_client::HttpRemote::new(&self.backend, &self.source, token)?;
+        let remote = slurp_client::HttpRemote::new(&self.backend, &self.project, token)?;
         let status = remote.get_status().await?;
         let Some(c) = status.coverage else {
             return Ok(
@@ -492,10 +512,9 @@ COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false
                     bail!("publication gap")
                 }
                 let tmp = self.scratch()?;
-                let key = slurp_client::parse_key(&obj.name)
-                    .filter(|key| slurp_client::is_jsonl(key.ext))
+                slurp_client::parse_key(&obj.name)
                     .ok_or_else(|| anyhow::anyhow!("unsupported archive object name"))?;
-                let path = tmp.path().join(format!("events.{}", key.ext));
+                let path = tmp.path().join("events.jsonl.gz");
                 // Verifies size and SHA-256 and asks for a fresh link if the listed one expired mid-sync.
                 slurp_client::download_verified(&remote, &obj, &path).await?;
                 let stats = self.import(&c.archive_id, seq, &obj.sha256, obj.size, &path)?;

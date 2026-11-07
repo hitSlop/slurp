@@ -7,7 +7,7 @@ use slurp_app::{
     Workspace, agent_notes,
     drives::Drive,
     error::{ErrorCode, Failure},
-    project_setup::{self, Creation},
+    project_setup,
     setup::{self, PageContext},
     storage, system,
 };
@@ -16,12 +16,12 @@ use std::path::{Path, PathBuf};
 
 #[derive(Args, Default)]
 pub struct Options {
-    /// Create a new cloud project with this friendly name.
-    #[arg(long, conflicts_with = "source")]
+    /// Create a cloud project with this friendly name, or join the one that already has it.
+    #[arg(long, conflicts_with = "connect")]
     name: Option<String>,
-    /// Connect an existing project by stable ID or service alias.
+    /// Connect an existing cloud project by its ID or name.
     #[arg(long)]
-    source: Option<String>,
+    connect: Option<String>,
     #[arg(long, env = "SLURP_BACKEND")]
     backend: Option<String>,
     /// Use an existing DuckDB 2 executable for this app.
@@ -62,8 +62,8 @@ fn validate_database(root: &Path, database: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn bound_environment(backend: &str, source: &str) -> bool {
-    std::env::var("SLURP_SOURCE_ID").is_ok_and(|value| value == source)
+fn bound_environment(backend: &str, project: &str) -> bool {
+    std::env::var("SLURP_PROJECT_ID").is_ok_and(|value| value == project)
         && std::env::var("SLURP_BACKEND").ok().is_none_or(|value| {
             config::normalize_backend(&value).is_ok_and(|value| value == backend)
         })
@@ -91,41 +91,28 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
     let mut workspace = if existing {
         Some(Workspace::load(&root)?)
     } else {
-        if !ui.interactive && options.name.is_none() && options.source.is_none() {
+        if !ui.interactive && options.name.is_none() && options.connect.is_none() {
             return Err(onboarding::required(
-                "specify init --name NAME to create a project, or init --source SOURCE to connect one",
+                "specify init --name NAME to create a project, or init --connect PROJECT to connect one",
             ));
         }
         None
     };
     let mut settings = system::settings(&home)?;
-    let mut creation = None;
     let mut ingest_url = None;
     let mut sdk_key = None;
     if let Some(saved) = &workspace {
-        let metadata = config::load(&home)?
-            .sources
-            .into_iter()
-            .find(|source| source.backend == saved.backend && source.source.id == saved.source)
-            .map(|source| source.source);
         ensure!(
-            options
-                .name
-                .as_ref()
-                .is_none_or(
-                    |name| metadata.as_ref().is_some_and(|source| source.title.as_ref()
-                        == Some(name)
-                        || &source.name == name)
-                ),
+            options.name.is_none(),
             "this folder is already connected; use a fresh folder for a new project"
         );
         ensure!(
             options
-                .source
+                .connect
                 .as_ref()
-                .is_none_or(|source| source == &saved.source
-                    || metadata.as_ref().is_some_and(|info| &info.name == source)),
-            "source differs from the saved project binding"
+                .is_none_or(|project| project == &saved.project),
+            "that differs from this folder's project; connect by its ID ({})",
+            saved.project
         );
         if let Some(backend) = &options.backend {
             ensure!(
@@ -155,7 +142,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
             "Project already connected",
             &format!(
                 "Project: {}\nEvent database: {}\nYour existing connection and keys will be reused.",
-                metadata.as_ref().map(|project|project.title.as_deref().unwrap_or(&project.name)).unwrap_or_else(||root.file_name().and_then(|name|name.to_str()).unwrap_or("this app")),
+                root.file_name().and_then(|name|name.to_str()).unwrap_or("this app"),
                 saved.database.display()
             ),
         )?;
@@ -174,7 +161,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                 onboarding::Options {
                     duckdb: options.duckdb.clone(),
                     backend: options.backend.clone(),
-                    no_connect: options.source.is_some()
+                    no_connect: options.connect.is_some()
                         && environment("SLURP_TOKEN")
                             .or_else(|| environment("SLURP_READ_KEY"))
                             .is_some_and(|token| token.starts_with("slurp_sk_")),
@@ -206,8 +193,8 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
             library
                 .join(root.file_name().unwrap_or(std::ffi::OsStr::new("my-app")))
                 .join("events.duckdb")
-        } else if !ui.interactive && options.source.is_some() {
-            // An explicit existing-source binding remains useful for offline/scripted local work.
+        } else if !ui.interactive && options.connect.is_some() {
+            // An explicit existing-project binding remains useful for offline/scripted local work.
             anchor = None;
             storage::database_path(&root, None, None)?
         } else {
@@ -218,47 +205,36 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
         ui.intro()?;
         ui.credentials()?;
         let runtime = tokio::runtime::Runtime::new()?;
-        let mut source = options.source.clone();
+        let mut project = options.connect.clone();
         let mut title = options.name.clone();
-        let mut selected = None;
         let mut client = None;
-        let mut token = None;
-        let offline_binding = source
+        let offline_binding = project
             .as_ref()
-            .is_some_and(|source| source.starts_with("src_"));
+            .is_some_and(|project| project.starts_with("prj_"));
         if !offline_binding {
             let (backend, access) =
-                runtime.block_on(login::ensure(&backend, &home, &ui, options.no_open))?;
-            let sources = rpc::SourceClient::new(
+                runtime.block_on(login::ensure(&backend, &ui, options.no_open))?;
+            let projects = rpc::ProjectClient::new(
                 &backend,
                 slurp_client::http_client()?,
                 Some(access.clone()),
             );
-            let pending_name = Creation::pending_name(&home, &root, &backend, &access)?;
-            if title.is_none() && source.is_none() && pending_name.is_some() {
-                ui.note(
-                    "Resume project setup",
-                    "Continuing your unfinished initialization with its original cloud project.",
-                )?;
-                title = pending_name.clone();
-            }
-            if let Some(reference) = &source {
+            if let Some(reference) = &project {
                 let found = runtime
-                    .block_on(sources.get_source(&rpc::GetSourceRequest {
-                        source: reference.clone(),
+                    .block_on(projects.get_project(&rpc::GetProjectRequest {
+                        project: reference.clone(),
                     }))
                     .map_err(project_setup::service_error)?;
-                source = Some(found.source.id.clone());
+                project = Some(found.project.id.clone());
                 ingest_url = Some(found.ingest_url);
-                selected = Some(found.source);
             } else {
                 let available = runtime
-                    .block_on(sources.list_sources(&rpc::ListSourcesRequest {}))
+                    .block_on(projects.list_projects(&rpc::ListProjectsRequest {}))
                     .map_err(project_setup::service_error)?
-                    .sources;
+                    .projects;
                 if title.is_none() && !ui.interactive {
                     return Err(onboarding::required(
-                        "specify init --name NAME to create a project, or init --source SOURCE to connect one",
+                        "specify init --name NAME to create a project, or init --connect PROJECT to connect one",
                     ));
                 }
                 if title.is_none() && !available.is_empty() {
@@ -267,30 +243,26 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                         "Create a new project".into(),
                         "Track events for a new app".into(),
                     )];
-                    choices.extend(available.iter().enumerate().map(|(i, project)| {
+                    choices.extend(available.iter().enumerate().map(|(i, found)| {
                         (
                             i.to_string(),
-                            project
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| project.name.clone()),
-                            format!("{} · {}", project.name, project.role),
+                            found.title.clone().unwrap_or_else(|| found.name.clone()),
+                            found.name.clone(),
                         )
                     }));
                     let choice = ui.select("What would you like to connect?", &choices, "new")?;
                     if choice != "new" {
                         let found = available[choice.parse::<usize>()?].clone();
-                        source = Some(found.id.clone());
                         let info = runtime
-                            .block_on(sources.get_source(&rpc::GetSourceRequest {
-                                source: found.id.clone(),
+                            .block_on(projects.get_project(&rpc::GetProjectRequest {
+                                project: found.id.clone(),
                             }))
                             .map_err(project_setup::service_error)?;
+                        project = Some(found.id);
                         ingest_url = Some(info.ingest_url);
-                        selected = Some(found);
                     }
                 }
-                if source.is_none() {
+                if project.is_none() {
                     let validate = |value: &str| {
                         if value.is_empty() || value.len() > 200 {
                             return Err("Use an app name between 1 and 200 UTF-8 bytes.".to_owned());
@@ -310,56 +282,9 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                             )?,
                         );
                     }
-                    loop {
-                        let name = title.as_deref().context("app name")?;
-                        let conflict = available.iter().find(|project| {
-                            project.role == "owner"
-                                && project.name == project_setup::alias(name)
-                                && pending_name.as_deref() != Some(name)
-                        });
-                        let Some(found) = conflict else {
-                            break;
-                        };
-                        if !ui.interactive {
-                            anyhow::bail!(
-                                "that project already exists; use init --source {} to connect it, or choose another name",
-                                found.id
-                            );
-                        }
-                        let choice = ui.select(
-                            "Project already exists",
-                            &[
-                                (
-                                    "connect".into(),
-                                    "Connect the existing project".into(),
-                                    found.title.clone().unwrap_or_else(|| found.name.clone()),
-                                ),
-                                (
-                                    "rename".into(),
-                                    "Choose another app name".into(),
-                                    "Create a separate cloud project".into(),
-                                ),
-                            ],
-                            "connect",
-                        )?;
-                        if choice == "connect" {
-                            let info = runtime
-                                .block_on(sources.get_source(&rpc::GetSourceRequest {
-                                    source: found.id.clone(),
-                                }))
-                                .map_err(project_setup::service_error)?;
-                            source = Some(info.source.id.clone());
-                            ingest_url = Some(info.ingest_url);
-                            selected = Some(info.source);
-                            title = None;
-                            break;
-                        }
-                        title = Some(ui.input("Choose another app name", "", validate)?);
-                    }
                 }
             }
-            token = Some(access);
-            client = Some(sources);
+            client = Some(projects);
         }
         if ui.interactive && !explicit_storage {
             let project = root.clone();
@@ -391,27 +316,13 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                     true,
                 )?
             });
-        let create_sdk_key = if selected
-            .as_ref()
-            .is_some_and(|project| project.role == "owner")
-            && ui.interactive
-        {
-            let account = config::publishable_account(
-                &backend,
-                source.as_deref().context("selected source")?,
-            );
-            slurp_client::storage::get(&account)?.is_none()
-                && ui.confirm("Create a publishable SDK key for this connection?", true)?
-        } else {
-            false
-        };
         if ui.interactive {
-            ui.note("Review project setup", &format!("Project: {}\nBackend: {}\nEvent database: {}\nInstall skills: {}\nAppend agent reminder: {}\nCreate SDK key: {}", title.as_deref().or_else(||selected.as_ref().map(|project|project.title.as_deref().unwrap_or(&project.name))).or(source.as_deref()).unwrap_or("new project"),backend,database.display(),install,append,create_sdk_key || source.is_none()))?;
+            ui.note("Review project setup", &format!("Project: {}\nBackend: {}\nEvent database: {}\nInstall skills: {}\nAppend agent reminder: {}", title.as_deref().or(project.as_deref()).unwrap_or("new project"),backend,database.display(),install,append))?;
             ensure!(
                 ui.confirm("Connect this app?", true)?,
                 Failure::new(
                     ErrorCode::Cancelled,
-                    "initialization cancelled; no project or cloud source created"
+                    "initialization cancelled; no project created"
                 )
             );
         }
@@ -421,45 +332,37 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
         validate_database(&root, &database)?;
         // Verify writability before creating remote resources; the database is still absent.
         storage::prepare(&root, &database)?;
-        if source.is_none() {
-            let mut pending = Creation::open(
-                &home,
-                &root,
-                &backend,
-                token.as_deref().context("account token")?,
-                title.as_deref().context("project name")?,
-            )?;
-            let (created, url) =
-                runtime.block_on(pending.create(client.as_ref().context("project client")?))?;
-            source = Some(created.id.clone());
-            ingest_url = Some(url);
-            selected = Some(created);
-            creation = Some(pending);
-        } else if create_sdk_key {
-            let key = runtime
-                .block_on(client.as_ref().context("project client")?.create_key(
-                    &rpc::CreateKeyRequest {
-                        source: source.clone().context("project")?,
-                        scope: "publishable".into(),
-                        name: Some("SDK setup".into()),
+        if project.is_none() {
+            // Creating is idempotent by name, so a retry or a second machine gets the same project and the same key.
+            let name = title.as_deref().context("project name")?;
+            let created = runtime
+                .block_on(client.as_ref().context("project client")?.create_project(
+                    &rpc::CreateProjectRequest {
+                        name: project_setup::alias(name),
+                        title: Some(name.into()),
+                        geo_enabled: Some(true),
                     },
                 ))
                 .map_err(project_setup::service_error)?;
-            slurp_client::storage::set(
-                &config::publishable_account(&backend, source.as_deref().context("project")?),
-                &key.key,
-            )?;
-            sdk_key = Some(key.key);
-        }
-        if let (Some(info), Some(url)) = (selected, &ingest_url) {
-            config::cache_source(
-                &home,
-                config::CachedSource {
-                    backend: backend.clone(),
-                    source: info,
-                    ingest_url: url.clone(),
-                },
-            )?;
+            if !created.created {
+                ui.note(
+                    "Joined an existing project",
+                    &format!(
+                        "A project named {} already exists, so this app is connected to it.",
+                        created.project.name
+                    ),
+                )?;
+            }
+            project = Some(created.project.id);
+            ingest_url = Some(created.ingest_url);
+            sdk_key = Some(created.publishable_key);
+        } else if let Some(client) = &client {
+            sdk_key = runtime
+                .block_on(project_setup::publishable_key(
+                    client,
+                    project.as_deref().context("project")?,
+                ))
+                .ok();
         }
         if let Some(anchor) = &anchor {
             anchor.verify()?;
@@ -467,7 +370,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
         let saved = Workspace::init(
             &root,
             backend,
-            source.context("project source")?,
+            project.context("project")?,
             Some(database),
             engine,
         )?;
@@ -480,10 +383,6 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
             None
         };
         workspace = Some(saved);
-        // The workspace now records the source, so future init runs never issue CreateSource.
-        if let Some(pending) = creation.take() {
-            pending.finish()?;
-        }
         return finish(
             &root,
             workspace.as_ref().context("workspace")?,
@@ -534,46 +433,40 @@ fn finish(
         notes,
     } = handoff;
     let home = config::home()?;
-    let bound = bound_environment(&workspace.backend, &workspace.source);
+    let bound = bound_environment(&workspace.backend, &workspace.project);
     let mut warnings = Vec::new();
     if key.is_none() && bound {
         key = environment("SLURP_PUBLISHABLE_KEY").filter(|key| key.starts_with("slurp_pk_"));
     }
     if key.is_none() {
-        match slurp_client::storage::get(&config::publishable_account(&workspace.backend, &workspace.source)) {
-            Ok(saved) => key = saved,
-            Err(_) => warnings.push("The SDK key is unavailable in the credential store; the project connection is ready for analysis.".to_owned()),
+        // The Worker knows every publishable key, so nothing is kept on this machine. Without a connection the page simply has no key.
+        match fetch_key(&workspace.backend, &workspace.project) {
+            Ok(fetched) => key = Some(fetched),
+            Err(_) => warnings.push("Could not read the project's publishable key from your Worker; run slurp project setup to see it.".to_owned()),
         }
     }
-    let cached = config::load(&home)?
-        .sources
-        .into_iter()
-        .find(|source| source.backend == workspace.backend && source.source.id == workspace.source);
     if ingest_url.is_none() {
-        if bound {
-            ingest_url = environment("SLURP_INGEST_URL");
+        ingest_url = if bound {
+            environment("SLURP_INGEST_URL")
+        } else {
+            None
         }
-        if ingest_url.is_none() {
-            ingest_url = cached.as_ref().map(|source| source.ingest_url.clone());
-        }
+        .or_else(|| Some(format!("{}/v1/events", workspace.backend)));
     }
     let prefix = if std::env::current_dir()?.canonicalize()? == root {
         "slurp".to_owned()
     } else {
-        format!("slurp --workspace {}", shell(&root.to_string_lossy()))
+        format!("slurp --project {}", shell(&root.to_string_lossy()))
     };
     let commands = format!(
         "{prefix} sync\n{prefix} sql 'SELECT event, count(*) AS n FROM events GROUP BY event'"
     );
     let context = PageContext {
-        project_name: cached
-            .map(|source| source.source.title.unwrap_or(source.source.name))
-            .or_else(|| {
-                root.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            }),
+        project_name: root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
         backend: Some(workspace.backend.clone()),
-        source: Some(workspace.source.clone()),
+        project: Some(workspace.project.clone()),
         ingest_url,
         publishable_key: key,
         read_key: if bound {
@@ -609,7 +502,9 @@ fn finish(
     let registry_warning = registration
         .err()
         .map(|error| format!("Project initialized, but registration failed: {error}"));
-    ui.success("This app is connected. Your project remembers its source and event storage.")?;
+    ui.success(
+        "This app is connected. Your project remembers its cloud project and event storage.",
+    )?;
     let mut result = serde_json::to_value(workspace)?;
     let fields = json!({"initialized":true,"project_name":context.project_name,"setup_page":path,"opened":opened,"warnings":warnings,"registry_warning":registry_warning,"next_steps":commands,"skills_installed":if installed{Some(root.join(".agents/skills/slurp"))}else{None},"agent_notes":notes,"agent_notes_suggestion":agent_notes::REMINDER});
     result
@@ -617,4 +512,11 @@ fn finish(
         .context("workspace result")?
         .extend(fields.as_object().context("initialization result")?.clone());
     Ok(result)
+}
+
+/// The project's first active publishable key, read from the Worker with this machine's saved connection.
+fn fetch_key(backend: &str, project: &str) -> Result<String> {
+    let token = login::token(backend)?;
+    let client = rpc::ProjectClient::new(backend, slurp_client::http_client()?, Some(token));
+    tokio::runtime::Runtime::new()?.block_on(project_setup::publishable_key(&client, project))
 }

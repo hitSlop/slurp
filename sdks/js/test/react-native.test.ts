@@ -12,7 +12,7 @@ test('the core runs where window.location, crypto and TextEncoder are missing', 
     const { createClient, memoryStorage, version } = await import('../src/index.ts?react-native')
     const bodies: string[] = []
     const client = createClient({
-      onError: e => assert.fail(e.message), key: 'slurp_pk_test', sourceId: 'src_rn', endpoint: 'https://worker.example/v1/events', storage: memoryStorage(),
+      onError: e => assert.fail(e.message), key: 'slurp_pk_test', endpoint: 'https://worker.example/v1/events', storage: memoryStorage(),
       fetch: (async (_url: string, init: { body: string }) => { bodies.push(init.body); return { status: 200, ok: true, headers: { get: () => null }, text: async () => '{"ok":true}', json: async () => ({ ok: true }) } }) as any,
     })
     const id = client.track('screen_viewed', { name: 'Home', emoji: 'héllo 🎉', lone: '\ud800' })

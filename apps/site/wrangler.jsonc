@@ -9,6 +9,10 @@
     {
       "pattern": "slurp.run",
       "custom_domain": true
+    },
+    {
+      "pattern": "www.slurp.run",
+      "custom_domain": true
     }
   ]
 }

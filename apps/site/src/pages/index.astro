@@ -24,18 +24,17 @@ const sections=[{id:'loop',label:'The loop'},{id:'reports',label:'Reports'},{id:
 ---
 <Page title="The feedback loop for your coding agent" description="Collect events and user feedback in your own Cloudflare account, pull them to your laptop or an external SSD, and let your coding agent analyze them with DuckDB and act on what it finds. About $8 a month at 50 million events." current="home" sections={sections}>
 <header class="hero">
-<ul class="diff" aria-label="What makes Slurp different"><li><Icon name="agent"/>Built for coding agents</li><li><Icon name="sync"/>Your data on your machine</li><li><Icon name="file"/>Analyzed with DuckDB</li></ul>
 <div class="hero-grid">
 <div class="copy">
-<p class="eyebrow">The feedback loop for your coding agent</p>
-<h1>You already have a data science expert.<br/><span class="hot">Your coding agent.</span></h1>
+<p class="eyebrow">Product events, on your terms</p>
+<h1>You already have a data science expert.<br/>Your coding agent.</h1>
 <p class="lede">Slurp collects events and user feedback in your own Cloudflare account. <code>slurp sync</code> pulls them to your laptop (or an external SSD) as a DuckDB file. Your agent analyzes them with SQL, finds what to fix and ships the change.</p>
 <div class="actions"><DeployButton id="home"/><a class="btn" href="#loop">See the workflow</a></div>
 <p class="loopline" aria-label="The loop: events and feedback, then DuckDB, then your agent, then a better product"><span>events + feedback</span><i>→</i><span>DuckDB</span><i>→</i><span>your agent</span><i>→</i><span class="hot">a better product</span></p>
 </div>
-<a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
+<div class="product-demo"><div class="sync-preview"><span class="terminal-label">YOUR TERMINAL</span><pre><code><span class="prompt">$</span> slurp sync</code></pre><p>Cloudflare archives.<br/>A local DuckDB file.<br/>Ready for your agent.</p><span class="terminal-foot">Your data stays yours.</span></div><a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
 <figure><div class="crop"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 420px, 90vw" alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
-</a>
+</a></div>
 </div>
 <PriceStrip/>
 </header>
@@ -121,4 +120,9 @@ slurp report open ./report`}/>
 .source-output figcaption{padding:9px 14px;font:600 11.5px var(--body);color:var(--muted);border-top:1px solid var(--rule)}
 .points{padding-left:18px;margin:8px 0 18px}.points li{margin:4px 0}
 @media(max-width:1000px){.hero-grid,.source-output{grid-template-columns:1fr}.gallery{grid-template-columns:1fr}}
+</style>
+
+<style>
+.hero-grid{display:block}.hero .copy{max-width:900px}.hero h1{font-size:clamp(38px,4.5vw,62px);line-height:1.07;letter-spacing:-.045em;font-weight:650;max-width:900px}.hero .lede{max-width:680px;font-size:18px;line-height:1.65}.hero .actions{margin:26px 0 38px}.product-demo{display:grid;grid-template-columns: .75fr 1.65fr;border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:#fff}.sync-preview{display:flex;flex-direction:column;padding:30px;background:#202529;color:#edf1f3}.terminal-label{font-size:10px;letter-spacing:.12em;color:#a6b3ba}.sync-preview pre{padding:28px 0 18px;color:inherit;font-size:17px;white-space:nowrap}.prompt{color:#93b6a4}.sync-preview p{color:#b9c4ca;font-size:14px;line-height:1.9}.terminal-foot{margin-top:auto;padding-top:24px;font-size:11px;color:#a6b3ba}.snapshot figure,.snapshot:hover figure{border:0;border-radius:0;box-shadow:none;transform:none}.crop{height:300px}.snapshot figcaption{font-size:11px;padding:12px 16px}.gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:28px 24px}.gallery a{border-radius:6px}.gallery a:hover{box-shadow:none;transform:none;border-color:#a5b2be}.gallery :global(img){aspect-ratio:840/580}.gallery span{padding:16px}.source-output figure{border-radius:6px}.points li{margin:10px 0}
+@media(max-width:650px){.product-demo{grid-template-columns:1fr}.sync-preview{padding:22px}.sync-preview pre{padding:18px 0 8px}.sync-preview p{margin-bottom:0}.terminal-foot{display:none}.gallery{grid-template-columns:1fr}.crop{height:260px}.hero .lede{font-size:16px}}
 </style>

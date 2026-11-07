@@ -185,6 +185,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.ok(accepted.every(record => record.body.byteLength <= maxBody))
   t.diagnostic(`real gateway 413: ${split.filter(record => record.status === 413).length} splits, 6 singleton ACKs`)
 
+  console.log('[sdk gateway] phase: unauthorized key')
   start = records.length
   const drops: number[] = []
   const unauthorized = make({ key: `slurp_pk_${'0'.repeat(64)}`, storage, onError: (_error: Error, dropped: number) => drops.push(dropped) })
@@ -199,6 +200,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   await unauthorized.flush()
   assert.equal(records.length, start + 1)
   assert.deepEqual(drops, [2, 1])
+  console.log('[sdk gateway] phase: read key cannot write')
   const forbiddenDrops: number[] = []
   const forbidden = make({ key: secret.key, onError: (_error: Error, dropped: number) => forbiddenDrops.push(dropped) })
   forbidden.track('read_key_cannot_write')
@@ -210,6 +212,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.equal(records.length, stoppedAt)
   assert.deepEqual(forbiddenDrops, [1, 1])
 
+  console.log('[sdk gateway] phase: queue limits and invalid events')
   const rejected: number[] = []
   const limited = make({ maxQueue: 2, onError: (_error: Error, dropped: number) => rejected.push(dropped) })
   limited.track('oldest_evicted')
@@ -225,6 +228,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   await limited.flush()
   assert.equal(records.length, rejectedAt)
   assert.deepEqual(rejected, Array(8).fill(1))
+  console.log('[sdk gateway] phase: single line over the body limit')
   limited.track('single_line_413', { pad: 'x'.repeat(maxBody) })
   await limited.flush()
   assert.equal(records.at(-1)!.status, 413)

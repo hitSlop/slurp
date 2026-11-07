@@ -83,8 +83,9 @@ jobs:
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - name: SDK tests against the Worker
-        run: node --test test/*.test.ts
+        run: node --test --test-force-exit --test-timeout=150000 test/*.test.ts
         working-directory: packages/sdk-js
+        timeout-minutes: 6
 
   web:
     runs-on: ubuntu-latest

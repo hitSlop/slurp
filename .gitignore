@@ -22,8 +22,9 @@
 credentials.json
 credentials.lock
 coverage/
-# local spike scratch
-/spikes/**/node_modules/
+# working notes and spike scratch, kept locally
+/plans/
+/spikes/
 
 # demo build scratch
 examples/demo/.work/

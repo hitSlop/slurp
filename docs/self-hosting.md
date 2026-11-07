@@ -96,7 +96,7 @@ R2 storage keeps growing at $0.015 per GB-month until you set `RETENTION_DAYS`. 
 
 ### How much one source can take
 
-Measured on a real Worker (details in `spikes/results/load-calibration.md`): one source sustained about **5,000 events a second** with every request accepted, whether sent as 20 events at 200 requests a second or 100 events at 50. That is roughly 13 billion events a month if it never let up, so most apps are nowhere near it. Latency is about 0.5 s (the group-commit window) up to about 4,000 events a second, and rises past that. Beyond the limit the Worker answers `503` and the SDK retries. If one app needs more, send to several sources.
+Measured on a real Worker (with `backend/scripts/load.mjs`, below): one source sustained about **5,000 events a second** with every request accepted, whether sent as 20 events at 200 requests a second or 100 events at 50. That is roughly 13 billion events a month if it never let up, so most apps are nowhere near it. Latency is about 0.5 s (the group-commit window) up to about 4,000 events a second, and rises past that. Beyond the limit the Worker answers `503` and the SDK retries. If one app needs more, send to several sources.
 
 Measure your own: `SLURP_TOKEN=<admin token> node backend/scripts/load.mjs https://YOUR-WORKER.workers.dev --steps 50,100,200 --seconds 30`. It creates a new source, so use a Worker you can throw away (`slurp cloud init --worker slurp-test`, then `slurp cloud destroy`).
 

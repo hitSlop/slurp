@@ -46,7 +46,6 @@ Each project binds one source to one DuckDB file, stored locally or on an extern
 | `apps/site` | The public site (home, docs, self-host page, cost comparison) |
 | `apps/setup` | The private offline setup page `slurp init` opens (built into the CLI as `setup.html`) |
 | `docs/` | [Documentation](docs/README.md) |
-| `plans/`, `spikes/` | Design notes and spike results |
 
 ## Development
 

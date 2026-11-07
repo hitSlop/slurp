@@ -17,7 +17,7 @@ export const assumptions = {
   gzipRatio: 4,                  // raw JSON bytes per stored byte (measured 6.5 on synthetic events; real events compress less)
   sealMaxBytes: 8 * 1024 * 1024, // the Worker seals an archive when this much is buffered (one R2 write each)
   sealIntervalSeconds: 600,      // ... or this long after the first buffered batch
-  eventsPerSecondPerSource: 5000, // measured: one source sustains this with every request accepted (see spikes/results/load-calibration.md)
+  eventsPerSecondPerSource: 5000, // measured: one source sustains this with every request accepted (measured with backend/scripts/load.mjs; see docs/self-hosting.md)
   peakFactor: 3,                 // peak traffic over the monthly average, for deciding how many sources the volume needs
   doGBMemory: 0.128, doGBsIncluded: 400_000, doPerMillionGBs: 12.5, // Durable Object duration: an always-busy source is ~332K GB-s a month
   r2WritesIncluded: 1e6, r2PerMillionWrites: 4.5,

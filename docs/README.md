@@ -9,5 +9,3 @@
 | [Live walkthrough](live-walkthrough.md) | Send six events, wait for the next archive, sync and report |
 | [Architecture](architecture.md) | Data flow, contracts and the durability design |
 | [Agent skills](../crates/slurp-cli/skills/slurp/SKILL.md) | Instrumentation, SQL analysis and the product learning loop |
-
-Historical design notes are in [`plans/archive/`](../plans/archive/cloudflare-self-hosted.md); measured spike and load results are in [`spikes/results/`](../spikes/results/cloudflare-summary.md).

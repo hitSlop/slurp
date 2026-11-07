@@ -44,7 +44,7 @@ await flush();
 Each record is one JSON line. Identify records omit `event` and put trait updates in `data`:
 
 ```json
-{"id":"019a3cb6-bc00-7000-8000-000000000001","type":"track","event":"signed_up","timestamp":"2025-11-01T00:00:00.000Z","user_id":"user-42","anonymous_id":"…","session_id":"…","data":{"plan":"pro"},"context":{"library":{"name":"@hitslop/slurp-sdk","version":"0.1.0"}}}
+{"id":"019a3cb6-bc00-7000-8000-000000000001","type":"track","event":"signed_up","timestamp":"2025-11-01T00:00:00.000Z","user_id":"user-42","anonymous_id":"…","session_id":"…","data":{"plan":"pro"},"context":{"library":{"name":"@hitslop/slurp-sdk","version":"0.1.1"}}}
 ```
 
 `user_id` is omitted until identification. Browser context also contains `page: {url, path, referrer, title}`, `user_agent`, `locale`, and `timezone`; Node context adds `runtime: {name: 'node', version: process.version}`. Event names must be non-empty strings of at most 200 characters. Data must be a plain object containing only JSON values: no cycles, dates, bigint, functions, undefined, symbols or nonfinite numbers. Data and context are snapshotted when captured. `context` accepts a plain JSON object or a function called for each record; use it for app, device, OS and screen metadata. `context.geo` is reserved for backend enrichment. `track(event, data, { userId, anonymousId, sessionId, context })` overrides one record without changing the client identity, for server applications handling multiple users. Events larger than 1 MiB of serialized UTF-8 JSON are dropped and reported; nothing is ever truncated. No server stamp fields are emitted.

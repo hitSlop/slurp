@@ -1,8 +1,43 @@
-export const version = '0.1.0'
-export const encoder = new TextEncoder()
+export const version = '0.1.1'
+
+/** UTF-8 for runtimes without TextEncoder (React Native before Hermes shipped it). */
+function utf8Encode(text: string): Uint8Array {
+  const out: number[] = []
+  for (let i = 0; i < text.length; i++) {
+    let c = text.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) { c = 0x10000 + ((c - 0xd800) << 10) + (next - 0xdc00); i++ }
+    }
+    if (c >= 0xd800 && c <= 0xdfff) c = 0xfffd // a lone surrogate, as TextEncoder does
+    if (c < 0x80) out.push(c)
+    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63))
+    else if (c < 0x10000) out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+    else out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+  }
+  return Uint8Array.from(out)
+}
+export const encoder: { encode(text: string): Uint8Array } = typeof TextEncoder === 'function' ? new TextEncoder() : { encode: utf8Encode }
+
+/** Cryptographic randomness where the runtime has it; ids only need to be unique, so Math.random is the fallback. */
+function randomBytes(length: number): Uint8Array {
+  const crypto = (globalThis as { crypto?: { getRandomValues?: (bytes: Uint8Array) => Uint8Array } }).crypto
+  if (typeof crypto?.getRandomValues === 'function') return crypto.getRandomValues(new Uint8Array(length))
+  return Uint8Array.from({ length }, () => Math.floor(Math.random() * 256))
+}
+
+/** The page address when there is one. React Native defines `window` but not `window.location`. */
+export function pageHref(): string | undefined {
+  try { return typeof window !== 'undefined' ? window.location?.href : undefined } catch { return undefined }
+}
+
+/** An endpoint resolved against the page when it can be, otherwise as written (URL support is partial in some runtimes). */
+export function resolveEndpoint(endpoint: string): string {
+  try { return new URL(endpoint, pageHref()).toString() } catch { return endpoint }
+}
 
 export function uuidv7(now = Date.now()): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  const bytes = randomBytes(16)
   for (let i = 5; i >= 0; i--) {
     bytes[i] = now % 256
     now = Math.floor(now / 256)

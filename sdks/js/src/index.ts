@@ -1,4 +1,4 @@
-import { context, encoder, jsonData, uuidv7 } from './event.ts'
+import { context, encoder, jsonData, pageHref, resolveEndpoint, uuidv7 } from './event.ts'
 import { defaultStorage } from './storage.ts'
 import type { StorageAdapter } from './storage.ts'
 
@@ -110,7 +110,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
   }
   const storage = options.storage ?? defaultStorage(report)
   const storageKey = options.sourceId
-    ? `@hitslop/slurp-sdk:v2:${new URL(options.endpoint, typeof window === 'undefined' ? undefined : window.location.href).toString().replace(/[?#].*$/, "").replace(/\/$/, "")}:${options.sourceId}`
+    ? `@hitslop/slurp-sdk:v2:${resolveEndpoint(options.endpoint).replace(/[?#].*$/, "").replace(/\/$/, "")}:${options.sourceId}`
     : `@hitslop/slurp-sdk:v2:${options.key}`
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
   let state: State = {
@@ -238,7 +238,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
       let response: Response | undefined
       controller = new AbortController()
       try {
-        const endpoint = keepalive ? new URL(options.endpoint, typeof window === 'undefined' ? undefined : window.location.href) : undefined
+        const endpoint = keepalive ? new URL(options.endpoint, pageHref()) : undefined
         endpoint?.searchParams.set('key', options.key)
         response = await Promise.race([
           doFetch(endpoint?.toString() ?? options.endpoint, {

@@ -5,6 +5,7 @@ import * as w from './slurp.gen.ts'
 import type { SourceRow, KeyRow, Result } from './registry.ts'
 import type { CompatHost } from './compat/common.ts'
 import { segmentIngest, segmentRoute } from './compat/segment.ts'
+import { sentryIngest, sentryRoute } from './compat/sentry.ts'
 export { RegistryDO } from './registry.ts'
 export { SourceDO } from './source.ts'
 
@@ -250,6 +251,13 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url)
     if (url.pathname === '/v1/events') return ingest(req, env)
+    const sentry = sentryRoute(url.pathname)
+    if (sentry) {
+      try { return await sentryIngest(req, sentry, compatHost(env)) } catch (e) {
+        console.error('sentry ingest failed', e)
+        return jsonError(503, 'unavailable', { 'Retry-After': '5' })
+      }
+    }
     const segment = segmentRoute(req.method, url.pathname)
     if (segment) {
       try { return await segmentIngest(req, segment, compatHost(env)) } catch (e) {

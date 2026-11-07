@@ -58,3 +58,44 @@ SELECT e.*,
        END AS person_id
 FROM events e
 LEFT JOIN identity_links l ON l.anonymous_id = e.anonymous_id;
+
+-- Errors from Sentry SDKs pointed at your Worker (event = 'error'): the exception, where it was thrown, and a grouping key,
+-- read out of the stored event at query time. The full Sentry event stays in `data` (breadcrumbs, tags, contexts, request).
+-- group_key is a hash of the exception type and the in-app frames' module/file and function (no line numbers), a best-effort
+-- grouping: similar to, not identical to, what Sentry's server does. Stacks are as the SDK sent them: browser code
+-- is still minified and native frames are still addresses; the debug ids to symbolicate them later are kept in data.
+--   SELECT group_key, any_value(exception_type), count(*) AS n, count(DISTINCT user_id) AS users FROM errors GROUP BY 1 ORDER BY n DESC
+CREATE OR REPLACE VIEW errors AS
+WITH last_exception AS (
+  SELECT e.*,
+         json_extract_string(e.data, '$.exception.values[#-1].type') AS exception_type,
+         json_extract_string(e.data, '$.exception.values[#-1].value') AS exception_value,
+         try_cast(json_extract_string(e.data, '$.exception.values[#-1].mechanism.handled') AS BOOLEAN) AS handled,
+         coalesce(from_json(json_extract(e.data, '$.exception.values[#-1].stacktrace.frames'), '["JSON"]'), []::JSON[]) AS frames
+  FROM events e
+  WHERE e.event = 'error'
+), framed AS (
+  SELECT *, list_filter(frames, lambda f: try_cast(json_extract_string(f, '$.in_app') AS BOOLEAN) IS TRUE) AS app_frames
+  FROM last_exception
+), keyed AS (
+  SELECT *, CASE WHEN len(app_frames) > 0 THEN app_frames ELSE frames END AS key_frames
+  FROM framed
+)
+SELECT id, timestamp, user_id, anonymous_id, session_id,
+       json_extract_string(data, '$.level') AS level,
+       json_extract_string(data, '$.platform') AS platform,
+       json_extract_string(data, '$.release') AS release,
+       json_extract_string(data, '$.environment') AS environment,
+       exception_type,
+       coalesce(exception_value, json_extract_string(data, '$.message'), json_extract_string(data, '$.logentry.formatted')) AS message,
+       handled,
+       coalesce(key_frames[-1], frames[-1]) AS top_frame,
+       json_extract_string(coalesce(key_frames[-1], frames[-1]), '$.function') AS top_function,
+       coalesce(json_extract_string(coalesce(key_frames[-1], frames[-1]), '$.module'), json_extract_string(coalesce(key_frames[-1], frames[-1]), '$.filename')) AS top_file,
+       try_cast(json_extract_string(coalesce(key_frames[-1], frames[-1]), '$.lineno') AS INTEGER) AS top_line,
+       json_extract(data, '$.tags') AS tags,
+       md5(concat_ws('|', coalesce(exception_type, ''),
+           coalesce(array_to_string(list_transform(key_frames, lambda f: concat_ws(':', coalesce(json_extract_string(f, '$.module'), json_extract_string(f, '$.filename'), ''), coalesce(json_extract_string(f, '$.function'), ''))), '>'),
+                    coalesce(exception_value, json_extract_string(data, '$.message'), '')))) AS group_key,
+       data, context, received_at
+FROM keyed;

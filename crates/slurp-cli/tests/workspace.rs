@@ -1,4 +1,4 @@
-use serde_json::json;
+use serde_json::{Value, json};
 use slurp_app::Workspace;
 fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
     let exe = std::env::var_os("SLURP_TEST_DUCKDB")?;
@@ -306,6 +306,77 @@ fn helpers_are_installed_and_identities_are_stitched_without_guessing() {
         .query("SELECT pct(25, 200) AS p, safe_num('x') AS bad, biz_date(TIMESTAMPTZ '2026-10-01 03:00:00+00') AS d, (SELECT count(*) FROM calendar('2026-10-01', '2026-10-04')) AS days, session_start(TIMESTAMP '2026-01-01 10:40', TIMESTAMP '2026-01-01 10:00', 30) AS gap, session_start(TIMESTAMP '2026-01-01 10:10', TIMESTAMP '2026-01-01 10:00', 30) AS same")
         .expect("macros");
     assert_eq!(macros["rows"], json!([[12.5, null, "2026-10-01", 4, 1, 0]]));
+}
+
+#[test]
+fn errors_view_reads_sentry_events_without_changing_what_was_stored() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let t = "2026-11-02T10:00:00Z";
+    let exception = |frames: Value| {
+        json!({"level": "error", "release": "app@1", "environment": "prod", "platform": "javascript", "tags": {"feature": "checkout"},
+            "exception": {"values": [
+                {"type": "Error", "value": "wrapper"},
+                {"type": "TypeError", "value": "x is undefined", "mechanism": {"type": "generic", "handled": false}, "stacktrace": {"frames": frames}}]}})
+    };
+    let frames = |line: u32| {
+        json!([
+            {"filename": "node_modules/lib/index.js", "function": "run", "lineno": 3, "in_app": false},
+            {"filename": "app/cart.js", "function": "total", "lineno": line, "in_app": true},
+            {"filename": "node_modules/lib/util.js", "function": "call", "lineno": 9, "in_app": false}
+        ])
+    };
+    let mut lines = String::new();
+    for (i, (id, data)) in [
+        ("x1", exception(frames(10))),
+        ("x2", exception(frames(99))), // same place, different line: same group
+        ("x3", json!({"level": "error", "message": "plain", "exception": {"values": [{"type": "Other", "value": "boom", "stacktrace": {"frames": [{"function": "f", "module": "m"}]}}]}})),
+        ("x4", json!({"level": "info", "message": "hello"})), // not an error: stays out of the view
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut record: Value = serde_json::from_str(&event_line(id, "track", if id == "x4" { "message" } else { "error" }, Some("u1"), None, t, i + 1)).unwrap();
+        record["data"] = data;
+        lines += &(record.to_string() + "\n");
+    }
+    w.import("a", 1, "hash", 1, archive(&lines).path())
+        .expect("import");
+    let rows = w
+        .query("SELECT id, exception_type, message, handled, top_function, top_file, top_line, release, environment, group_key, tags->>'feature' FROM errors ORDER BY id")
+        .expect("errors");
+    let rows = rows["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "only error events");
+    assert_eq!(
+        rows[0][1],
+        json!("TypeError"),
+        "the last exception is the one that was thrown"
+    );
+    assert_eq!(rows[0][2], json!("x is undefined"));
+    assert_eq!(rows[0][3], json!(false));
+    assert_eq!(rows[0][4], json!("total"), "the innermost in-app frame");
+    assert_eq!(rows[0][5], json!("app/cart.js"));
+    assert_eq!(rows[0][6], json!(10));
+    assert_eq!(
+        (rows[0][7].clone(), rows[0][8].clone(), rows[0][10].clone()),
+        (json!("app@1"), json!("prod"), json!("checkout"))
+    );
+    assert_eq!(rows[0][9], rows[1][9], "line numbers do not split a group");
+    assert_ne!(rows[0][9], rows[2][9]);
+    assert_eq!(
+        rows[2][5],
+        json!("m"),
+        "frames without a file fall back to the module"
+    );
+    let stored = w
+        .query("SELECT data->'exception'->'values'->0->>'value' FROM events WHERE id = 'x1'")
+        .expect("raw");
+    assert_eq!(
+        stored["rows"],
+        json!([["wrapper"]]),
+        "the view never rewrites the stored event"
+    );
 }
 
 #[test]

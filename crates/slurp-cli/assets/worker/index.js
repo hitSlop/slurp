@@ -20,8 +20,8 @@ function timingSafeEqual(a, b) {
   return d === 0;
 }
 __name(timingSafeEqual, "timingSafeEqual");
-async function gzip(text2) {
-  const stream = new Blob([text2]).stream().pipeThrough(new CompressionStream("gzip"));
+async function gzip(text3) {
+  const stream = new Blob([text3]).stream().pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 __name(gzip, "gzip");
@@ -214,29 +214,29 @@ function validateRecord(line) {
     if (e instanceof Reject) return { reason: e.message };
     throw e;
   }
-  const text2 = /* @__PURE__ */ __name((k) => {
+  const text3 = /* @__PURE__ */ __name((k) => {
     const span = sc.members.get(k);
     if (!span || line[span[0]] !== '"') return null;
     const v = JSON.parse(line.slice(span[0], span[1]));
     return v === "" ? null : v;
   }, "text");
   for (const k of RESERVED) if (sc.members.has(k)) return { reason: `reserved or obsolete ${k} field` };
-  const id = text2("id");
+  const id = text3("id");
   if (id === null || new TextEncoder().encode(id).length > 256) return { reason: "id must be a string of 1-256 bytes" };
-  const type = text2("type");
+  const type = text3("type");
   if (type !== "track" && type !== "identify") return { reason: "type must be track or identify" };
-  const ts = text2("timestamp");
+  const ts = text3("timestamp");
   if (ts === null) return { reason: "timestamp is required" };
   if (!validTimestamp(ts)) return { reason: "timestamp must be RFC 3339" };
   const data = sc.members.get("data");
   if (!data || line[data[0]] !== "{") return { reason: "data must be a JSON object" };
   if (type === "track") {
-    const ev = text2("event");
+    const ev = text3("event");
     if (ev === null || [...ev].length > 200) return { reason: "track event must be 1-200 characters" };
   }
-  if (type === "identify" && text2("user_id") === null) return { reason: "identify requires user_id" };
+  if (type === "identify" && text3("user_id") === null) return { reason: "identify requires user_id" };
   for (const k of ["user_id", "anonymous_id", "session_id"])
-    if (sc.members.has(k) && text2(k) === null) return { reason: `${k} must be a nonempty string` };
+    if (sc.members.has(k) && text3(k) === null) return { reason: `${k} must be a nonempty string` };
   const ctx = sc.members.get("context");
   if (ctx) {
     if (line[ctx[0]] !== "{" || !sc.context) return { reason: "context must be a JSON object" };
@@ -278,7 +278,7 @@ function checkBody(body, geo) {
   while (end > 0 && (body[end - 1] === 10 || body[end - 1] === 13)) end--;
   if (end === 0) return { lines: [] };
   const lines = [];
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const decoder2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   let start = 0;
   for (let n = 1; ; n++) {
     if (n > MAX_LINES) return { line: n, reason: "too many lines" };
@@ -286,15 +286,15 @@ function checkBody(body, geo) {
     if (stop === -1 || stop > end) stop = end;
     const bytes = body.subarray(start, stop);
     if (bytes.length > MAX_RECORD_BYTES) return { line: n, reason: RECORD_TOO_LARGE };
-    let text2;
+    let text3;
     try {
-      text2 = decoder.decode(bytes);
+      text3 = decoder2.decode(bytes);
     } catch {
       return { line: n, reason: "invalid UTF-8" };
     }
-    const r = validateRecord(text2);
+    const r = validateRecord(text3);
     if ("reason" in r) return { line: n, reason: r.reason };
-    lines.push(geo ? spliceGeo(text2, r.scanned, geo) : text2);
+    lines.push(geo ? spliceGeo(text3, r.scanned, geo) : text3);
     if (stop >= end) break;
     start = stop + 1;
   }
@@ -692,14 +692,14 @@ var webrpcRequestBodyText = /* @__PURE__ */ __name(async (request, skipContentTy
     checkContentType();
     checked = true;
   }
-  const text2 = await request.text();
-  if (text2 === "") {
+  const text3 = await request.text();
+  if (text3 === "") {
     return "";
   }
   if (!checked) {
     checkContentType();
   }
-  return text2;
+  return text3;
 }, "webrpcRequestBodyText");
 var webrpcParseRequestBody = /* @__PURE__ */ __name((body, typ) => {
   if (typeof body !== "string" || body.trim() === "") {
@@ -1754,6 +1754,178 @@ async function settings(req, key, origin, host) {
 }
 __name(settings, "settings");
 
+// src/compat/sentry.ts
+var ALLOW_HEADERS2 = "X-Sentry-Auth, Content-Type, Sentry-Trace, Baggage, Authorization, Content-Encoding";
+var EXPOSE = { "access-control-expose-headers": "X-Sentry-Rate-Limits, Retry-After" };
+function sentryRoute(path) {
+  const m = /^\/api\/([^/]+)\/(envelope|store)\/?$/.exec(path);
+  return m ? { project: m[1], kind: m[2] } : null;
+}
+__name(sentryRoute, "sentryRoute");
+function decodeSentryKey(value) {
+  if (!value) return null;
+  if (value.startsWith("slurp_pk_")) return value;
+  if (!/^(?:[0-9a-f]{2})+$/i.test(value) || value.length > 200) return null;
+  try {
+    const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Uint8Array.from(value.match(/../g), (h) => parseInt(h, 16)));
+    return raw.startsWith("slurp_pk_") ? raw : null;
+  } catch {
+    return null;
+  }
+}
+__name(decodeSentryKey, "decodeSentryKey");
+var keyFromDsn = /* @__PURE__ */ __name((dsn) => {
+  if (typeof dsn !== "string") return null;
+  const m = /^[a-z]+:\/\/([^:@/]+)(?::[^@]*)?@/i.exec(dsn);
+  return m ? m[1] : null;
+}, "keyFromDsn");
+function credentials(req, headerDsn) {
+  const found = /* @__PURE__ */ new Set();
+  const auth = /sentry_key=([^,\s]+)/.exec(req.headers.get("x-sentry-auth") ?? "")?.[1];
+  const query = new URL(req.url).searchParams.get("sentry_key");
+  for (const v of [auth, query, keyFromDsn(headerDsn)]) if (v) found.add(decodeSentryKey(v) ?? `invalid:${v}`);
+  if (found.size > 1) return "conflict";
+  return { key: found.size === 1 ? [...found][0] : null };
+}
+__name(credentials, "credentials");
+var isObject2 = /* @__PURE__ */ __name((v) => typeof v === "object" && v !== null && !Array.isArray(v), "isObject");
+var decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+function parseEnvelope(bytes) {
+  const NL = 10;
+  let at = 0;
+  const line = /* @__PURE__ */ __name(() => {
+    if (at >= bytes.length) return null;
+    let end = bytes.indexOf(NL, at);
+    if (end === -1) end = bytes.length;
+    const out = bytes.subarray(at, end);
+    at = Math.min(end + 1, bytes.length);
+    return out;
+  }, "line");
+  const jsonLine = /* @__PURE__ */ __name((b) => {
+    const v = JSON.parse(decoder.decode(b));
+    if (!isObject2(v)) throw new Error("header must be an object");
+    return v;
+  }, "jsonLine");
+  const first = line();
+  if (!first) throw new Error("empty envelope");
+  const header = jsonLine(first);
+  const items = [];
+  for (; ; ) {
+    let h = line();
+    while (h && h.length === 0) h = line();
+    if (!h) break;
+    const itemHeader = jsonLine(h);
+    const length = itemHeader.length;
+    let payload;
+    if (typeof length === "number" && Number.isSafeInteger(length) && length >= 0) {
+      if (at + length > bytes.length) throw new Error("item length exceeds the body");
+      payload = bytes.subarray(at, at + length);
+      at += length;
+      if (at < bytes.length) {
+        if (bytes[at] !== NL) throw new Error("item payload is not followed by a newline");
+        at++;
+      }
+    } else {
+      payload = line() ?? new Uint8Array();
+    }
+    items.push({ type: typeof itemHeader.type === "string" ? itemHeader.type : "", header: itemHeader, payload });
+  }
+  return { header, items };
+}
+__name(parseEnvelope, "parseEnvelope");
+var text2 = /* @__PURE__ */ __name((v) => typeof v === "string" && v !== "" ? v : void 0, "text");
+function timestampOf2(v, fallback, now) {
+  for (const c of [v, fallback]) {
+    if (typeof c === "number" && Number.isFinite(c)) return new Date(c * 1e3).toISOString();
+    if (typeof c === "string") {
+      const ms = new Date(c).getTime();
+      if (Number.isFinite(ms)) return new Date(ms).toISOString();
+    }
+  }
+  return new Date(now).toISOString();
+}
+__name(timestampOf2, "timestampOf");
+var hasException = /* @__PURE__ */ __name((e) => {
+  const x = e.exception;
+  const values = isObject2(x) && Array.isArray(x.values) ? x.values : Array.isArray(x) ? x : [];
+  return values.some((v) => isObject2(v) && !(isObject2(v.mechanism) && v.mechanism.synthetic === true));
+}, "hasException");
+async function translateItem(item, header, now) {
+  const kind = item.type;
+  if (kind !== "event" && kind !== "user_report" && kind !== "feedback" && kind !== "check_in") return null;
+  let payload;
+  try {
+    payload = JSON.parse(decoder.decode(item.payload));
+  } catch {
+    return { reason: `${kind} payload is not JSON` };
+  }
+  if (!isObject2(payload)) return { reason: `${kind} payload is not an object` };
+  const sentAt = header.sent_at;
+  const user = isObject2(payload.user) ? payload.user : {};
+  const userId = text2(user.id) ?? (typeof user.id === "number" ? String(user.id) : void 0) ?? text2(user.email) ?? text2(user.username);
+  const sdk = isObject2(payload.sdk) ? payload.sdk : null;
+  const context = { compat: "sentry" };
+  if (sdk && text2(sdk.name)) context.library = { name: sdk.name, ...text2(sdk.version) ? { version: sdk.version } : {} };
+  let event;
+  let id;
+  if (kind === "event") {
+    event = hasException(payload) || ["error", "fatal"].includes(String(payload.level)) ? "error" : "message";
+    id = text2(header.event_id) ?? text2(payload.event_id) ?? `sentry-${await sha256Hex(item.payload)}`;
+  } else {
+    event = kind === "check_in" ? "check_in" : "user_feedback";
+    id = `sentry-${await sha256Hex(item.payload)}`;
+  }
+  const record = { id, type: "track", event, timestamp: timestampOf2(payload.timestamp, sentAt, now) };
+  if (userId) record.user_id = userId;
+  record.data = payload;
+  record.context = context;
+  return { line: JSON.stringify(record) };
+}
+__name(translateItem, "translateItem");
+async function sentryIngest(req, route, host) {
+  if (req.method === "OPTIONS") return preflight(ALLOW_HEADERS2);
+  const reply = /* @__PURE__ */ __name((status, body, extra = {}) => json(status, body, { ...EXPOSE, ...extra }), "reply");
+  if (req.method !== "POST") return reply(405, { detail: "method not allowed" }, { Allow: "POST, OPTIONS" });
+  let bytes;
+  try {
+    bytes = await readBody(req, host.maxBody);
+  } catch (e) {
+    if (e instanceof BodyTooLarge) return reply(413, { detail: "body too large" });
+    return reply(400, { detail: "unreadable body" });
+  }
+  let envelope;
+  try {
+    if (route.kind === "envelope") envelope = parseEnvelope(bytes);
+    else {
+      const event = JSON.parse(decoder.decode(bytes));
+      if (!isObject2(event)) throw new Error("event must be an object");
+      envelope = { header: { event_id: event.event_id }, items: [{ type: "event", header: { type: "event" }, payload: bytes }] };
+    }
+  } catch (e) {
+    return reply(400, { detail: `malformed envelope: ${e.message}` });
+  }
+  const creds = credentials(req, envelope.header.dsn);
+  if (creds === "conflict") return reply(403, { detail: "conflicting credentials" });
+  const principal = await host.publishable(creds.key);
+  if (!principal) return reply(403, { detail: "invalid or missing sentry_key (use the DSN Slurp prints for this source)" });
+  const eventId = text2(envelope.header.event_id) ?? "";
+  const now = Date.now();
+  const lines = [];
+  const encoder2 = new TextEncoder();
+  for (const item of envelope.items) {
+    const t = await translateItem(item, envelope.header, now);
+    if (!t || "reason" in t) continue;
+    if ("reason" in validateRecord(t.line) || encoder2.encode(t.line).length > MAX_RECORD_BYTES) continue;
+    lines.push(t.line);
+  }
+  if (lines.length > 0) {
+    const res = await host.ingest(principal.source, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
+    if (!res.ok) return ingestFailure(res);
+  }
+  return reply(200, { id: eventId });
+}
+__name(sentryIngest, "sentryIngest");
+
 // src/registry.ts
 import { DurableObject } from "cloudflare:workers";
 var UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -1996,15 +2168,15 @@ var SourceDO = class extends DurableObject2 {
       let cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
       for (const item of q) {
         for (const line of item.lines) {
-          let text2 = stampOne(line, cur.id, item.atMs, cur.events);
-          let size = encoder.encode(text2).length;
+          let text3 = stampOne(line, cur.id, item.atMs, cur.events);
+          let size = encoder.encode(text3).length;
           if (cur.events > 0 && (cur.bytes + size > ROW_MAX_BYTES || cur.events > MAX_SEQ_PER_ROW)) {
             rows.push(cur);
             cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
-            text2 = stampOne(line, cur.id, item.atMs, 0);
-            size = encoder.encode(text2).length;
+            text3 = stampOne(line, cur.id, item.atMs, 0);
+            size = encoder.encode(text3).length;
           }
-          cur.data += text2;
+          cur.data += text3;
           cur.bytes += size;
           cur.events++;
         }
@@ -2063,10 +2235,10 @@ var SourceDO = class extends DurableObject2 {
       return null;
     }
     const rows = this.sql.exec(`SELECT data, events, bytes FROM b_${frozen} ORDER BY id`).toArray();
-    const text2 = rows.map((r) => r.data).join("");
+    const text3 = rows.map((r) => r.data).join("");
     const events = rows.reduce((n, r) => n + r.events, 0);
     const rawBytes = rows.reduce((n, r) => n + r.bytes, 0);
-    const gz = await gzip(text2);
+    const gz = await gzip(text3);
     const sha = await sha256Hex(gz);
     const name = `${pad20(intent.seq)}-${sha}.jsonl.gz`;
     const r2key = `v1/sources/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`;
@@ -2415,6 +2587,15 @@ var index_default = {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === "/v1/events") return ingest(req, env);
+    const sentry = sentryRoute(url.pathname);
+    if (sentry) {
+      try {
+        return await sentryIngest(req, sentry, compatHost(env));
+      } catch (e) {
+        console.error("sentry ingest failed", e);
+        return jsonError(503, "unavailable", { "Retry-After": "5" });
+      }
+    }
     const segment = segmentRoute(req.method, url.pathname);
     if (segment) {
       try {

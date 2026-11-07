@@ -25,9 +25,6 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Linux credential-store dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Install test DuckDB
         run: |
           if [ "$RUNNER_OS" = macOS ]; then asset=osx-universal; else asset=linux-amd64; fi
@@ -55,8 +52,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: Linux credential-store dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Install test DuckDB
         run: |
           curl -fL "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz" -o "$RUNNER_TEMP/duckdb.tar.gz"
@@ -71,6 +66,10 @@ jobs:
         run: node scripts/bundle.mjs --check
         working-directory: backend
       - run: cargo build -p slurp-cli
+      - name: The Linux binary needs no D-Bus library (release binaries must start on minimal servers and containers)
+        run: |
+          ldd target/debug/slurp
+          ! ldd target/debug/slurp | grep -i dbus
       - run: npm run typecheck
         working-directory: backend
       - name: Worker tests (wrangler dev, local R2 and Durable Objects, real CLI)

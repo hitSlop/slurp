@@ -6,6 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT"
+repository = "https://github.com/hitSlop/slurp"
 [workspace.dependencies]
 anyhow = "1"
 thiserror = "2"
@@ -18,3 +19,8 @@ fs2 = "0.4"
 specta = { version = "=2.0.0-rc.27", features = ["derive"] }
 [profile.dev]
 debug = 0
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

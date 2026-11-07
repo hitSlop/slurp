@@ -1,0 +1,19 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.34.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "npm"]
+# The npm scope; the package is published as @hitslop/<package name>
+npm-scope = "@hitslop"
+# The npm package is @hitslop/slurp (the Cargo package is slurp-cli)
+npm-package = "slurp"
+# Publish the npm package from the release workflow (needs the NPM_TOKEN repository secret)
+publish-jobs = ["npm"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]

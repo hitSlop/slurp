@@ -18,14 +18,21 @@ use std::{
 };
 
 const SERVER_NAME: &str = "slurp";
-/// Used when the client asks for a protocol version this server does not recognise as a date.
-const FALLBACK_PROTOCOL: &str = "2025-06-18";
+/// The protocol versions this server implements, newest first. A client that asks for another version is answered with the
+/// newest one here and decides for itself whether it can work with that (MCP's version negotiation).
+const SUPPORTED_PROTOCOLS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+// The official Rust SDK (rmcp 3.9.0) was tried here and fixes the gaps below, but adds about 2.7 MB (8.5%) to the binary and does
+// not by itself stop a running query on cancel, so the few protocol rules a tool server needs are kept here. Revisit if clients
+// start to require the stateless protocol version (2026-07-28), which this server does not speak.
 
 pub struct Server {
     workspace: Workspace,
     root: PathBuf,
     exe: PathBuf,
     allow_send: bool,
+    /// Set by a successful `initialize`: until then only `initialize` and `ping` are answered.
+    initialized: std::sync::atomic::AtomicBool,
 }
 
 impl Server {
@@ -36,6 +43,7 @@ impl Server {
             root,
             exe,
             allow_send,
+            initialized: false.into(),
         }
     }
 
@@ -60,21 +68,37 @@ impl Server {
             Ok(v) => v,
             Err(_) => return Some(error_response(Value::Null, -32700, "parse error")),
         };
-        let id = message.get("id").cloned();
-        let method = message
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        // The envelope: one JSON-RPC 2.0 object with a string method. Batches are not part of MCP's current versions.
+        let id = message
+            .get("id")
+            .filter(|id| id.is_string() || id.is_number())
+            .cloned();
+        let valid = message.is_object()
+            && message.get("jsonrpc") == Some(&json!("2.0"))
+            && message.get("method").is_some_and(Value::is_string)
+            && (message.get("id").is_none() || id.is_some());
+        if !valid {
+            return Some(error_response(
+                id.unwrap_or(Value::Null),
+                -32600,
+                "invalid request: expected a JSON-RPC 2.0 request or notification",
+            ));
+        }
+        let method = message["method"].as_str().unwrap_or_default();
         let params = message.get("params").cloned().unwrap_or(Value::Null);
         let Some(id) = id else {
             return None; // notifications/initialized, notifications/cancelled, ...
         };
+        let ready = self.initialized.load(std::sync::atomic::Ordering::Relaxed);
         let result = match method {
             "initialize" => Ok(self.initialize(&params)),
             "ping" => Ok(json!({})),
+            _ if !ready => Err((-32600, "call initialize first".to_owned())),
             "tools/list" => Ok(json!({ "tools": self.tools() })),
-            "tools/call" => Ok(self.call(&params)),
-            "" => Err((-32600, "invalid request".to_owned())),
+            "tools/call" => match params.get("name").and_then(Value::as_str) {
+                Some(_) => Ok(self.call(&params)),
+                None => Err((-32602, "tools/call needs a tool name".to_owned())),
+            },
             other => Err((-32601, format!("method not found: {other}"))),
         };
         Some(match result {
@@ -84,11 +108,15 @@ impl Server {
     }
 
     fn initialize(&self, params: &Value) -> Value {
-        let requested = params.get("protocolVersion").and_then(Value::as_str);
-        // Echo a date-shaped version the client asked for; the tools surface used here is the same across published versions.
-        let version = requested
-            .filter(|v| looks_like_date(v))
-            .unwrap_or(FALLBACK_PROTOCOL);
+        // Answer with the requested version when this server implements it, otherwise with its newest; never claim a version
+        // it does not implement.
+        let version = params
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .filter(|requested| SUPPORTED_PROTOCOLS.contains(requested))
+            .unwrap_or(SUPPORTED_PROTOCOLS[0]);
+        self.initialized
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let send = if self.allow_send {
             " Sending events is enabled: send_event and identify write to the real event stream, so only send events the user asked for."
         } else {
@@ -362,17 +390,6 @@ fn string_arg(args: &Value, key: &str) -> Result<String> {
 
 fn path_arg(args: &Value, key: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(string_arg(args, key)?))
-}
-
-fn looks_like_date(v: &str) -> bool {
-    v.len() == 10
-        && v.bytes().enumerate().all(|(i, b)| {
-            if i == 4 || i == 7 {
-                b == b'-'
-            } else {
-                b.is_ascii_digit()
-            }
-        })
 }
 
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {

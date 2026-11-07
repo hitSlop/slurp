@@ -48,6 +48,12 @@ struct Client {
 
 impl Client {
     fn start(root: &std::path::Path, extra: &[&str]) -> Self {
+        let (client, init) = Self::start_unchecked(root, extra, "2025-11-25");
+        assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+        client
+    }
+    /// Start the server and perform the handshake for `version`; returns the client and the raw initialize response.
+    fn start_unchecked(root: &std::path::Path, extra: &[&str], version: &str) -> (Self, Value) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_slurp"))
             .arg("mcp")
             .arg("--project")
@@ -69,11 +75,10 @@ impl Client {
             stdout,
             next: 1,
         };
-        let init = client.request("initialize", json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}));
-        assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+        let init = client.request("initialize", json!({"protocolVersion": version, "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}));
         assert_eq!(init["result"]["serverInfo"]["name"], "slurp");
         client.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-        client
+        (client, init)
     }
     fn send(&mut self, message: &Value) {
         writeln!(self.stdin, "{message}").unwrap();
@@ -275,4 +280,59 @@ fn protocol_errors_do_not_break_the_session() {
         !client.tool("sql", json!({"query": "SELECT 1 AS one"})).0,
         "the session still works afterwards"
     );
+}
+
+#[test]
+fn a_protocol_version_the_server_does_not_speak_is_negotiated_down_not_echoed() {
+    let Some((temp, _w)) = seeded() else { return };
+    let (_client, init) = Client::start_unchecked(temp.path(), &[], "1999-01-01");
+    let version = init["result"]["protocolVersion"]
+        .as_str()
+        .expect("a version");
+    assert_ne!(version, "1999-01-01", "an unknown version is never claimed");
+    assert!(
+        ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"].contains(&version),
+        "the server answers with a version it implements, got {version}"
+    );
+}
+
+#[test]
+fn malformed_requests_get_protocol_errors_and_calls_before_the_handshake_are_refused() {
+    let Some((temp, _w)) = seeded() else { return };
+    let mut client = Client::start(temp.path(), &[]);
+    // Not JSON-RPC 2.0, and a batch: both are invalid requests, answered with an error and the session survives.
+    client.send(&json!({"jsonrpc": "1.0", "id": 90, "method": "ping"}));
+    let mut line = String::new();
+    client.stdout.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["error"]["code"],
+        -32600
+    );
+    assert_eq!(client.request("ping", json!({}))["result"], json!({}));
+
+    // A fresh server that has not been initialized does not run tools.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_slurp"))
+        .arg("mcp")
+        .arg("--project")
+        .arg(temp.path())
+        .env_remove("SLURP_HOME")
+        .env("HOME", temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start slurp mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "status", "arguments": {}}})).unwrap();
+    stdin.flush().unwrap();
+    let mut answer = String::new();
+    stdout.read_line(&mut answer).unwrap();
+    let answer: Value = serde_json::from_str(&answer).expect("a JSON-RPC error");
+    assert!(
+        answer["error"].is_object() && answer.get("result").is_none(),
+        "{answer}"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
 }

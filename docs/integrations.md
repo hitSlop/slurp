@@ -41,6 +41,8 @@ Tools:
 
 **Sending is off by default.** An agent that sends made-up events would pollute your analytics, so `send_event` and `identify` exist only when you start the server with `--allow-send`, and every record they write is tagged so you can filter it out (`WHERE context->>'source' IS DISTINCT FROM 'mcp'`).
 
+Protocol: the server speaks MCP versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. If a client asks for another version it is answered with 2025-11-25 and the client decides whether to continue; requests that are not valid JSON-RPC 2.0 get a protocol error, and tools are refused until the client has sent `initialize`. It does not yet act on a client's cancel notification: a running query or report finishes first. The newer stateless protocol version (2026-07-28) is not implemented.
+
 Tested: the server is exercised end to end over stdio in this repository's tests and with the official MCP Inspector client. The configuration snippets for Claude Code, Claude Desktop, Cursor, Windsurf and Codex follow those tools' documented formats but have not been run here. Not available yet: an HTTP transport, which cloud-hosted agents (for example xAI's Grok API) would need because their servers cannot reach a local stdio process.
 
 ### Bots that run commands

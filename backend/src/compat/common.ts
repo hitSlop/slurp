@@ -9,6 +9,8 @@ export interface CompatHost {
   /** Resolve a publishable key, or null (unknown, revoked, or not publishable). */
   publishable(token: string | null): Promise<Sender | null>
   ingest(sender: Sender, body: Uint8Array, geo: Geo | null): Promise<IngestResult>
+  /** The secret a provider signs this project's webhooks with, or null when the provider issues its own and none was set. */
+  webhookSecret(provider: string, project: string): Promise<string | null>
   /** Geo from Cloudflare's own request metadata, only when the project opted in. */
   geoFor(req: Request, geo: boolean): Geo | null
   maxBody: number

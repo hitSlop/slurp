@@ -83,6 +83,18 @@ pub(crate) enum Project {
     Show {
         project: String,
     },
+    /// The URL and signing secret to give a provider so it can send webhooks into this project. Safe to repeat.
+    Webhook {
+        project: String,
+        #[arg(value_parser = ["github", "stripe", "generic"])]
+        provider: String,
+        /// Change this project's derived webhook secrets (github and generic). The URL stays the same.
+        #[arg(long)]
+        rotate: bool,
+        /// The signing secret the provider issued (Stripe's whsec_...). Stripe chooses its own, so it is given to Slurp.
+        #[arg(long)]
+        secret: Option<String>,
+    },
     /// Print the endpoint and the project's publishable keys for SDK setup. Changes nothing.
     Setup {
         project: String,
@@ -317,6 +329,49 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
                 .map_err(service_error)?
                 .project,
         )?,
+        Command::Project(Project::Webhook {
+            project,
+            provider,
+            rotate,
+            secret,
+        }) => {
+            let hook = projects
+                .get_webhook(&rpc::GetWebhookRequest {
+                    project,
+                    provider: provider.clone(),
+                    rotate: rotate.then_some(true),
+                    secret,
+                })
+                .await
+                .map_err(service_error)?;
+            let steps: &[&str] = match provider.as_str() {
+                "github" => &[
+                    "In the repository: Settings > Webhooks > Add webhook.",
+                    "Payload URL: the url above. Content type: application/json.",
+                    "Secret: the secret above.",
+                    "Choose the events to send (Releases, Workflow runs, Deployment statuses are the useful ones), then Add webhook.",
+                ],
+                "stripe" => &[
+                    "In the Stripe Dashboard: Developers > Webhooks > Add endpoint.",
+                    "Endpoint URL: the url above.",
+                    "Select the events to send (invoice.paid, customer.subscription.*, checkout.session.completed).",
+                    "Stripe chooses the signing secret. Reveal it on the endpoint (whsec_...) and give it to Slurp: slurp project webhook PROJECT stripe --secret whsec_...",
+                    "Until then the endpoint refuses deliveries.",
+                ],
+                _ => &[
+                    "POST any body to the url above. Name the event with ?event=NAME (or a `type` or `event` field in a JSON body).",
+                    "Optional: sign the body with HMAC-SHA256 using the secret and send X-Slurp-Signature: sha256=<hex>; a wrong signature is refused.",
+                ],
+            };
+            emit(&json!({
+                "provider": hook.provider,
+                "url": hook.url,
+                "secret": hook.secret,
+                "sender": hook.key_name,
+                "steps": steps,
+                "note": "Every event from this provider carries sender = the key's name. Run slurp project webhook ... --rotate to change the secret."
+            }))?;
+        }
         Command::Project(Project::Setup { project }) => {
             let setup = projects
                 .get_project(&rpc::GetProjectRequest { project })

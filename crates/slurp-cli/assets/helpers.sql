@@ -99,3 +99,20 @@ SELECT id, timestamp, user_id, anonymous_id, session_id,
                     coalesce(exception_value, json_extract_string(data, '$.message'), '')))) AS group_key,
        data, context, received_at
 FROM keyed;
+
+-- Releases and deployments from GitHub webhooks (`slurp project webhook PROJECT github`): one row per published release or
+-- deployment status. They line up with your product events, so a release can be drawn on a chart or joined to see what changed
+-- after it. It reads the event names, so it works whatever the webhook key is called.
+--   SELECT r.happened_at, r.tag, count(e.id) AS events_in_the_next_day FROM releases r LEFT JOIN events e ON e.timestamp BETWEEN r.happened_at AND r.happened_at + INTERVAL 1 DAY GROUP BY 1, 2
+CREATE OR REPLACE VIEW releases AS
+SELECT id, timestamp AS happened_at,
+       CASE event WHEN 'github.release.published' THEN 'release' ELSE 'deployment' END AS kind,
+       coalesce(json_extract_string(data, '$.release.tag_name'), json_extract_string(data, '$.deployment.ref')) AS tag,
+       json_extract_string(data, '$.release.name') AS name,
+       coalesce(json_extract_string(data, '$.release.html_url'), json_extract_string(data, '$.deployment_status.target_url'), json_extract_string(data, '$.deployment_status.environment_url')) AS url,
+       json_extract_string(data, '$.repository.full_name') AS repo,
+       coalesce(json_extract_string(data, '$.deployment_status.environment'), json_extract_string(data, '$.deployment.environment')) AS environment,
+       json_extract_string(data, '$.deployment_status.state') AS state,
+       sender, data, received_at
+FROM events
+WHERE event IN ('github.release.published', 'github.deployment_status.created');

@@ -29,6 +29,11 @@ export async function hmacHex(secret: string, msg: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
   return bytesToHex(await crypto.subtle.sign('HMAC', key, enc.encode(msg)))
 }
+/** HMAC-SHA256 of raw bytes, as hex (a webhook body must be signed exactly as it arrived, not as decoded text). */
+export async function hmacBytesHex(secret: string, data: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  return bytesToHex(await crypto.subtle.sign('HMAC', key, data as BufferSource))
+}
 export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false
   let d = 0

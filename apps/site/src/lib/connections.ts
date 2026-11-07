@@ -10,6 +10,9 @@ export const current:Connection[]=[
  {name:'MCP',description:'Let Claude Code, Cursor, Codex, Claude Desktop or Windsurf read your events: describe the schema, run read-only SQL in a sandbox, sync and build reports. Verified with the official MCP Inspector client.',install:'claude mcp add slurp -- slurp mcp',icon:'agent',status:'Works today',href:'/docs/#agent'},
  {name:'Slack',description:'Post a report image and a summary to a channel: slurp notify slack, for scheduled reports. Tested against a fake Slack API, not yet a real workspace.',install:'slurp notify slack --file report.png',logo:'slack',status:'Preview',href:'/docs/#agent'},
  {name:'Discord',description:'The same from the command line with a Discord webhook, image included. Tested against a fake Discord server.',install:'slurp notify discord --file report.png',icon:'webhook',status:'Preview',href:'/docs/#agent'},
+ {name:'GitHub',description:'Releases, deployments and workflow runs arrive as events, signed and stored whole, with a releases view in SQL. Tested against GitHub\'s documented signature example, not yet a live delivery.',install:'slurp project webhook PROJECT github',logo:'github',status:'Preview',href:'/docs/#webhooks'},
+ {name:'Stripe',description:'Payments and subscriptions arrive as signed events. Tested against Stripe\'s documented signature scheme, not yet a live delivery.',install:'slurp project webhook PROJECT stripe --secret whsec_…',logo:'stripe',status:'Preview',href:'/docs/#webhooks'},
+ {name:'Webhooks',description:'Any tool that can POST: the payload is stored whole as an event, named by you, optionally signed.',install:'slurp project webhook PROJECT generic',icon:'webhook',status:'Preview',href:'/docs/#webhooks'},
  {name:'HTTP API',description:'Send canonical events as NDJSON to your configured backend.',icon:'globe',status:'Works today',href:'/docs/#http'},
  ...['Claude Code','Codex','Cursor'].map((name,i):Connection=>({name,description:'Run the Slurp CLI and query your local DuckDB data.',logo:['claude','codex','cursor'][i],status:'Works today',href:'/docs/#agent'}))
 ];
@@ -17,8 +20,8 @@ export const groups:ConnectionGroup[]=[
  {id:'capture',title:'More ways to capture',items:[future('Rust','A dedicated capture SDK.','rust'),future('Python','Capture from Python applications.','python'),future('Kotlin (Android)','A native Android SDK. Segment and Sentry Android SDKs may already work by changing the URL, but are untested.','kotlin'),future('File uploads','Bring CSV, Parquet, JSONL, and logs.',undefined,'file')]},
  {id:'analytics',title:'Product analytics inputs',items:['Mixpanel','Amplitude','RudderStack'].map(n=>future(n,'Bring existing product events into Slurp.'))},
  {id:'errors',title:'Errors and support inputs',items:[future('Sentry symbolication','Readable stack traces from your own source maps and debug files.','sentry'),future('Bugsnag','Errors and stability.'),future('Customer chat','Support conversations and transcripts.'),future('Bug reports','Feedback directly from users.')]},
- {id:'business',title:'Business and code inputs',items:[future('Stripe','Payments and subscriptions.','stripe'),future('GitHub','Pushes, pull requests, and releases.','github'),future('Linear','Issues and cycles.','linear')]},
- {id:'pipelines',title:'Pipeline inputs',items:[future('Webhooks','Translate incoming tool payloads into events.',undefined,'webhook'),future('Kafka','Receive events from your pipelines.')]},
+ {id:'business',title:'Business and code inputs',items:[future('Linear','Issues and cycles. Its webhooks can use the generic receiver today, but are untested.','linear')]},
+ {id:'pipelines',title:'Pipeline inputs',items:[future('Kafka','Receive events from your pipelines.')]},
  {id:'outputs',title:'Outputs and agent destinations',items:[future('Webhooks','Deliver events to your own endpoint.',undefined,'webhook'),future('Linear','Create an issue from a finding.','linear'),future('GitHub','Open an issue or pull request.','github'),...['Muse','Grok','OpenAI','dots','Custom agents'].map(n=>future(n,'Route relevant events to an agent.'))]}
 ];
 

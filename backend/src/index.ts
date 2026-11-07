@@ -7,6 +7,7 @@ import type { KeyRow } from './project.ts'
 import type { CompatHost } from './compat/common.ts'
 import { segmentIngest, segmentRoute } from './compat/segment.ts'
 import { sentryIngest, sentryRoute } from './compat/sentry.ts'
+import { hookIngest, hookRoute, isProvider } from './compat/hooks.ts'
 export { RegistryDO } from './registry.ts'
 export { ProjectDO } from './project.ts'
 
@@ -48,6 +49,8 @@ async function principalFor(token: string | null, env: Env): Promise<Principal> 
   const a = await projectDO(env, project).authorize(token)
   return a ? { kind: 'key', project, ...a } : null
 }
+/** The secret a provider signs a project's webhooks with: derived, so nothing is stored. The epoch is that project's rotation counter. */
+const webhookSecret = (env: Env, provider: string, project: string, epoch: number) => hmacHex(env.ADMIN_TOKEN, `slurp-webhook-v1:${provider}:${project}:${epoch}`)
 const isAdmin = (token: string, env: Env) => !!env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN && timingSafeEqual(token, env.ADMIN_TOKEN)
 
 const signingSecret = (env: Env) => hmacHex(env.ADMIN_TOKEN, 'slurp-object-url-v1')
@@ -106,6 +109,22 @@ const projectService: w.ProjectServer<Ctx> = {
     const s = await resolveOrThrow(c, r.project)
     if (r.scope !== undefined && r.scope !== 'publishable' && r.scope !== 'secret') throw new w.InvalidArgumentError({ cause: 'scope must be publishable or secret' })
     return { keys: (await projectDO(c.env, s.id).listKeys(r.scope)).map(k => keyInfo(s.id, k)) }
+  },
+  async getWebhook(c, r) {
+    needAdmin(c)
+    if (!isProvider(r.provider)) throw new w.InvalidArgumentError({ cause: 'provider must be github, stripe or generic' })
+    const s = await resolveOrThrow(c, r.project)
+    const stub = projectDO(c.env, s.id)
+    // Stripe chooses its own signing secret for each endpoint, so for Stripe the secret is given to us and stored; GitHub lets you choose
+    // one and generic has none to match, so those are derived and nothing is stored.
+    const issued = r.provider === 'stripe'
+    if (r.secret !== undefined && !(issued && /^whsec_\S{16,200}$/.test(r.secret))) throw new w.InvalidArgumentError({ cause: 'only Stripe issues its own secret, and it looks like whsec_...' })
+    if (r.rotate && issued) throw new w.InvalidArgumentError({ cause: 'rotate the secret in Stripe, then pass the new one as secret' })
+    if (r.rotate) await stub.rotateWebhook()
+    if (r.secret !== undefined) await stub.setProviderSecret(r.provider, r.secret)
+    const key = unwrap(await stub.ensurePublishable(r.provider))
+    const secret = issued ? (await stub.providerSecret(r.provider)) ?? '' : await webhookSecret(c.env, r.provider, s.id, await stub.webhookEpoch())
+    return { provider: r.provider, url: `${c.origin}/hooks/${r.provider}?key=${key}`, secret, keyName: r.provider }
   },
   async revokeKey(c, r) {
     needAdmin(c)
@@ -246,6 +265,10 @@ function compatHost(env: Env): CompatHost {
       return p?.kind === 'key' && p.scope === 'publishable' ? { project: p.project, sender: p.name, geo: p.geo } : null
     },
     ingest: (p, body, geo) => projectDO(env, p.project).ingest(p.sender, body, geo),
+    async webhookSecret(provider, project) {
+      const stub = projectDO(env, project)
+      return provider === 'stripe' ? stub.providerSecret(provider) : webhookSecret(env, provider, project, await stub.webhookEpoch())
+    },
     geoFor: (req, geo) => (geo ? normalizeGeo((req as Request & { cf?: any }).cf) : null),
     maxBody: Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY,
   }
@@ -259,6 +282,13 @@ export default {
     if (sentry) {
       try { return await sentryIngest(req, sentry, compatHost(env)) } catch (e) {
         console.error('sentry ingest failed', e)
+        return jsonError(503, 'unavailable', { 'Retry-After': '5' })
+      }
+    }
+    const hook = hookRoute(url.pathname)
+    if (hook) {
+      try { return await hookIngest(req, hook, compatHost(env)) } catch (e) {
+        console.error('webhook ingest failed', e)
         return jsonError(503, 'unavailable', { 'Retry-After': '5' })
       }
     }

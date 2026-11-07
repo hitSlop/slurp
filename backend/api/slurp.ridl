@@ -189,6 +189,26 @@ struct RevokeKeyRequest
   # The key's 16 lowercase hex public id.
   - keyId: string
 
+# Where a provider (github, stripe, generic) should send webhooks for a project, and the secret it signs them with.
+struct GetWebhookRequest
+  - project: string
+  # github, stripe or generic.
+  - provider: string
+  # Change this project's derived webhook secrets (github and generic). The URL does not change.
+  - rotate?: bool
+  # The signing secret the provider issued, for providers that choose their own (Stripe's `whsec_...`). It is stored for this project.
+  - secret?: string
+
+struct GetWebhookResponse
+  - provider: string
+  # The finished URL, including the project's publishable key named for the provider (created on first use).
+  - url: string
+  # For github and generic: paste this into the provider as the signing secret (derived, so asking again returns the same value).
+  # For stripe: the secret you gave, or empty until you do (Stripe issues its own).
+  - secret: string
+  # The name of the key, which is what every event from this provider carries as `sender`.
+  - keyName: string
+
 # Metadata for the revoked key.
 struct RevokeKeyResponse
   # The key with its original revocation time.
@@ -248,6 +268,11 @@ service Project
     + error Unauthenticated | Forbidden | InvalidArgument | NotFound | Unavailable
   # List active and revoked keys, optionally filtered by scope.
   - ListKeys(ListKeysRequest) => (ListKeysResponse)
+    + @internal
+    + error Unauthenticated | Forbidden | InvalidArgument | NotFound | Unavailable
+  # The webhook URL and signing secret for a provider. Creates the provider's key on first use; repeating the call changes nothing
+  # unless `rotate` is set.
+  - GetWebhook(GetWebhookRequest) => (GetWebhookResponse)
     + @internal
     + error Unauthenticated | Forbidden | InvalidArgument | NotFound | Unavailable
   # Revoke a key without changing an earlier revocation time.

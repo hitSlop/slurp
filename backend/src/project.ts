@@ -126,6 +126,22 @@ export class ProjectDO extends DurableObject<Env> {
     if (!k.revoked_at) this.w('UPDATE keys SET revoked_at=? WHERE key_id=?', new Date().toISOString(), keyId)
     return { ok: true, value: this.sql.exec('SELECT * FROM keys WHERE key_id=?', keyId).one() as KeyRow }
   }
+  /** Webhook secrets are derived from this counter, so changing it changes this project's secrets (every provider) and no one else's. */
+  webhookEpoch(): number { return this.initialized() ? Number(this.meta('webhook_epoch') ?? 0) : 0 }
+  rotateWebhook(): number {
+    const next = this.webhookEpoch() + 1
+    if (this.initialized()) this.setMeta('webhook_epoch', String(next))
+    return next
+  }
+  /** The signing secret a provider issued for this project (Stripe), or null until it has been set. */
+  providerSecret(provider: string): string | null { return this.initialized() ? this.meta(`webhook_secret_${provider}`) : null }
+  setProviderSecret(provider: string, secret: string) { if (this.initialized()) this.setMeta(`webhook_secret_${provider}`, secret) }
+  /** The first active publishable key with this name, made if there is none (so asking again never makes a second one). */
+  ensurePublishable(name: string): Result<string> {
+    if (!this.initialized()) return { ok: false, code: 'notfound', message: 'project' }
+    const live = this.sql.exec("SELECT plain FROM keys WHERE scope='publishable' AND name=? AND revoked_at IS NULL ORDER BY created_at, key_id LIMIT 1", name).toArray()[0] as { plain: string } | undefined
+    return { ok: true, value: live ? live.plain : this.mintPublishable(name).key }
+  }
   geoEnabled(): boolean { return this.initialized() && this.meta('geo') === '1' }
   setGeo(on: boolean) { if (this.initialized()) this.setMeta('geo', on ? '1' : '0') }
 

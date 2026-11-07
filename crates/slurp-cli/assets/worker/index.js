@@ -13,6 +13,11 @@ async function hmacHex(secret, msg) {
   return bytesToHex(await crypto.subtle.sign("HMAC", key, enc.encode(msg)));
 }
 __name(hmacHex, "hmacHex");
+async function hmacBytesHex(secret, data) {
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToHex(await crypto.subtle.sign("HMAC", key, data));
+}
+__name(hmacBytesHex, "hmacBytesHex");
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
   let d = 0;
@@ -54,7 +59,7 @@ function scan(s) {
   const n = s.length;
   const members = /* @__PURE__ */ new Map();
   let context;
-  const fail = /* @__PURE__ */ __name((m) => {
+  const fail2 = /* @__PURE__ */ __name((m) => {
     throw new Reject(m);
   }, "fail");
   const ws = /* @__PURE__ */ __name(() => {
@@ -64,21 +69,21 @@ function scan(s) {
       else break;
     }
   }, "ws");
-  const hex4 = /* @__PURE__ */ __name((at) => {
-    if (at + 4 > n) return fail("invalid escape");
-    const h = s.slice(at, at + 4);
-    return /^[0-9a-fA-F]{4}$/.test(h) ? parseInt(h, 16) : fail("invalid escape");
+  const hex4 = /* @__PURE__ */ __name((at2) => {
+    if (at2 + 4 > n) return fail2("invalid escape");
+    const h = s.slice(at2, at2 + 4);
+    return /^[0-9a-fA-F]{4}$/.test(h) ? parseInt(h, 16) : fail2("invalid escape");
   }, "hex4");
-  function str() {
+  function str2() {
     i++;
     for (; ; ) {
-      if (i >= n) fail("unterminated string");
+      if (i >= n) fail2("unterminated string");
       const c = s.charCodeAt(i);
       if (c === 34) {
         i++;
         return;
       }
-      if (c < 32) fail("control character in string");
+      if (c < 32) fail2("control character in string");
       if (c !== 92) {
         i++;
         continue;
@@ -88,19 +93,19 @@ function scan(s) {
         const u = hex4(i + 2);
         i += 6;
         if (u >= 55296 && u <= 56319) {
-          if (s[i] !== "\\" || s[i + 1] !== "u") fail("invalid surrogate");
+          if (s[i] !== "\\" || s[i + 1] !== "u") fail2("invalid surrogate");
           const lo = hex4(i + 2);
-          if (lo < 56320 || lo > 57343) fail("invalid surrogate");
+          if (lo < 56320 || lo > 57343) fail2("invalid surrogate");
           i += 6;
-        } else if (u >= 56320 && u <= 57343) fail("invalid surrogate");
+        } else if (u >= 56320 && u <= 57343) fail2("invalid surrogate");
       } else if (e !== void 0 && '"\\/bfnrt'.includes(e)) i += 2;
-      else fail("invalid escape");
+      else fail2("invalid escape");
     }
   }
-  __name(str, "str");
+  __name(str2, "str");
   function value(depth) {
     ws();
-    if (i >= n) return fail("unexpected end");
+    if (i >= n) return fail2("unexpected end");
     const c = s[i];
     if (c === "{") return obj(depth + 1);
     if (c === "[") {
@@ -108,7 +113,7 @@ function scan(s) {
       return void 0;
     }
     if (c === '"') {
-      str();
+      str2();
       return void 0;
     }
     for (const lit of ["true", "false", "null"]) if (s.startsWith(lit, i)) {
@@ -117,13 +122,13 @@ function scan(s) {
     }
     NUMBER.lastIndex = i;
     const m = NUMBER.exec(s);
-    if (!m) return fail("invalid value");
+    if (!m) return fail2("invalid value");
     i += m[0].length;
     return void 0;
   }
   __name(value, "value");
   function arr(depth) {
-    if (depth > MAX_DEPTH) fail("nesting too deep");
+    if (depth > MAX_DEPTH) fail2("nesting too deep");
     i++;
     ws();
     if (s[i] === "]") {
@@ -141,12 +146,12 @@ function scan(s) {
         i++;
         return;
       }
-      fail("expected , or ]");
+      fail2("expected , or ]");
     }
   }
   __name(arr, "arr");
   function obj(depth) {
-    if (depth > MAX_DEPTH) fail("nesting too deep");
+    if (depth > MAX_DEPTH) fail2("nesting too deep");
     const open = i;
     i++;
     const keys = /* @__PURE__ */ new Set();
@@ -157,15 +162,15 @@ function scan(s) {
     }
     for (; ; ) {
       ws();
-      if (s[i] !== '"') fail("expected string key");
+      if (s[i] !== '"') fail2("expected string key");
       const ks = i;
-      str();
+      str2();
       const raw = s.slice(ks, i);
       const key = raw.includes("\\") ? JSON.parse(raw) : raw.slice(1, -1);
-      if (keys.has(key)) fail("duplicate name");
+      if (keys.has(key)) fail2("duplicate name");
       keys.add(key);
       ws();
-      if (s[i] !== ":") fail("expected :");
+      if (s[i] !== ":") fail2("expected :");
       i++;
       ws();
       const vs = i;
@@ -183,15 +188,15 @@ function scan(s) {
         i++;
         return { keys, open, close: i - 1 };
       }
-      fail("expected , or }");
+      fail2("expected , or }");
     }
   }
   __name(obj, "obj");
   ws();
-  if (s[i] !== "{") fail("expected a JSON object");
+  if (s[i] !== "{") fail2("expected a JSON object");
   const top = obj(1);
   ws();
-  if (i !== n) fail("expected one JSON object");
+  if (i !== n) fail2("expected one JSON object");
   return { members, top, context };
 }
 __name(scan, "scan");
@@ -266,11 +271,11 @@ __name(normalizeGeo, "normalizeGeo");
 function spliceGeo(line, sc, geo) {
   const g = JSON.stringify(geo);
   if (sc.context) {
-    const at2 = sc.context.close;
-    return line.slice(0, at2) + (sc.context.keys.size ? "," : "") + `"geo":${g}` + line.slice(at2);
+    const at3 = sc.context.close;
+    return line.slice(0, at3) + (sc.context.keys.size ? "," : "") + `"geo":${g}` + line.slice(at3);
   }
-  const at = sc.top.close;
-  return line.slice(0, at) + `,"context":{"geo":${g}}` + line.slice(at);
+  const at2 = sc.top.close;
+  return line.slice(0, at2) + `,"context":{"geo":${g}}` + line.slice(at2);
 }
 __name(spliceGeo, "spliceGeo");
 function checkBody(body, geo) {
@@ -278,7 +283,7 @@ function checkBody(body, geo) {
   while (end > 0 && (body[end - 1] === 10 || body[end - 1] === 13)) end--;
   if (end === 0) return { lines: [] };
   const lines = [];
-  const decoder2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const decoder3 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   let start = 0;
   for (let n = 1; ; n++) {
     if (n > MAX_LINES) return { line: n, reason: "too many lines" };
@@ -288,7 +293,7 @@ function checkBody(body, geo) {
     if (bytes.length > MAX_RECORD_BYTES) return { line: n, reason: RECORD_TOO_LARGE };
     let text3;
     try {
-      text3 = decoder2.decode(bytes);
+      text3 = decoder3.decode(bytes);
     } catch {
       return { line: n, reason: "invalid UTF-8" };
     }
@@ -457,6 +462,15 @@ var dispatchProjectRequest = /* @__PURE__ */ __name(async (service, ctx, method,
         throw new WebrpcBadRequestError({ cause: "invalid argument: listKeysRequest" });
       }
       const result = await service.listKeys(ctx, payload || {});
+      const tagged = webrpcTaggedStatus(result);
+      return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
+    }
+    case "GetWebhook": {
+      const payload = webrpcParseRequestBody(await webrpcRequestBodyText(request), "GetWebhookRequest");
+      if (payload && !validateType(payload, "GetWebhookRequest")) {
+        throw new WebrpcBadRequestError({ cause: "invalid argument: getWebhookRequest" });
+      }
+      const result = await service.getWebhook(ctx, payload || {});
       const tagged = webrpcTaggedStatus(result);
       return webrpcSuccessResponse((tagged ? tagged.result : result) ?? {}, tagged ? tagged.status : status);
     }
@@ -862,6 +876,36 @@ var validateRevokeKeyRequest = /* @__PURE__ */ __name((value) => {
   }
   return true;
 }, "validateRevokeKeyRequest");
+var validateGetWebhookRequest = /* @__PURE__ */ __name((value) => {
+  if (!("project" in value) || !validateType(value["project"], "string")) {
+    return false;
+  }
+  if (!("provider" in value) || !validateType(value["provider"], "string")) {
+    return false;
+  }
+  if ("rotate" in value && !validateType(value["rotate"], "boolean")) {
+    return false;
+  }
+  if ("secret" in value && !validateType(value["secret"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetWebhookRequest");
+var validateGetWebhookResponse = /* @__PURE__ */ __name((value) => {
+  if (!("provider" in value) || !validateType(value["provider"], "string")) {
+    return false;
+  }
+  if (!("url" in value) || !validateType(value["url"], "string")) {
+    return false;
+  }
+  if (!("secret" in value) || !validateType(value["secret"], "string")) {
+    return false;
+  }
+  if (!("keyName" in value) || !validateType(value["keyName"], "string")) {
+    return false;
+  }
+  return true;
+}, "validateGetWebhookResponse");
 var validateRevokeKeyResponse = /* @__PURE__ */ __name((value) => {
   if (!("key" in value) || !validateType(value["key"], "ApiKey")) {
     return false;
@@ -922,6 +966,8 @@ var TYPE_VALIDATORS = {
   ListKeysRequest: validateListKeysRequest,
   ListKeysResponse: validateListKeysResponse,
   RevokeKeyRequest: validateRevokeKeyRequest,
+  GetWebhookRequest: validateGetWebhookRequest,
+  GetWebhookResponse: validateGetWebhookResponse,
   RevokeKeyResponse: validateRevokeKeyResponse,
   VersionRequest: validateVersionRequest,
   VersionResponse: validateVersionResponse,
@@ -1180,10 +1226,10 @@ async function readBody(req, max) {
     chunks.push(value);
   }
   const out = new Uint8Array(size);
-  let at = 0;
+  let at2 = 0;
   for (const c of chunks) {
-    out.set(c, at);
-    at += c.byteLength;
+    out.set(c, at2);
+    at2 += c.byteLength;
   }
   return out;
 }
@@ -1320,10 +1366,10 @@ async function segmentIngest(req, route, host) {
   const now = Date.now();
   const lines = [];
   let rejected = 0;
-  const encoder2 = new TextEncoder();
+  const encoder3 = new TextEncoder();
   for (const m of messages) {
     const t = await translateMessage(m, type, sentAt, now);
-    if ("reason" in t || "reason" in validateRecord(t.line) || encoder2.encode(t.line).length > MAX_RECORD_BYTES) {
+    if ("reason" in t || "reason" in validateRecord(t.line) || encoder3.encode(t.line).length > MAX_RECORD_BYTES) {
       rejected++;
       continue;
     }
@@ -1333,7 +1379,7 @@ async function segmentIngest(req, route, host) {
     if (messages.length === 0) return json(200, { success: true, accepted: 0, rejected: 0 });
     return json(400, { error: "no valid events in the request", rejected });
   }
-  const res = await host.ingest(principal, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
+  const res = await host.ingest(principal, encoder3.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
   if (!res.ok) return ingestFailure(res);
   return json(200, { success: true, accepted: lines.length, rejected });
 }
@@ -1382,13 +1428,13 @@ var isObject2 = /* @__PURE__ */ __name((v) => typeof v === "object" && v !== nul
 var decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
 function parseEnvelope(bytes) {
   const NL = 10;
-  let at = 0;
+  let at2 = 0;
   const line = /* @__PURE__ */ __name(() => {
-    if (at >= bytes.length) return null;
-    let end = bytes.indexOf(NL, at);
+    if (at2 >= bytes.length) return null;
+    let end = bytes.indexOf(NL, at2);
     if (end === -1) end = bytes.length;
-    const out = bytes.subarray(at, end);
-    at = Math.min(end + 1, bytes.length);
+    const out = bytes.subarray(at2, end);
+    at2 = Math.min(end + 1, bytes.length);
     return out;
   }, "line");
   const jsonLine = /* @__PURE__ */ __name((b) => {
@@ -1408,12 +1454,12 @@ function parseEnvelope(bytes) {
     const length = itemHeader.length;
     let payload;
     if (typeof length === "number" && Number.isSafeInteger(length) && length >= 0) {
-      if (at + length > bytes.length) throw new Error("item length exceeds the body");
-      payload = bytes.subarray(at, at + length);
-      at += length;
-      if (at < bytes.length) {
-        if (bytes[at] !== NL) throw new Error("item payload is not followed by a newline");
-        at++;
+      if (at2 + length > bytes.length) throw new Error("item length exceeds the body");
+      payload = bytes.subarray(at2, at2 + length);
+      at2 += length;
+      if (at2 < bytes.length) {
+        if (bytes[at2] !== NL) throw new Error("item payload is not followed by a newline");
+        at2++;
       }
     } else {
       payload = line() ?? new Uint8Array();
@@ -1501,20 +1547,138 @@ async function sentryIngest(req, route, host) {
   const eventId = text2(envelope.header.event_id) ?? "";
   const now = Date.now();
   const lines = [];
-  const encoder2 = new TextEncoder();
+  const encoder3 = new TextEncoder();
   for (const item of envelope.items) {
     const t = await translateItem(item, envelope.header, now);
     if (!t || "reason" in t) continue;
-    if ("reason" in validateRecord(t.line) || encoder2.encode(t.line).length > MAX_RECORD_BYTES) continue;
+    if ("reason" in validateRecord(t.line) || encoder3.encode(t.line).length > MAX_RECORD_BYTES) continue;
     lines.push(t.line);
   }
   if (lines.length > 0) {
-    const res = await host.ingest(principal, encoder2.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
+    const res = await host.ingest(principal, encoder3.encode(lines.join("\n") + "\n"), host.geoFor(req, principal.geo));
     if (!res.ok) return ingestFailure(res);
   }
   return reply(200, { id: eventId });
 }
 __name(sentryIngest, "sentryIngest");
+
+// src/compat/hooks.ts
+var PROVIDERS = ["github", "stripe", "generic"];
+var isProvider = /* @__PURE__ */ __name((value) => PROVIDERS.includes(value), "isProvider");
+var STRIPE_TOLERANCE_S = 300;
+var encoder = new TextEncoder();
+var decoder2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+var hookRoute = /* @__PURE__ */ __name((path) => {
+  const m = /^\/hooks\/([^/]+)\/?$/.exec(path);
+  return m ? { provider: m[1] } : null;
+}, "hookRoute");
+var sameHex = /* @__PURE__ */ __name((a, b) => timingSafeEqual(a.toLowerCase(), b.toLowerCase()), "sameHex");
+async function githubSignatureOk(body, header, secret) {
+  if (!header?.startsWith("sha256=")) return false;
+  return sameHex(header.slice("sha256=".length), await hmacBytesHex(secret, body));
+}
+__name(githubSignatureOk, "githubSignatureOk");
+async function stripeSignatureOk(body, header, secret, nowMs = Date.now()) {
+  if (!header) return false;
+  const parts = header.split(",").map((p) => p.trim().split("="));
+  const t = parts.find(([k]) => k === "t")?.[1];
+  if (!t || !/^\d+$/.test(t) || Math.abs(nowMs / 1e3 - Number(t)) > STRIPE_TOLERANCE_S) return false;
+  const prefix = encoder.encode(`${t}.`);
+  const signed = new Uint8Array(prefix.length + body.length);
+  signed.set(prefix);
+  signed.set(body, prefix.length);
+  const expected = await hmacBytesHex(secret, signed);
+  return parts.some(([k, v]) => k === "v1" && v !== void 0 && sameHex(v, expected));
+}
+__name(stripeSignatureOk, "stripeSignatureOk");
+var isObject3 = /* @__PURE__ */ __name((v) => typeof v === "object" && v !== null && !Array.isArray(v), "isObject");
+var str = /* @__PURE__ */ __name((v) => typeof v === "string" && v !== "" ? v : void 0, "str");
+var at = /* @__PURE__ */ __name((root, ...path) => path.reduce((node, key) => isObject3(node) ? node[key] : void 0, root), "at");
+var iso = /* @__PURE__ */ __name((v) => {
+  const ms = typeof v === "string" || typeof v === "number" ? new Date(v).getTime() : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : void 0;
+}, "iso");
+var fail = /* @__PURE__ */ __name((status, error) => json(status, { error }), "fail");
+var GITHUB_TIME = {
+  release: [["release", "published_at"], ["release", "created_at"]],
+  workflow_run: [["workflow_run", "updated_at"]],
+  workflow_job: [["workflow_job", "completed_at"], ["workflow_job", "started_at"]],
+  deployment: [["deployment", "created_at"]],
+  deployment_status: [["deployment_status", "updated_at"], ["deployment_status", "created_at"]],
+  push: [["head_commit", "timestamp"]],
+  pull_request: [["pull_request", "updated_at"]],
+  issues: [["issue", "updated_at"]]
+};
+async function hookIngest(req, route, host) {
+  const provider = route.provider;
+  if (!isProvider(provider)) return fail(404, "unknown webhook provider (github, stripe or generic)");
+  if (req.method !== "POST") return json(405, { error: "method not allowed" }, { Allow: "POST" });
+  const keys = new URL(req.url).searchParams.getAll("key");
+  const principal = keys.length === 1 ? await host.publishable(keys[0]) : null;
+  if (!principal) return fail(401, "invalid key (the webhook URL carries one publishable key: slurp project webhook shows it)");
+  let bytes;
+  try {
+    bytes = await readBody(req, host.maxBody);
+  } catch (e) {
+    return e instanceof BodyTooLarge ? fail(413, "body too large") : fail(400, "unreadable body");
+  }
+  const secret = await host.webhookSecret(provider, principal.project);
+  if (secret === null) return fail(401, "no signing secret is set for this provider yet; run slurp project webhook PROJECT stripe --secret whsec_...");
+  const header = /* @__PURE__ */ __name((name) => req.headers.get(name), "header");
+  if (provider === "github" && !await githubSignatureOk(bytes, header("x-hub-signature-256"), secret)) return fail(401, "bad or missing X-Hub-Signature-256");
+  if (provider === "stripe" && !await stripeSignatureOk(bytes, header("stripe-signature"), secret)) return fail(401, "bad, missing or stale Stripe-Signature");
+  const claimed = header("x-slurp-signature");
+  if (provider === "generic" && claimed !== null && !await githubSignatureOk(bytes, claimed, secret)) return fail(401, "bad X-Slurp-Signature");
+  let text3;
+  try {
+    text3 = decoder2.decode(bytes).trim();
+  } catch {
+    return fail(400, "the body is not UTF-8 text");
+  }
+  let payload;
+  let isJson = true;
+  try {
+    payload = JSON.parse(text3);
+  } catch {
+    isJson = false;
+  }
+  if (provider !== "generic" && !(isJson && isObject3(payload))) {
+    return fail(400, provider === "github" && (header("content-type") ?? "").includes("urlencoded") ? "set the webhook content type to application/json in GitHub" : "the body must be a JSON object");
+  }
+  const now = Date.now();
+  let described;
+  if (provider === "github") {
+    const kind = header("x-github-event") ?? "";
+    if (kind === "ping") return json(200, { ok: true, ignored: "ping" });
+    if (kind === "") return fail(400, "missing X-GitHub-Event");
+    const action = str(at(payload, "action"));
+    const delivery = header("x-github-delivery") ?? `sha256-${await sha256Hex(bytes)}`;
+    const when = (GITHUB_TIME[kind] ?? []).map((path) => iso(at(payload, ...path))).find(Boolean);
+    described = { event: `github.${kind}${action ? `.${action}` : ""}`, id: `github:${delivery}`, delivery, at: when ?? new Date(now).toISOString() };
+  } else if (provider === "stripe") {
+    const id = str(at(payload, "id")), type = str(at(payload, "type"));
+    if (!id || !type) return fail(400, "not a Stripe event (no id or type)");
+    const created = at(payload, "created");
+    described = { event: `stripe.${type}`, id, delivery: id, at: (typeof created === "number" ? iso(created * 1e3) : void 0) ?? new Date(now).toISOString() };
+  } else {
+    const query = new URL(req.url).searchParams.get("event");
+    const named = query || str(at(payload, "type")) || str(at(payload, "event")) || "webhook";
+    const supplied = header("idempotency-key") ?? header("x-request-id") ?? header("x-delivery-id");
+    const delivery = supplied && encoder.encode(supplied).length <= 200 ? supplied : `sha256-${await sha256Hex(bytes)}`;
+    described = { event: named, id: `generic:${delivery}`, delivery, at: iso(at(payload, "timestamp")) ?? new Date(now).toISOString() };
+  }
+  const data = !isJson ? JSON.stringify({ raw: text3 }) : isObject3(payload) ? text3 : `{"items":${text3}}`;
+  const event = [...described.event].slice(0, 200).join("");
+  const line = `{"id":${JSON.stringify(described.id)},"type":"track","event":${JSON.stringify(event)},"timestamp":"${described.at}","data":${data},"context":{"webhook":{"provider":"${provider}","delivery":${JSON.stringify(described.delivery)}}}}`;
+  const record = encoder.encode(line);
+  if (record.length > MAX_RECORD_BYTES) return fail(413, "the payload is larger than 1 MiB; Slurp stores payloads whole, so it is refused");
+  const invalid = validateRecord(line);
+  if ("reason" in invalid) return fail(400, `the payload cannot be stored: ${invalid.reason}`);
+  const result = await host.ingest(principal, encoder.encode(line + "\n"), null);
+  if (!result.ok) return ingestFailure(result);
+  return json(200, { ok: true });
+}
+__name(hookIngest, "hookIngest");
 
 // src/registry.ts
 import { DurableObject } from "cloudflare:workers";
@@ -1576,7 +1740,7 @@ import { DurableObject as DurableObject2 } from "cloudflare:workers";
 var pad20 = /* @__PURE__ */ __name((n) => String(n).padStart(20, "0"), "pad20");
 var MAX_SEQ_PER_ROW = (1 << 20) - 1;
 var ROW_MAX_BYTES = 15e5;
-var encoder = new TextEncoder();
+var encoder2 = new TextEncoder();
 var RECENT_HASHES = 1e4;
 var ProjectDO = class extends DurableObject2 {
   static {
@@ -1649,7 +1813,7 @@ var ProjectDO = class extends DurableObject2 {
     if (!this.initialized()) return { ok: false, code: "notfound", message: "project" };
     if (scope !== "publishable" && scope !== "secret") return { ok: false, code: "invalid", message: "scope must be publishable or secret" };
     const label = name.trim() === "" ? "default" : name;
-    if (encoder.encode(label).length > 200) return { ok: false, code: "invalid", message: "name too long" };
+    if (encoder2.encode(label).length > 200) return { ok: false, code: "invalid", message: "name too long" };
     if (scope === "publishable") return { ok: true, value: this.mintPublishable(label) };
     const key = `slurp_sk_${this.projectId().slice(4)}_${randomHex(24)}`;
     const hash = await sha256Hex(key);
@@ -1667,6 +1831,28 @@ var ProjectDO = class extends DurableObject2 {
     if (!k) return { ok: false, code: "notfound", message: "key" };
     if (!k.revoked_at) this.w("UPDATE keys SET revoked_at=? WHERE key_id=?", (/* @__PURE__ */ new Date()).toISOString(), keyId);
     return { ok: true, value: this.sql.exec("SELECT * FROM keys WHERE key_id=?", keyId).one() };
+  }
+  /** Webhook secrets are derived from this counter, so changing it changes this project's secrets (every provider) and no one else's. */
+  webhookEpoch() {
+    return this.initialized() ? Number(this.meta("webhook_epoch") ?? 0) : 0;
+  }
+  rotateWebhook() {
+    const next = this.webhookEpoch() + 1;
+    if (this.initialized()) this.setMeta("webhook_epoch", String(next));
+    return next;
+  }
+  /** The signing secret a provider issued for this project (Stripe), or null until it has been set. */
+  providerSecret(provider) {
+    return this.initialized() ? this.meta(`webhook_secret_${provider}`) : null;
+  }
+  setProviderSecret(provider, secret) {
+    if (this.initialized()) this.setMeta(`webhook_secret_${provider}`, secret);
+  }
+  /** The first active publishable key with this name, made if there is none (so asking again never makes a second one). */
+  ensurePublishable(name) {
+    if (!this.initialized()) return { ok: false, code: "notfound", message: "project" };
+    const live = this.sql.exec("SELECT plain FROM keys WHERE scope='publishable' AND name=? AND revoked_at IS NULL ORDER BY created_at, key_id LIMIT 1", name).toArray()[0];
+    return { ok: true, value: live ? live.plain : this.mintPublishable(name).key };
   }
   geoEnabled() {
     return this.initialized() && this.meta("geo") === "1";
@@ -1784,12 +1970,12 @@ var ProjectDO = class extends DurableObject2 {
       for (const item of q) {
         for (const line of item.lines) {
           let text3 = stampOne(line, cur.id, item.atMs, cur.events, item.sender);
-          let size = encoder.encode(text3).length;
+          let size = encoder2.encode(text3).length;
           if (cur.events > 0 && (cur.bytes + size > ROW_MAX_BYTES || cur.events > MAX_SEQ_PER_ROW)) {
             rows.push(cur);
             cur = { id: this.nextBatch++, data: "", events: 0, bytes: 0 };
             text3 = stampOne(line, cur.id, item.atMs, 0, item.sender);
-            size = encoder.encode(text3).length;
+            size = encoder2.encode(text3).length;
           }
           cur.data += text3;
           cur.bytes += size;
@@ -1885,8 +2071,8 @@ var ProjectDO = class extends DurableObject2 {
     const next = Number(this.meta("next_seq") ?? 1);
     if (next === 1) return null;
     const lo = this.sql.exec("SELECT MIN(seq) m FROM manifest").one().m;
-    const at = this.sql.exec("SELECT created_at c FROM manifest ORDER BY seq DESC LIMIT 1").toArray()[0];
-    return { archiveId: this.archiveId(), firstRetained: String(lo ?? next), latestPublished: String(next - 1), latestPublishedAt: at?.c ?? Date.now() };
+    const at2 = this.sql.exec("SELECT created_at c FROM manifest ORDER BY seq DESC LIMIT 1").toArray()[0];
+    return { archiveId: this.archiveId(), firstRetained: String(lo ?? next), latestPublished: String(next - 1), latestPublishedAt: at2?.c ?? Date.now() };
   }
   listObjects(after, limit) {
     if (!this.initialized()) return [];
@@ -1969,6 +2155,7 @@ async function principalFor(token, env) {
   return a ? { kind: "key", project, ...a } : null;
 }
 __name(principalFor, "principalFor");
+var webhookSecret = /* @__PURE__ */ __name((env, provider, project, epoch) => hmacHex(env.ADMIN_TOKEN, `slurp-webhook-v1:${provider}:${project}:${epoch}`), "webhookSecret");
 var isAdmin = /* @__PURE__ */ __name((token, env) => !!env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN && timingSafeEqual(token, env.ADMIN_TOKEN), "isAdmin");
 var signingSecret = /* @__PURE__ */ __name((env) => hmacHex(env.ADMIN_TOKEN, "slurp-object-url-v1"), "signingSecret");
 var unwrap = /* @__PURE__ */ __name((r) => {
@@ -2028,6 +2215,20 @@ var projectService = {
     if (r.scope !== void 0 && r.scope !== "publishable" && r.scope !== "secret") throw new InvalidArgumentError({ cause: "scope must be publishable or secret" });
     return { keys: (await projectDO(c.env, s.id).listKeys(r.scope)).map((k) => keyInfo(s.id, k)) };
   },
+  async getWebhook(c, r) {
+    needAdmin(c);
+    if (!isProvider(r.provider)) throw new InvalidArgumentError({ cause: "provider must be github, stripe or generic" });
+    const s = await resolveOrThrow(c, r.project);
+    const stub = projectDO(c.env, s.id);
+    const issued = r.provider === "stripe";
+    if (r.secret !== void 0 && !(issued && /^whsec_\S{16,200}$/.test(r.secret))) throw new InvalidArgumentError({ cause: "only Stripe issues its own secret, and it looks like whsec_..." });
+    if (r.rotate && issued) throw new InvalidArgumentError({ cause: "rotate the secret in Stripe, then pass the new one as secret" });
+    if (r.rotate) await stub.rotateWebhook();
+    if (r.secret !== void 0) await stub.setProviderSecret(r.provider, r.secret);
+    const key = unwrap(await stub.ensurePublishable(r.provider));
+    const secret = issued ? await stub.providerSecret(r.provider) ?? "" : await webhookSecret(c.env, r.provider, s.id, await stub.webhookEpoch());
+    return { provider: r.provider, url: `${c.origin}/hooks/${r.provider}?key=${key}`, secret, keyName: r.provider };
+  },
   async revokeKey(c, r) {
     needAdmin(c);
     const s = await resolveOrThrow(c, r.project);
@@ -2046,7 +2247,7 @@ ${exp}`);
   return { url: `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${sig}`, exp };
 }
 __name(signedUrl, "signedUrl");
-var iso = /* @__PURE__ */ __name((ms) => new Date(ms).toISOString(), "iso");
+var iso2 = /* @__PURE__ */ __name((ms) => new Date(ms).toISOString(), "iso");
 async function archiveAuth(c, ref) {
   if (!c.principal) throw new UnauthenticatedError();
   const s = await resolveOrThrow(c, ref);
@@ -2055,7 +2256,7 @@ async function archiveAuth(c, ref) {
 }
 __name(archiveAuth, "archiveAuth");
 var retentionSeconds = /* @__PURE__ */ __name((env) => Number(env.RETENTION_DAYS) > 0 ? Number(env.RETENTION_DAYS) * 86400 : 0, "retentionSeconds");
-var covOut = /* @__PURE__ */ __name((c, cov) => ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) }), "covOut");
+var covOut = /* @__PURE__ */ __name((c, cov) => ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso2(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) }), "covOut");
 var archiveService = {
   async listObjects(c, r) {
     const s = await archiveAuth(c, r.project);
@@ -2075,7 +2276,7 @@ var archiveService = {
       expiresAt = exp * 1e3;
       objects.push({ seq: String(m.seq), name: m.name, size: m.size, sha256: m.sha256, url });
     }
-    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: expiresAt ? iso(expiresAt) : void 0 };
+    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: expiresAt ? iso2(expiresAt) : void 0 };
   },
   async getCoverage(c, r) {
     const s = await archiveAuth(c, r.project);
@@ -2166,6 +2367,10 @@ function compatHost(env) {
       return p?.kind === "key" && p.scope === "publishable" ? { project: p.project, sender: p.name, geo: p.geo } : null;
     },
     ingest: /* @__PURE__ */ __name((p, body, geo) => projectDO(env, p.project).ingest(p.sender, body, geo), "ingest"),
+    async webhookSecret(provider, project) {
+      const stub = projectDO(env, project);
+      return provider === "stripe" ? stub.providerSecret(provider) : webhookSecret(env, provider, project, await stub.webhookEpoch());
+    },
     geoFor: /* @__PURE__ */ __name((req, geo) => geo ? normalizeGeo(req.cf) : null, "geoFor"),
     maxBody: Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY
   };
@@ -2181,6 +2386,15 @@ var index_default = {
         return await sentryIngest(req, sentry, compatHost(env));
       } catch (e) {
         console.error("sentry ingest failed", e);
+        return jsonError(503, "unavailable", { "Retry-After": "5" });
+      }
+    }
+    const hook = hookRoute(url.pathname);
+    if (hook) {
+      try {
+        return await hookIngest(req, hook, compatHost(env));
+      } catch (e) {
+        console.error("webhook ingest failed", e);
         return jsonError(503, "unavailable", { "Retry-After": "5" });
       }
     }

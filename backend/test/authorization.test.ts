@@ -42,6 +42,7 @@ test('every API method answers each credential exactly as intended', async () =>
     ['Project', 'CreateProject', async () => ({ name: name('authz_new') }), adminOnly],
     ['Project', 'CreateKey', async () => ({ project: k.a.id, scope: 'publishable', name: 'extra' }), adminOnly],
     ['Project', 'ListKeys', async () => ({ project: k.a.id }), adminOnly],
+    ['Project', 'GetWebhook', async () => ({ project: k.a.id, provider: 'github' }), adminOnly],
     ['Project', 'RevokeKey', async () => ({ project: k.a.id, keyId: await spare() }), adminOnly],
   ]
   for (const [service, method, body, expected] of matrix)

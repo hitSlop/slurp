@@ -94,6 +94,37 @@ fn an_event_id_sent_by_two_senders_is_one_event_and_a_different_payload_is_a_con
         "the same id with a different payload is a conflict, whoever sent it"
     );
 }
+/// GitHub releases and deployments, received as webhooks, are one query away: the `releases` view.
+#[test]
+fn the_releases_view_lists_github_releases_and_deployments_from_webhooks() {
+    let Some((_temp, w)) = workspace() else {
+        eprintln!("set SLURP_TEST_DUCKDB for native integration tests");
+        return;
+    };
+    let line = |seq: u32, id: &str, event: &str, at: &str, data: &str| {
+        format!(
+            r#"{{"received_at":"2026-11-06T19:00:0{seq}Z","received_seq":"{seq}","sender":"github","id":"{id}","type":"track","event":"{event}","timestamp":"{at}","data":{data},"context":{{"webhook":{{"provider":"github","delivery":"{id}"}}}}}}"#
+        )
+    };
+    let lines = [
+        line(1, "github:1", "github.release.published", "2026-11-06T18:02:11Z", r#"{"action":"published","release":{"tag_name":"v1.4.0","name":"Faster checkout","html_url":"https://github.com/acme/shop/releases/tag/v1.4.0"},"repository":{"full_name":"acme/shop"}}"#),
+        line(2, "github:2", "github.deployment_status.created", "2026-11-06T18:20:00Z", r#"{"action":"created","deployment_status":{"state":"success","environment":"production"},"deployment":{"ref":"v1.4.0","environment":"production"},"repository":{"full_name":"acme/shop"}}"#),
+        line(3, "github:3", "github.workflow_run.completed", "2026-11-06T18:30:00Z", r#"{"workflow_run":{"name":"ci"}}"#),
+        line(4, "other:4", "signed_up", "2026-11-06T18:40:00Z", "{}"),
+    ]
+    .join("\n");
+    w.import("a", 1, "hash", 1, archive(&lines).path())
+        .expect("import");
+    assert_eq!(
+        w.execute("SELECT kind, tag, name, repo, environment, state, sender FROM releases ORDER BY happened_at", true).expect("releases"),
+        json!([
+            {"kind":"release","tag":"v1.4.0","name":"Faster checkout","repo":"acme/shop","environment":null,"state":null,"sender":"github"},
+            {"kind":"deployment","tag":"v1.4.0","name":null,"repo":"acme/shop","environment":"production","state":"success","sender":"github"}
+        ]),
+        "other events are not releases"
+    );
+}
+
 #[test]
 fn report_outputs() {
     let Some((temp, w)) = workspace() else { return };

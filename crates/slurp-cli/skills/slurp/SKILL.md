@@ -16,6 +16,8 @@ Use DuckDB 2.x. Run saved queries with `slurp sql --file query.sql`. Preserve me
 
 Inside an initialized app or its subfolders, use `slurp send EVENT` and `slurp identify USER_ID`. The nearest parent project supplies the project and (via your saved Worker connection) its publishable key; no database is needed to send. Every event carries the name of the key that sent it as `sender`. `--project` selects an exact project folder; `--to PROJECT` sends to a project by id or name instead. Never guess a project from the global registry.
 
+To bring in GitHub releases and deploys or Stripe events, an owner runs `slurp project webhook PROJECT github` (or `stripe`, `generic`) and pastes the URL and secret into the provider; the events then carry `sender = 'github'` and the `releases` view lists releases and deployments, so a metric change can be lined up with the release that caused it. Never put the printed secret in a skill or in Git.
+
 Human onboarding uses `slurp setup` once per computer, then `slurp init` in each app. Setup configures a library and DuckDB and signs in; it never creates a project. Init creates a project by name (or joins the existing project with that name) and opens a local quickstart page with its SDK snippet. Project IDs (`prj_…`) are an advanced scripting interface.
 
 For noninteractive work, use explicit `init --connect PROJECT` with a supplied read key and available DuckDB, or `init --name NAME` when authorized to create a project. Missing prerequisites return `setup_required`; do not retry an interactive wizard in a headless agent. Existing init runs reuse the project, database and key.

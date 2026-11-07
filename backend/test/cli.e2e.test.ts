@@ -2,6 +2,7 @@
 //   cargo build -p slurp-cli && npm test
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -121,4 +122,32 @@ test('one project, many senders: init is idempotent, setup changes nothing, and 
   run(['project', 'key', 'revoke', project, iosKey.keyId, '--json'])
   assert.notEqual(run(['send', 'late_ios', '--user-id', 'u1', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: ios }).status, 0)
   assert.equal(run(['send', 'late_web', '--user-id', 'u2', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: web }).json.accepted, true)
+})
+
+test('webhooks: slurp project webhook gives the URL and secret, a signed GitHub release arrives, and the releases view has it', { skip }, async () => {
+  const project = run(['status', '--project', ws, '--json']).json.project as string
+  const first = run(['project', 'webhook', project, 'github', '--json'])
+  assert.equal(first.status, 0, first.text)
+  assert.equal(first.json.sender, 'github'); assert.match(first.json.url, /\/hooks\/github\?key=slurp_pk_/); assert.match(first.json.secret, /^[0-9a-f]{64}$/)
+  assert.ok(first.json.steps.length >= 3)
+  assert.deepEqual(run(['project', 'webhook', project, 'github', '--json']).json, first.json, 'asking again changes nothing')
+  assert.equal(run(['project', 'key', 'list', project, '--scope', 'publishable', '--json']).json.keys.filter((k: any) => k.name === 'github').length, 1, 'one key for GitHub, not one per call')
+  const body = readFileSync(join(root, 'backend/fixtures/webhooks/github-release.json'), 'utf8').trim()
+  const sign = (secret: string) => `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`
+  const post = (secret: string, delivery: string) => fetch(first.json.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'release', 'x-github-delivery': delivery, 'x-hub-signature-256': sign(secret) } })
+  assert.equal((await post('not-the-secret', 'e2e-1')).status, 401)
+  assert.equal((await post(first.json.secret, 'e2e-1')).status, 200)
+  await debug(w.base, 'seal', project)
+  assert.equal(run(['sync', '--project', ws, '--json']).status, 0)
+  const rows = run(['sql', "SELECT kind, tag, repo, sender FROM releases", '--project', ws, '--json']).json.rows
+  assert.deepEqual(rows, [['release', 'v1.4.0', 'acme/shop', 'github']])
+  // rotating changes the secret and keeps the URL; the old secret stops working
+  const rotated = run(['project', 'webhook', project, 'github', '--rotate', '--json']).json
+  assert.equal(rotated.url, first.json.url); assert.notEqual(rotated.secret, first.json.secret)
+  assert.equal((await post(first.json.secret, 'e2e-2')).status, 401)
+  assert.equal((await post(rotated.secret, 'e2e-2')).status, 200)
+  // Stripe issues its own secret: until it is given, the endpoint refuses; after, the CLI shows it back
+  const stripe = run(['project', 'webhook', project, 'stripe', '--json']).json
+  assert.equal(stripe.secret, '')
+  assert.equal(run(['project', 'webhook', project, 'stripe', '--secret', 'whsec_0123456789abcdef0123456789abcdef', '--json']).json.secret, 'whsec_0123456789abcdef0123456789abcdef')
 })

@@ -5,6 +5,11 @@
 <h1 align="center"><img src="docs/assets/slurp-logo.png" width="170" alt="Slurp"></h1>
 
 <p align="center"><b>Product analytics for coding agents, in your own Cloudflare account.</b></p>
+<p align="center">
+  <a href="https://github.com/hitSlop/slurp/actions/workflows/check.yml"><img src="https://github.com/hitSlop/slurp/actions/workflows/check.yml/badge.svg?branch=master" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-e8002a" alt="MIT license"></a>
+  <a href="https://github.com/hitSlop/slurp/stargazers"><img src="https://img.shields.io/github/stars/hitSlop/slurp?style=flat&color=e8002a" alt="GitHub stars"></a>
+</p>
 
 Bring your events home. Capture application events into **your own Cloudflare account**, sync them into a local DuckDB file, and give your coding agent raw data for product analysis and reports.
 

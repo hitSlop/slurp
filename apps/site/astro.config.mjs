@@ -1,2 +1,3 @@
 import { defineConfig } from 'astro/config';
-export default defineConfig({output:'static'});
+import { siteUrl } from './src/lib/links.mjs';
+export default defineConfig({site: siteUrl, output: 'static'});

@@ -6,14 +6,17 @@
     "dev": "astro dev --host 127.0.0.1",
     "build": "astro build",
     "check": "astro check && node --test test/*.test.mjs",
-    "preview": "astro preview --host 127.0.0.1"
+    "preview": "astro preview --host 127.0.0.1",
+    "deploy": "astro build && wrangler deploy",
+    "deploy:built": "wrangler deploy"
   },
   "dependencies": {
     "astro": "7.4.5"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.4",
+    "@emnapi/runtime": "1.11.3",
     "typescript": "^5.9.0",
-    "@emnapi/runtime": "1.11.3"
+    "wrangler": "4.158.0"
   }
 }

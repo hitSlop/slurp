@@ -99,3 +99,5 @@ jobs:
       - run: pnpm --filter slurp-site check
       - run: pnpm --filter slurp-site build
       - run: pnpm --filter @slurp/sdk typecheck
+      - name: CI policy scripts
+        run: node --test scripts/ci/attribution.test.mjs

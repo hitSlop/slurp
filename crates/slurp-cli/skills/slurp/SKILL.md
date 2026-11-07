@@ -28,7 +28,7 @@ HTTP 429 and 503 are retryable: honor `Retry-After` and back off. HTTP 401 and 4
 
 ## Instrument and connect
 
-Install the JavaScript SDK with `npm install @hitslop/slurp-sdk`. Replace placeholders with source setup values, or send from the CLI with `slurp send EVENT --data JSON` and `slurp send --stdin` (NDJSON), or over HTTP from any language. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup page is local and holds your keys: do not share it.
+Install the SDK with npm install @hitslop/slurp-sdk. Replace placeholders with source setup values. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup HTML is private.
 
 ### sdk
 
@@ -75,4 +75,57 @@ slurp --backend YOUR_BACKEND source key create YOUR_SOURCE_ID --scope secret --n
 curl YOUR_BACKEND/v1/health
 # Pull new archives into your project database:
 slurp sync
+```
+
+### reactNative
+
+```ts
+// npm install @hitslop/slurp-react-native @react-native-async-storage/async-storage
+import { init, track, identify, screen } from '@hitslop/slurp-react-native';
+
+init({
+  endpoint: 'YOUR_INGEST_URL',
+  sourceId: 'YOUR_SOURCE_ID',
+  key: 'YOUR_PUBLISHABLE_KEY',
+});
+
+screen('Home');
+track('purchase_completed', { total: 49 });
+```
+
+### swift
+
+```swift
+// Xcode: File > Add Package Dependencies... https://github.com/hitSlop/slurp
+import Slurp
+
+SlurpClient.configure(.init(
+    key: "YOUR_PUBLISHABLE_KEY",
+    endpoint: URL(string: "YOUR_INGEST_URL")!,
+    sourceId: "YOUR_SOURCE_ID"))
+
+SlurpClient.shared.screen("Home")
+SlurpClient.shared.track("purchase_completed", ["total": 49])
+```
+
+### segment
+
+```js
+// Already use Segment? Keep the SDK. Your publishable key is the write key.
+// Node (@segment/analytics-node)
+const analytics = new Analytics({ writeKey: 'YOUR_PUBLISHABLE_KEY', host: 'YOUR_ORIGIN', path: '/v1/batch' });
+
+// Browser (@segment/analytics-next)
+const [analytics] = await AnalyticsBrowser.load({ writeKey: 'YOUR_PUBLISHABLE_KEY', cdnURL: 'YOUR_ORIGIN' });
+
+// Swift (analytics-swift)
+let config = Configuration(writeKey: "YOUR_PUBLISHABLE_KEY").apiHost("YOUR_HOST/v1").cdnHost("YOUR_HOST/v1")
+```
+
+### sentry
+
+```js
+// Already use Sentry? Keep the SDK and change the DSN.
+// The public key in the DSN is your publishable key written in hex (Sentry only allows letters, digits and _ there).
+Sentry.init({ dsn: 'https://YOUR_SENTRY_KEY@YOUR_HOST/1' });
 ```

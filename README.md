@@ -77,11 +77,19 @@ Each project binds one source to one DuckDB file, stored locally or on an extern
 
 Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the next archive seal (about 10 minutes by default). `slurp init` prints your real ingest URL, source ID and publishable key; a publishable key can only send events, so it is safe in a web page.
 
-**JavaScript SDK** (browser and Node, with a durable queue, batching and retries):
+| Send from | Install | Status |
+|---|---|---|
+| **JavaScript / TypeScript** (browser, Node) | `npm install @hitslop/slurp-sdk` | Published |
+| **React Native / Expo** | `npm install @hitslop/slurp-react-native @react-native-async-storage/async-storage` | Tested against fakes; not yet run on a device |
+| **Swift** (iOS, macOS, tvOS, watchOS) | Xcode: add the package `https://github.com/hitSlop/slurp` | Unit tested and run against a local Worker; not yet in an app on a device |
+| **Segment SDKs** you already use | Change the host to your Worker (below) | Verified with analytics-node, analytics-next and analytics-swift |
+| **Sentry SDKs** you already use | Change the DSN to your Worker (below) | Verified with `@sentry/node` and `@sentry/browser` |
+| **HTTP**, any language | `POST /v1/events` | Tested |
+| **The CLI** | `slurp send`, `slurp identify` | Tested |
 
-```sh
-npm install @hitslop/slurp-sdk
-```
+Coming, with no dates: first-party **Python**, **Rust** and **Kotlin (Android)** SDKs, and local symbolication of Sentry stack traces in the CLI. Other Segment and Sentry SDKs (Kotlin, Python, Go, Cocoa, Android...) speak the same protocols and should work with the same URL change, but are untested, so they are not claimed. Full recipes and limits: [docs/sdks.md](docs/sdks.md).
+
+**JavaScript SDK** (browser and Node, with a durable queue, batching and retries):
 
 ```js
 import { init, track, identify, flush } from '@hitslop/slurp-sdk';
@@ -96,6 +104,47 @@ identify('user_42', { plan: 'pro' });
 track('signed_up', { plan: 'pro' });
 track('feedback', { message: 'Exporting a 4K video fails at 90%', rating: 2 }); // feedback is just another event
 await flush(); // in scripts, send queued events before exiting
+```
+
+**React Native / Expo**: events are kept in AsyncStorage, so they survive the app being killed, and are sent when the app goes to the background:
+
+```ts
+import { init, track, screen } from '@hitslop/slurp-react-native';
+
+init({ endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events', sourceId: 'src_…', key: 'slurp_pk_…' });
+screen('Home');
+track('purchase_completed', { total: 49 });
+```
+
+**Swift**: events are written to disk before they are sent:
+
+```swift
+import Slurp
+
+SlurpClient.configure(.init(key: "slurp_pk_…", endpoint: URL(string: "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events")!, sourceId: "src_…"))
+SlurpClient.shared.screen("Home")
+SlurpClient.shared.track("purchase_completed", ["total": 49])
+```
+
+**Already using Segment?** Keep the SDK and point it at your Worker. Your publishable key is the write key; `page`, `screen`, `group` and `alias` are stored as `track` events with those names:
+
+```js
+// Node (@segment/analytics-node)
+const analytics = new Analytics({ writeKey: 'slurp_pk_…', host: 'https://slurp.YOUR-SUBDOMAIN.workers.dev', path: '/v1/batch' });
+// Browser (@segment/analytics-next)
+const [analytics] = await AnalyticsBrowser.load({ writeKey: 'slurp_pk_…', cdnURL: 'https://slurp.YOUR-SUBDOMAIN.workers.dev' });
+// Swift (analytics-swift)
+let config = Configuration(writeKey: "slurp_pk_…").apiHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1").cdnHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1")
+```
+
+**Already using Sentry?** Change the DSN. Errors are stored whole as `error` events and read with the `errors` view; there is no symbolication or issue UI. The DSN's public key is your publishable key in hex (the setup page shows the finished DSN; or `printf %s 'slurp_pk_…' | xxd -p | tr -d '\n'`):
+
+```js
+Sentry.init({ dsn: 'https://HEX_OF_YOUR_PUBLISHABLE_KEY@slurp.YOUR-SUBDOMAIN.workers.dev/1' });
+```
+
+```sql
+SELECT group_key, any_value(exception_type) AS type, count(*) AS n FROM errors GROUP BY group_key ORDER BY n DESC;
 ```
 
 **The CLI**, from your app's folder, with the project's saved key (handy for testing, scripts and cron jobs):
@@ -127,7 +176,7 @@ Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bu
 |---|---|
 | `backend/` | The Worker (TypeScript): ingest, archives, control plane. Self-contained so it can be deployed on its own. |
 | `crates/` | Rust CLI (`slurp-cli`), client and archive reader (`slurp-client`), Markdown reports (`slurp-document`, `slurp-render`) |
-| `sdks/js` | JavaScript SDK |
+| `sdks/` | SDKs: [`js`](sdks/js), [`react-native`](sdks/react-native), [`swift`](sdks/swift) (the root `Package.swift` exposes it to Swift Package Manager) |
 | `apps/site` | The public site (home, docs, self-host page, cost comparison) |
 | `apps/setup` | The private offline setup page `slurp init` opens (built into the CLI as `setup.html`) |
 | `docs/` | [Documentation](docs/README.md) |

@@ -77,6 +77,9 @@ jobs:
       - name: Worker tests (wrangler dev, local R2 and Durable Objects, real CLI)
         run: npm test
         working-directory: backend
+        timeout-minutes: 10
+        env:
+          WRANGLER_SEND_METRICS: "false"
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - name: SDK tests against the Worker

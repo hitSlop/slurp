@@ -35,14 +35,16 @@ FROM usable
 ```metric
 query: headline
 field: week1
-label: Back within a week (%)
+label: Back within a week
+suffix: "%"
 width: third
 ```
 
 ```metric
 query: headline
 field: week4
-label: Still active in week four (%)
+label: Still active in week four
+suffix: "%"
 width: third
 ```
 
@@ -100,16 +102,21 @@ WITH act AS (
   SELECT DISTINCT user_id, date_trunc('week', timezone('UTC', timestamp))::DATE AS wk FROM events WHERE user_id IS NOT NULL
 ),
 first AS (SELECT user_id, min(wk) AS cohort FROM act GROUP BY 1),
+plan AS (SELECT user_id, any_value(data->>'$.plan') AS plan FROM events WHERE event = 'signed_up' GROUP BY 1),
 last_week AS (SELECT max(wk) AS wk FROM act),
 per_user AS (
-  SELECT f.cohort,
+  SELECT f.cohort, p.plan,
          retention(a.wk = f.cohort, a.wk = f.cohort + 7, a.wk = f.cohort + 14, a.wk = f.cohort + 21, a.wk = f.cohort + 28,
                    a.wk = f.cohort + 35, a.wk = f.cohort + 42, a.wk = f.cohort + 49, a.wk = f.cohort + 56) AS r
-  FROM act a JOIN first f USING (user_id)
-  GROUP BY a.user_id, f.cohort
+  FROM act a JOIN first f USING (user_id) JOIN plan p USING (user_id)
+  GROUP BY a.user_id, f.cohort, p.plan
 ),
-cells AS (SELECT cohort, generate_subscripts(r, 1) - 1 AS week, unnest(r)::INT AS hit FROM per_user)
-SELECT week AS "Week", round(100.0 * avg(hit))::INT AS "% active", count(*) AS "Users counted"
+cells AS (SELECT cohort, plan, generate_subscripts(r, 1) - 1 AS week, unnest(r)::INT AS hit FROM per_user)
+SELECT week AS "Week",
+       round(100.0 * avg(hit))::INT AS "All users",
+       round(100.0 * avg(hit) FILTER (WHERE plan = 'free'))::INT AS "Free",
+       round(100.0 * avg(hit) FILTER (WHERE plan = 'pro'))::INT AS "Pro",
+       count(*) AS "Users counted"
 FROM cells
 WHERE cohort >= (SELECT wk FROM last_week) - INTERVAL 63 DAY AND cohort < (SELECT wk FROM last_week)
   AND cohort + to_weeks(week::INT) <= (SELECT wk FROM last_week)
@@ -119,25 +126,30 @@ ORDER BY week
 
 ```chart
 query: curve
-title: Share of users still active, all cohorts
+title: Pro users come back more
 width: half
 spec:
   height: 240
+  transform:
+    - fold: ["All users", "Free", "Pro"]
+      as: [plan, pct]
   layer:
     - mark: {type: line, strokeWidth: 2}
       encoding:
         x: {field: Week, type: quantitative, title: "Weeks since signup", axis: {tickMinStep: 1}}
-        y: {field: "% active", type: quantitative, title: null, scale: {domain: [0, 100]}}
-    - mark: {type: point, filled: true, size: 60}
+        y: {field: pct, type: quantitative, title: "% active", scale: {domain: [0, 100]}}
+        color: {field: plan, type: nominal, title: null}
+    - mark: {type: point, filled: true, size: 50}
       encoding:
         x: {field: Week, type: quantitative}
-        y: {field: "% active", type: quantitative}
+        y: {field: pct, type: quantitative}
+        color: {field: plan, type: nominal, title: null}
 ```
 
 ```table
 query: curve
-title: Active users by week since signup
+title: "% active by week since signup"
 width: half
 ```
 
-Later weeks include fewer cohorts, because the newest cohorts have not had that many weeks yet. The last column shows how many users each week's figure is based on.
+> Finding: Pro users come back more. 53% of them are active the week after signing up against 45% of free users, and the gap widens to 35% against 27% by week four. Later weeks include fewer cohorts, so the last rows rest on fewer users (see the last column). Next: look at what pro users do in their first week that free users do not.

@@ -214,7 +214,7 @@ const GRID: &str = r#"/* slurp-template
 */
 *{box-sizing:border-box}
 body{margin:0;background:%BG%;color:%FG%;font-family:%FONT%;font-size:12px}
-main{width:840px;display:flex;flex-direction:column;gap:1px;background:%LINE%;border:1px solid %LINE%}
+main{width:840px;max-width:100%;display:flex;flex-direction:column;gap:1px;background:%LINE%;border:1px solid %LINE%}
 .bar{width:100%;display:flex;flex-direction:row;align-items:center;gap:14px;padding:7px 14px;background:%BRAND%;color:#ffffff;font-size:10.5px}
 .brand{display:flex;flex-direction:row;align-items:center;gap:8px}
 .brand img{width:20px;height:20px;border-radius:10px;background:#ffffff}
@@ -233,10 +233,30 @@ h2{margin:0;font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform
 .label{margin:0 0 6px;color:%MUTED%;font-size:10px;letter-spacing:.09em;text-transform:uppercase}
 .value{display:block;font-size:34px;font-weight:700;line-height:1.05;letter-spacing:-.03em;color:%ACCENT%}
 table{width:100%;border-collapse:collapse}
+td,th{min-width:6ch;overflow-wrap:anywhere}
 th{padding:5px 8px;text-align:left;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:%MUTED%;border-bottom:1px solid %AXIS%}
 td{padding:5px 8px;border-bottom:1px solid %GRID%}
-th.num,td.num{text-align:right}
-svg{max-width:100%}"#;
+th.num,td.num{text-align:right;white-space:nowrap}
+.more,.empty{margin:0;padding:8px 8px 0;color:%MUTED%;font-size:10px}
+.empty{padding:18px 8px;font-size:11px}
+.text p,.text li{overflow-wrap:anywhere}
+.value{overflow-wrap:anywhere}
+pre{margin:12px 0;padding:10px 12px;background:%GRID%;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.55}
+.text h2{margin:20px 0 8px;font-size:15px;font-weight:700;letter-spacing:-.01em;text-transform:none}
+.text h3{margin:16px 0 6px;font-size:13px;font-weight:700}
+.text h4{margin:12px 0 4px;font-size:12px;font-weight:700}
+.text p+p{margin-top:8px}
+.text ul,.text ol{margin:8px 0;padding-left:22px}
+.text li{margin:3px 0;line-height:1.6}
+.text blockquote{margin:12px 0;padding:6px 0 6px 14px;border-left:3px solid %ACCENT%}
+.text blockquote p{margin:0}
+.text hr{height:1px;border:0;background:%LINE%;margin:16px 0}
+.text code{padding:1px 4px;background:%GRID%}
+.text pre code{padding:0;background:transparent}
+.text a{color:%ACCENT%;text-decoration:underline}
+svg{max-width:100%;height:auto}
+@media (max-width:700px){main{width:100%}.row{flex-direction:column}.row section{width:100%}.bar{gap:8px}.text{padding:16px 14px}}
+@media print{body{background:#ffffff}main{width:100%}section,.row{break-inside:avoid}}"#;
 
 #[cfg(test)]
 mod tests {

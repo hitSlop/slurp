@@ -145,7 +145,7 @@ Tips: use `GROUP BY` inside the aggregate's query (not `ORDER BY` inside the cal
 
 ## Reports
 
-See [examples/events.md](../examples/events.md). Define named `sql NAME` fences and `metric`, `table`, or `chart` YAML fences with `query: NAME`. Charts contain a Vega-Lite `spec`; external chart datasets are disabled. Metric queries must return one row. Aggregate chart data in SQL; report queries exceeding 1,000 rows fail explicitly.
+See [Writing reports](reports.md) for the file format, blocks, number formats and the checks `slurp report check` runs, and [examples/demo](../examples/demo) for finished reports. Define named `sql NAME` fences and `metric`, `table`, or `chart` YAML fences with `query: NAME`. Charts contain a Vega-Lite `spec`; external chart datasets are disabled. Metric queries must return one row. Aggregate chart data in SQL; chart and metric queries returning more than 1,000 rows fail explicitly (a table shows its first rows and says how many there are).
 
 YAML front matter can declare scalar defaults:
 
@@ -156,7 +156,7 @@ params:
 ---
 ```
 
-Reference `$event_name` in SQL and override with `--param event_name=purchase`. `slurp report check FILE` validates fences and query references. Builds evaluate all named queries in one read-only snapshot. HTML embeds charts and fonts; PNG uses Takumi and PDF uses takumi-pdf. Generated reports embed selected query results; review before sharing.
+Reference `$event_name` in SQL and override with `--param event_name=purchase`. `slurp report check FILE` reports every problem with its line (unknown keys and queries, chart fields that are not columns, bad SQL, bad chart specs). Builds evaluate all named queries in one read-only snapshot. HTML embeds charts and fonts; PNG uses Takumi and PDF uses takumi-pdf. Generated reports embed selected query results; review before sharing.
 
 Choose colors with `--theme` (a built-in id, or your own `.json` file) or `--dark`, the page layout with `--style` (`grid`, or your own `.css` template), and append tweaks with `--css FILE`. Front matter takes `theme:`, `style:`, `purpose:` and `date:`, and any block takes `width: half` or `third`. `slurp report show list|theme|style` prints the built-in themes and template to copy. See [report-styling.md](report-styling.md) to write your own.
 

@@ -207,11 +207,28 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             return Ok(json!({"installed":out}));
         }
         Operation::Report(Report::Check { file }) => {
+            use slurp_app::{
+                error::{ErrorCode, Failure},
+                report_check,
+            };
             let doc = slurp_app::report::parse(&std::fs::read_to_string(&file)?)?;
             slurp_app::report::resolve_look(&doc, &slurp_app::report::Look::default(), &file)?;
-            return Ok(
-                json!({"queries":doc.queries.keys().collect::<Vec<_>>(),"blocks":doc.blocks.len()}),
-            );
+            // With a project (and its database) the queries are checked for real; without one only the structure is.
+            let workspace = slurp_app::project::resolve(&cwd, cli.workspace.as_deref())
+                .ok()
+                .and_then(|root| Workspace::load(&root).ok())
+                .and_then(|w| w.with_extensions(&doc.extensions).ok());
+            let problems = report_check::validate(&doc, workspace.as_ref())?;
+            if let Some(summary) = report_check::error_summary(&problems) {
+                return Err(Failure::new(ErrorCode::InvalidInput, summary).into());
+            }
+            return Ok(json!({
+                "ok": true,
+                "queries": doc.queries.keys().collect::<Vec<_>>(),
+                "blocks": doc.blocks.len(),
+                "checked_against_data": workspace.is_some(),
+                "warnings": problems,
+            }));
         }
         Operation::Report(Report::Show { what, name }) => {
             match what {

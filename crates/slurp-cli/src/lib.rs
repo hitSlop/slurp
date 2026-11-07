@@ -19,6 +19,8 @@ pub mod storage;
 pub mod system;
 use error::{ErrorCode, Failure};
 pub mod report;
+pub mod report_check;
+pub mod report_format;
 pub mod report_style;
 pub mod setup;
 /// Cooperative cancellation shared by a caller and an operation.
@@ -55,6 +57,35 @@ pub struct Workspace {
     /// Community extensions loaded into every query run through this value (see [`Workspace::with_extensions`]).
     #[serde(skip)]
     pub extensions: Vec<String>,
+}
+/// Replace the bare `Infinity`, `-Infinity` and `NaN` words DuckDB writes for non-finite doubles with `null`, leaving
+/// everything inside strings alone.
+pub fn null_non_finite(json: &str) -> std::borrow::Cow<'_, str> {
+    if !json.contains("Infinity") && !json.contains("NaN") {
+        return json.into();
+    }
+    let mut out = String::with_capacity(json.len());
+    let (mut in_string, mut escaped) = (false, false);
+    let mut rest = json;
+    while let Some(c) = rest.chars().next() {
+        if in_string {
+            in_string = !(c == '"' && !escaped);
+            escaped = c == '\\' && !escaped;
+        } else if c == '"' {
+            in_string = true;
+        } else if let Some(after) = rest
+            .strip_prefix("-Infinity")
+            .or_else(|| rest.strip_prefix("Infinity"))
+            .or_else(|| rest.strip_prefix("NaN"))
+        {
+            out.push_str("null");
+            rest = after;
+            continue;
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out.into()
 }
 /// Quote SQL data; identifiers in generated SQL are fixed by Slurp.
 pub fn literal(s: &str) -> String {
@@ -276,7 +307,15 @@ impl Workspace {
         if bytes.is_empty() {
             Ok(json!([]))
         } else {
-            Ok(serde_json::from_slice(&bytes)?)
+            match serde_json::from_slice(&bytes) {
+                Ok(value) => Ok(value),
+                Err(error) => {
+                    // DuckDB writes a non-finite double (1.0 / 0, a NaN ratio) as the bare words Infinity and NaN, which is
+                    // not JSON. Show those as null (there is no JSON number for them) rather than failing the whole query.
+                    let text = String::from_utf8(bytes).map_err(|_| error)?;
+                    Ok(serde_json::from_str(&null_non_finite(&text))?)
+                }
+            }
         }
     }
     /// Read a bounded query result. Raw JSON numbers are parsed without float conversion.

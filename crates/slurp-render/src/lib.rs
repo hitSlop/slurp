@@ -171,6 +171,15 @@ fn luminance(color: &str) -> f64 {
     c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722
 }
 
+/// WCAG contrast ratio (1 to 21) between two `#rgb` / `#rrggbb` colours; `None` when either is not one of those
+/// (built-in themes also use `rgb()` and `white`).
+pub fn contrast_ratio(a: &str, b: &str) -> Option<f64> {
+    hex(a)?;
+    hex(b)?;
+    let (la, lb) = (luminance(a), luminance(b));
+    Some((la.max(lb) + 0.05) / (la.min(lb) + 0.05))
+}
+
 /// Turn a theme file into a full palette.
 ///
 /// Required: `bg`, `fg`, `accent` and `series` (a list of 1 to 20 colours for chart series), unless `extends` names a
@@ -303,6 +312,28 @@ pub fn custom_palette(definition: &serde_json::Value) -> Result<Palette> {
 /// Font family names the renderer knows (also the names to use in report CSS).
 pub const SANS: &str = "Geist";
 pub const MONO: &str = "Geist Mono";
+
+/// The characters of `text` that the bundled font cannot draw. The PNG and PDF show them as empty boxes (the HTML report is
+/// not affected: a browser falls back to the system's fonts). Whitespace and control characters are ignored.
+pub fn undrawable_chars(text: &str, font: &str) -> Vec<char> {
+    use skrifa::{FontRef, MetadataProvider};
+    let bytes: &[u8] = if font == MONO {
+        include_bytes!("../assets/GeistMonoVariable.ttf")
+    } else {
+        include_bytes!("../assets/GeistVariable.ttf")
+    };
+    let Ok(face) = FontRef::new(bytes) else {
+        return vec![];
+    };
+    let charmap = face.charmap();
+    let mut missing: Vec<char> = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control() && charmap.map(*c).is_none())
+        .collect();
+    missing.sort_unstable();
+    missing.dedup();
+    missing
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CompileOptions {
@@ -548,6 +579,15 @@ pub fn dimensions(svg: &str) -> Result<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn characters_outside_the_bundled_fonts_are_reported() {
+        assert!(super::undrawable_chars("Ünïcödé café – 12.5% → ok", super::MONO).is_empty());
+        assert_eq!(
+            super::undrawable_chars("日本 hello 日", super::SANS),
+            vec!['日', '本']
+        );
+        assert!(super::undrawable_chars("   \n", super::SANS).is_empty());
+    }
     use super::*;
     #[test]
     fn lazy_host_has_no_io_and_interrupts() {

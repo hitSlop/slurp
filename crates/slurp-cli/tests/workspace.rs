@@ -213,3 +213,27 @@ fn behavioral_retention_runs_in_queries_and_reports() {
     )
     .expect("report with extensions");
 }
+
+#[test]
+fn non_finite_numbers_become_null_instead_of_breaking_queries_and_reports() {
+    assert_eq!(
+        slurp_app::null_non_finite(
+            r#"[{"a":Infinity,"b":-Infinity,"c":NaN,"d":"NaN \"Infinity\"","e":1}]"#
+        ),
+        r#"[{"a":null,"b":null,"c":null,"d":"NaN \"Infinity\"","e":1}]"#
+    );
+    assert_eq!(slurp_app::null_non_finite("[1,2]"), "[1,2]");
+    let Some((temp, w)) = workspace() else { return };
+    let rows = w
+        .query("SELECT 1.0 / 0 AS ratio, 'nan'::DOUBLE AS nothing, 2 AS ok")
+        .expect("query");
+    assert_eq!(rows["rows"], json!([[null, null, 2]]));
+    let report = temp.path().join("r.md");
+    std::fs::write(
+        &report,
+        "```sql q\nSELECT 1.0 / 0 AS ratio, 3 AS n\n```\n\n```table\nquery: q\n```\n",
+    )
+    .unwrap();
+    slurp_app::report::build(&w, &report, &temp.path().join("out"), false, false, false)
+        .expect("a report with an infinite ratio builds");
+}

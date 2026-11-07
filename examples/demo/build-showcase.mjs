@@ -26,6 +26,9 @@ const env = { PATH: process.env.PATH, HOME: join(work, 'user'), SLURP_HOME: join
 const REPORTS = [
   { name: 'export-health', pdf: true },
   { name: 'retention' },
+  { name: 'activation' },
+  { name: 'recovery' },
+  { name: 'engagement' },
   { name: 'release-compare' },
   { name: 'formats' },
   { name: 'funnel' },

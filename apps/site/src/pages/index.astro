@@ -9,6 +9,9 @@ import PriceStrip from '../components/PriceStrip.astro';
 import {Image} from 'astro:assets';
 import flagship from '../assets/reports/export-health.png';
 import retention from '../assets/reports/retention.png';
+import activation from '../assets/reports/activation.png';
+import recovery from '../assets/reports/recovery.png';
+import engagement from '../assets/reports/engagement.png';
 import releaseCompare from '../assets/reports/release-compare.png';
 import formats from '../assets/reports/formats.png';
 import funnel from '../assets/reports/funnel.png';
@@ -48,10 +51,13 @@ const sections=[{id:'loop',label:'The loop'},{id:'reports',label:'Reports'},{id:
 <section class="section" id="reports">
 <span class="section-number">02 / REPORTS</span>
 <h2>What your agent hands back.</h2>
-<p>Real reports built by Slurp from sample data, through the same pipeline you would use: line and bar charts, heatmaps, donuts, scatter plots, funnels and areas, in any Perspective theme. Open one: each is an ordinary self-contained HTML file.</p>
+<p>Real reports built by Slurp from sample data, through the same pipeline you would use: line and bar charts, heatmaps, donuts, scatter plots, funnels and areas, in any Perspective theme, with retention, funnels, visits and next-step paths from DuckDB's behavioral functions. Open one: each is an ordinary self-contained HTML file.</p>
 <div class="gallery">
 <a href="/reports/export-health/"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export completion by week and by file size, with a table of failure reasons" loading="lazy"/><span><b>Why export completion dropped</b>Line, grouped bars, table</span></a>
-<a href="/reports/retention/"><Image src={retention} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: weekly retention cohort heatmap" loading="lazy"/><span><b>Do new users come back?</b>Cohort heatmap</span></a>
+<a href="/reports/retention/"><Image src={retention} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: weekly retention cohort heatmap and a free versus pro retention curve" loading="lazy"/><span><b>Do new users come back?</b>Cohort heatmap, retention curves</span></a>
+<a href="/reports/activation/"><Image src={activation} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: signup to first export funnel by plan and time to first export" loading="lazy"/><span><b>How fast do new users get value?</b>window_funnel, bars</span></a>
+<a href="/reports/recovery/"><Image src={recovery} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: how soon people recover after a failed export and what they do next" loading="lazy"/><span><b>What happens after a failure?</b>sequence_match, next step</span></a>
+<a href="/reports/engagement/"><Image src={engagement} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: visit length, exports per person and active people over time" loading="lazy"/><span><b>How engaged are people?</b>sessionize, lines, bars</span></a>
 <a href="/reports/formats/"><Image src={formats} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: donut of export formats, bars of export time and a log scatter of size against time" loading="lazy"/><span><b>What are people exporting?</b>Donut, bars, scatter</span></a>
 <a href="/reports/funnel/"><Image src={funnel} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export funnel, completion by format and weekly activity as overlaid areas" loading="lazy"/><span><b>Where does the flow leak?</b>Funnel, bars, area</span></a>
 <a href="/reports/release-compare/"><Image src={releaseCompare} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: release comparison with failure reasons and weekly sign-ups" loading="lazy"/><span><b>How did each release do?</b>Stacked bars, area, table</span></a>

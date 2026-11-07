@@ -34,3 +34,7 @@ examples/demo/.work/
 
 # third-party reference source (AGPL/FSL): never commit
 /_docs/
+
+# SwiftPM
+.build/
+.swiftpm/

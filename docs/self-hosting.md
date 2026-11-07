@@ -43,7 +43,7 @@ The Worker name and bucket are in `backend/wrangler.jsonc` (`slurp`, `slurp-arch
 
 ### One-click deploy
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2FhitSlop%2Fslurp%2Ftree%2Fmain%2Fbackend)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2FhitSlop%2Fslurp%2Ftree%2Fmaster%2Fbackend)
 
 Cloudflare's "Deploy to Cloudflare" button clones the `backend/` directory of the public repository ([hitSlop/slurp](https://github.com/hitSlop/slurp)) into your account and provisions the bucket and Durable Objects from `wrangler.jsonc`. It asks for `ADMIN_TOKEN` (described in `backend/package.json`): choose a long random value, for example `openssl rand -base64 32`, and keep it. The website's deploy dialog uses the same link; its address is `deployRepoUrl` in `apps/site/src/lib/config.mjs`. `backend/` is deliberately self-contained (its own `package.json` and lockfile) so it builds on its own.
 

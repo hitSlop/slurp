@@ -21,7 +21,7 @@ No servers to run, no data leaving your account. The Cloudflare Free plan is eno
 
 ## Quickstart
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2FhitSlop%2Fslurp%2Ftree%2Fmain%2Fbackend)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2FhitSlop%2Fslurp%2Ftree%2Fmaster%2Fbackend)
 
 One click deploys the Worker, Durable Objects and R2 bucket to your Cloudflare account (you choose an `ADMIN_TOKEN`). Then open the Worker's address: it shows the command that connects the CLI. Or do it all from a terminal:
 

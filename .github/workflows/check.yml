@@ -124,5 +124,7 @@ jobs:
       - run: pnpm --filter @hitslop/slurp-sdk typecheck
       - name: The README pricing table matches the site
         run: node apps/site/scripts/readme-pricing.mjs --check
+      - name: The README badges match the site
+        run: node apps/site/scripts/readme-badges.mjs --check
       - name: CI policy scripts
         run: node --test scripts/ci/attribution.test.mjs

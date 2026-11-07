@@ -7,6 +7,7 @@ import Code from '../components/Code.astro';
 import DeployButton from '../components/DeployButton.astro';
 import Workbench from '../components/Workbench.astro';
 import DuckDb from '../components/DuckDb.astro';
+import WorksWith from '../components/WorksWith.astro';
 import {githubUrl,discordUrl} from '../lib/links.mjs';
 import PriceStrip from '../components/PriceStrip.astro';
 import {count,freePlanEventsPerMonth} from '../lib/pricing.mjs';
@@ -36,10 +37,11 @@ const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'}
 <p class="lede">Slurp collects events and user feedback in your own Cloudflare account. <code>slurp sync</code> pulls them to your laptop (or an external SSD) as a DuckDB file. Your agent analyzes them with SQL, finds what to fix and ships the change.</p>
 <div class="actions"><DeployButton id="home" cli={false}/><a class="btn" href="#loop">See the workflow</a><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
 <p class="free-note"><strong>Free to start.</strong> Cloudflare's free plan covers about {count(freePlanEventsPerMonth())} events a month. <button type="button" class="free-cli" data-deploy-open="home">Install with the CLI instead ↗</button></p>
+<WorksWith/>
 <p class="loopline" aria-label="The loop: events and feedback, then DuckDB, then your agent, then a better product"><span>events + feedback</span><i>→</i><span class="duck-word"><DuckDb size={14}/>DuckDB</span><i>→</i><span>your agent</span><i>→</i><span class="hot">a better product</span></p>
 </div>
 <a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
-<figure><div class="crop"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 420px, 90vw" alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
+<figure><div class="crop"><Image src={flagship} width={1680} widths={[640,920,1260,1680]} sizes="(min-width: 1100px) 460px, 92vw" format="webp" quality={92} alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
 </a>
 </div>
 <PriceStrip/>
@@ -112,7 +114,7 @@ slurp report open ./report`}/>
 .snapshot{display:block;text-decoration:none;color:inherit}
 .snapshot figure{margin:0;border:1px solid var(--rule);border-radius:12px;background:#fff;box-shadow:0 14px 40px #17191c1f;overflow:hidden;transition:transform .2s,box-shadow .2s}
 .snapshot:hover figure{transform:translateY(-2px);box-shadow:0 18px 48px #17191c2e}
-.crop{height:clamp(250px,24vw,330px);overflow:hidden;background:#f4f4f4}
+.crop{height:clamp(420px,41vw,590px);overflow:hidden;background:#f4f4f4}
 .crop :global(img){display:block;width:100%;height:auto;margin-top:-4.3%}
 .snapshot figcaption{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:9px 14px;font:600 11.5px var(--body);color:var(--muted);border-top:1px solid var(--rule)}
 .snapshot figcaption span:last-child{color:var(--red)}

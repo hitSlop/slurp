@@ -1,0 +1,23 @@
+---
+// The tools Slurp captures from, the SDKs you can keep using, and what is coming: logo chips from lib/connections.ts.
+import Icon from './Icon.astro';
+import {worksWith} from '../lib/connections';
+const logos=import.meta.glob('../../../../packages/web-shared/logos/*.svg',{eager:true,query:'?url',import:'default'}) as Record<string,string>;
+const logo=(name:string)=>logos[`../../../../packages/web-shared/logos/${name}.svg`];
+const groups=[{id:'capture',label:'Capture from'},{id:'keep',label:'Keep using'},{id:'soon',label:'Coming'}] as const;
+---
+<div class="works-with" aria-label="What Slurp works with">
+{groups.map(g=><div class="ww-group"><span class="ww-label">{g.label}</span><ul>{worksWith.filter(w=>w.group===g.id).map(w=><li class:list={['ww-chip',{soon:w.group==='soon'}]} title={w.note}>{w.logo?<img src={logo(w.logo)} alt="" width="16" height="16" loading="lazy"/>:<Icon name={w.icon??'code'}/>}<span>{w.name}</span></li>)}</ul></div>)}
+</div>
+<style>
+.works-with{display:grid;gap:10px;margin:18px 0}
+.ww-group{display:grid;grid-template-columns:104px minmax(0,1fr);align-items:start;gap:6px 10px}
+.ww-label{padding-top:7px;font:700 11px var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.ww-group ul{display:flex;flex-wrap:wrap;gap:6px;list-style:none;margin:0;padding:0}
+.ww-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 8px;border:1px solid var(--rule);border-radius:999px;background:#fff;font:600 12px var(--body);color:var(--ink);white-space:nowrap}
+.ww-chip img,.ww-chip :global(.icon){width:16px;height:16px;flex:none;object-fit:contain}
+.ww-chip :global(.icon){color:var(--muted)}
+.ww-chip.soon{color:var(--muted);background:#f7f8fa;border-style:dashed}
+.ww-chip.soon img{filter:grayscale(1);opacity:.7}
+@media(max-width:420px){.ww-group{grid-template-columns:1fr}.ww-label{padding-top:0}}
+</style>

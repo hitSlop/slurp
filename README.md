@@ -9,6 +9,7 @@
   <a href="https://github.com/hitSlop/slurp/actions/workflows/check.yml"><img src="https://github.com/hitSlop/slurp/actions/workflows/check.yml/badge.svg?branch=master" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-e8002a" alt="MIT license"></a>
   <a href="https://github.com/hitSlop/slurp/stargazers"><img src="https://img.shields.io/github/stars/hitSlop/slurp?style=flat&color=e8002a" alt="GitHub stars"></a>
+  <a href="https://discord.gg/jprRVWSRdn"><img src="https://img.shields.io/badge/Discord-join%20the%20chat-5865F2?logo=discord&logoColor=white" alt="Join the Discord"></a>
 </p>
 
 Bring your events home. Capture application events into **your own Cloudflare account**, sync them into a local DuckDB file, and give your coding agent raw data for product analysis and reports.
@@ -23,6 +24,14 @@ your app ──► Worker + Durable Objects ──► R2 archives      (in your 
 ```
 
 No servers to run, no data leaving your account. The Cloudflare Free plan is enough to start.
+
+## From user signal to shipped fix
+
+<p align="center">
+  <img src="docs/assets/slurp-workbench.png" width="900" alt="Diagram: connections send events to Cloudflare R2; your coding agent syncs them into a local DuckDB file, runs SQL analysis, generates a report, ships a product fix and updates the tracking, which collects new signals.">
+</p>
+
+Your coding agent owns the whole span: it pulls the data, analyzes it with SQL, writes the report, ships the fix and updates the tracking so the next round of signals arrives. Today the JavaScript SDK and HTTP capture work; the other inputs in the picture (bug reports, chat, crashes, analytics tools, more SDKs) are on the roadmap, see [Connections](https://slurp.run/connections/).
 
 ## What it costs
 
@@ -62,6 +71,10 @@ slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 ```
 
 Each project binds one source to one DuckDB file, stored locally or on an external drive. SQL, report definitions and project metadata stay with your app. No daemon is required. DuckDB 2.x is used for analysis.
+
+## Community
+
+Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bugs and feature requests: [GitHub issues](https://github.com/hitSlop/slurp/issues). The site is [slurp.run](https://slurp.run).
 
 ## Repository
 

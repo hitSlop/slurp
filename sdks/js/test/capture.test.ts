@@ -11,9 +11,7 @@ test('capture preserves queued identities and context, source-scoped reloads, an
     return new Response(null, { status, headers: status === 503 ? { 'Retry-After': '10' } : {} })
   }
   const app = { version: 'before' }
-  // Keys name their project, so a replacement key from the same project keeps the saved queue and identity.
-  const projectKey = (project: string, random: string) => `slurp_pk_${project.repeat(16)}_${random.repeat(48)}`
-  const options = { key: projectKey('a', '1'), endpoint: 'https://events.example/v1/events',
+  const options = { key: 'slurp_pk_test_one', endpoint: 'https://events.example/v1/events',
     storage, fetch: fetcher, context: { app }, flushAt: 100, flushIntervalMs: 60_000 }
   const first = createClient(options)
   const ids = [first.track('anonymous', { nested: { value: 1 } }), first.identify('alice', { plan: 'pro' }), first.track('known')]
@@ -40,13 +38,13 @@ test('capture preserves queued identities and context, source-scoped reloads, an
   assert.deepEqual(records[1].data, { plan: 'pro' })
   assert.equal(records[1].event, undefined)
   await first.close()
-  // A rotating publishable key keeps the same identity and exact persisted body.
-  const raw = await storage.getItem('@hitslop/slurp-sdk:v1:https://events.example/v1/events:aaaaaaaaaaaaaaaa')
+  // A restart with the same key keeps the same identity and the exact persisted body.
+  const raw = await storage.getItem('@hitslop/slurp-sdk:v1:https://events.example/v1/events:slurp_pk_test_one')
   const state = JSON.parse(raw!)
   state.retryAt = 0
-  await storage.setItem('@hitslop/slurp-sdk:v1:https://events.example/v1/events:aaaaaaaaaaaaaaaa', JSON.stringify(state))
+  await storage.setItem('@hitslop/slurp-sdk:v1:https://events.example/v1/events:slurp_pk_test_one', JSON.stringify(state))
   status = 200
-  const next = createClient({ ...options, key: projectKey('a', '2') })
+  const next = createClient(options)
   const accepted = await next.flush()
   assert.deepEqual(bodies[1], bodies[0])
   assert.deepEqual(accepted, { accepted: 8, rejected: 0, pending: 0, retryAt: null, stopped: false })
@@ -55,8 +53,8 @@ test('capture preserves queued identities and context, source-scoped reloads, an
   const reloaded = JSON.parse(bodies.at(-1)!)
   assert.equal(reloaded.anonymous_id, records[7].anonymous_id)
   await next.close()
-  const separate = createClient({ ...options, key: projectKey('b', '1') })
-  separate.track('different-project')
+  const separate = createClient({ ...options, key: 'slurp_pk_test_two' })
+  separate.track('different-key')
   await separate.flush()
   assert.notEqual(JSON.parse(bodies.at(-1)!).anonymous_id, reloaded.anonymous_id)
   await separate.close()

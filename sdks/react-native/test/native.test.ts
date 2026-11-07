@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { memoryStorage } from '@hitslop/slurp-sdk'
+import { memoryStorage, type StorageAdapter } from '@hitslop/slurp-sdk'
+import { chunkedStorage } from '../src/chunked.ts'
 import { createNativeClient, type NativeEnvironment } from '../src/native.ts'
 
 const endpoint = 'https://worker.example/v1/events'
@@ -95,4 +96,27 @@ test('netinfo: a reconnect flushes; close removes both listeners', async () => {
   assert.equal(f.sent.length, 1)
   await client.close()
   assert.ok(netRemoved); assert.equal(f.listeners.size, 0)
+})
+
+/** Replacing the client (what `init` does) must hand the first client's queue to the next one even though each client wraps AsyncStorage
+ *  in a new `chunkedStorage` and every storage call takes a moment. */
+test('a replaced client hands its queue on through the default storage wrapper, even over several rapid replacements', async () => {
+  const inner = memoryStorage()
+  const slow: StorageAdapter = {
+    getItem: key => new Promise(resolve => setTimeout(() => resolve(inner.getItem(key) as string | null), 10)),
+    setItem: (key, value) => new Promise(resolve => setTimeout(() => { inner.setItem(key, value); resolve() }, 10)),
+    removeItem: key => new Promise(resolve => setTimeout(() => { inner.removeItem(key); resolve() }, 10)),
+  }
+  const f = fakes()
+  const make = () => createNativeClient({ ...base, fetch: f.fetchOk }, { ...f.env, storage: chunkedStorage(slow) })
+  let client = make()
+  for (const name of ['one', 'two', 'three']) {
+    client.track(name)
+    void client.close()
+    client = make()
+  }
+  client.track('four')
+  await client.flush()
+  assert.deepEqual(f.sent.map(event => event.event).sort(), ['four', 'one', 'three', 'two'])
+  await client.close()
 })

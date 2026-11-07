@@ -35,7 +35,7 @@ track('signed_up', { plan: 'pro' });
 await flush(); // in scripts, send queued events before exiting
 ```
 
-Options, storage adapters and delivery rules: [sdks/js](../sdks/js/README.md).
+Options, storage adapters and delivery rules: [sdks/js](../sdks/js/README.md). In the browser, unsent events are kept in `localStorage`. **In Node the default queue is in memory**, so call `await flush()` before the process exits, or pass `storage: fileStorage(path)` from `@hitslop/slurp-sdk/node` to keep unsent events across restarts.
 
 For a feedback form, `import { mountFeedback } from '@hitslop/slurp-sdk/feedback'` adds a drop-in "Feedback" button that sends a `feedback` event (message, optional rating and email); see [the widget](../sdks/js/README.md#feedback-widget).
 

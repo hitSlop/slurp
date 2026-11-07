@@ -1,6 +1,6 @@
 # SDKs
 
-Libraries that send events to your Slurp Worker. All of them write the same record (see the [event format](../docs/architecture.md)) and share the same delivery rules: a durable queue, batching, byte-identical retries so a retry never double counts, and no truncation.
+Libraries that send events to your Slurp Worker. All of them write the same record (see the [event format](../docs/architecture.md)) and share the same delivery rules: a queue that is durable by default in browsers (`localStorage`), React Native (AsyncStorage) and Swift (a file) and opt-in in Node (`fileStorage`, see [the JS SDK](js/README.md)), batching, byte-identical retries so a retry never double counts, and no truncation.
 
 | SDK | Package | Status |
 | --- | --- | --- |

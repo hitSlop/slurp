@@ -118,12 +118,13 @@ public final class SlurpClient: @unchecked Sendable {
         store = queueStore!
         uploader = Uploader(session: configuration.session, endpoint: configuration.endpoint, key: configuration.key, timeout: configuration.requestTimeout)
         let now = Date().timeIntervalSince1970
-        var restored = store.loadState() ?? DurableQueue.State(anonymousId: Ids.uuidv7(), sessionId: Ids.uuidv7(), lastActivity: now)
-        // A replaced key starts clean: it must not inherit the "stopped" state that the old, refused key left behind.
-        let fingerprint = SlurpClient.fingerprint(configuration.key)
-        if restored.keyFingerprint != fingerprint {
-            if restored.stopped { restored.stopped = false; restored.attempts = 0; restored.retryAt = 0 }
-            restored.keyFingerprint = fingerprint
+        // Saved state belongs to one key (two senders never send each other's queued events, and a replaced key starts clean, with a
+        // new visitor identity). Anything saved by another owner in this folder is discarded rather than trusted.
+        let owner = "\(configuration.endpoint.absoluteString)|\(configuration.key)"
+        let fresh = { DurableQueue.State(anonymousId: Ids.uuidv7(), sessionId: Ids.uuidv7(), lastActivity: now, owner: owner) }
+        var restored = fresh()
+        if let saved = store.loadState() {
+            if saved.owner == owner { restored = saved } else { store.clear() }
         }
         state = restored
         store.save(state)
@@ -147,28 +148,11 @@ public final class SlurpClient: @unchecked Sendable {
 
     deinit { for token in observers { NotificationCenter.default.removeObserver(token) } }
 
-    /// A short stable fingerprint of a key (FNV-1a), so the saved state can tell that the key was replaced without storing the key.
-    private static func fingerprint(_ key: String) -> String {
-        var hash: UInt64 = 0xcbf29ce484222325
-        for byte in key.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
-        return String(hash, radix: 16)
-    }
-
-    /// A Slurp key names its project (`slurp_pk_<project>_<random>`), so saved state belongs to the project and survives replacing the
-    /// key. A key of any other shape is its own identity.
-    static func identity(of key: String) -> String {
-        let parts = key.split(separator: "_", omittingEmptySubsequences: false)
-        let hex = Set("0123456789abcdef")
-        guard parts.count == 4, parts[0] == "slurp", parts[1] == "pk", parts[2].count == 16, parts[3].count == 48,
-              parts[2].allSatisfy({ hex.contains($0) }), parts[3].allSatisfy({ hex.contains($0) }) else { return key }
-        return String(parts[2])
-    }
-
     private static func defaultDirectory(for configuration: Configuration) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         // FNV-1a: a short, stable folder name without needing CryptoKit.
         var hash: UInt64 = 0xcbf29ce484222325
-        for byte in "\(configuration.endpoint.absoluteString)|\(Self.identity(of: configuration.key))".utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        for byte in "\(configuration.endpoint.absoluteString)|\(configuration.key)".utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
         return base.appendingPathComponent("Slurp", isDirectory: true).appendingPathComponent(String(hash, radix: 16), isDirectory: true)
     }
 

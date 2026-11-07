@@ -81,9 +81,6 @@ impl<'a> Walk<'a> {
                 continue;
             };
             let sequence = protocol::parse_sequence(&object.seq)?;
-            if sequence > self.head {
-                return Ok(None);
-            }
             if sequence != self.after + 1 {
                 bail!("publication gap; expected object {}", self.after + 1);
             }
@@ -222,6 +219,15 @@ mod tests {
         let mut remote = fake(4);
         remote.objects.remove(1); // 1, 3, 4
         let mut walk = Walk::new(&remote, ARCHIVE, 0, 4, 10);
+        assert!(message(drain(&mut walk).await).contains("publication gap; expected object 2"));
+    }
+
+    /// The listing may start beyond the snapshot head: that is a missing archive, not the end of the walk.
+    #[tokio::test]
+    async fn a_listing_that_jumps_past_the_head_is_a_gap_not_a_clean_finish() {
+        let mut remote = fake(3);
+        remote.objects.drain(..2); // after object 1 the only listed archive is 3
+        let mut walk = Walk::new(&remote, ARCHIVE, 1, 2, 10);
         assert!(message(drain(&mut walk).await).contains("publication gap; expected object 2"));
     }
 

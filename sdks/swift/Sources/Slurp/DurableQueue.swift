@@ -17,8 +17,8 @@ final class DurableQueue {
         var retryAt: Double = 0
         var attempts: Int = 0
         var stopped: Bool = false
-        /// A fingerprint of the publishable key that was in use. A different key (after a rotation) clears `stopped`.
-        var keyFingerprint: String?
+        /// `endpoint|key` of the client that owns this folder. Saved state belongs to one key: a client with another key starts clean.
+        var owner: String
     }
 
     /// The disk operations a test can make fail.

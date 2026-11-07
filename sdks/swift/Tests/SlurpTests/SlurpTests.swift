@@ -252,17 +252,4 @@ final class SlurpTests: XCTestCase {
         let result = await slurp.flush()
         XCTAssertEqual(result.accepted, 3); XCTAssertEqual(result.pending, 0)
     }
-
-    /// A key names its project, so a replacement key from the same project keeps the saved queue and identity.
-    func testAKeyNamesItsProjectAndOtherKeysAreTheirOwnIdentity() {
-        let project = String(repeating: "a", count: 16)
-        let first = "slurp_pk_\(project)_\(String(repeating: "1", count: 48))"
-        let second = "slurp_pk_\(project)_\(String(repeating: "2", count: 48))"
-        let other = "slurp_pk_\(String(repeating: "b", count: 16))_\(String(repeating: "1", count: 48))"
-        XCTAssertEqual(SlurpClient.identity(of: first), project)
-        XCTAssertEqual(SlurpClient.identity(of: second), project)
-        XCTAssertNotEqual(SlurpClient.identity(of: other), project)
-        XCTAssertEqual(SlurpClient.identity(of: "slurp_pk_test"), "slurp_pk_test")
-        XCTAssertEqual(SlurpClient.identity(of: "slurp_pk_\(project)_short"), "slurp_pk_\(project)_short")
-    }
 }

@@ -63,11 +63,12 @@ interface State {
   retryAt: number
   attempts: number
   stopped: boolean
-  /** A fingerprint of the key that was in use: a different key (after a rotation) clears `stopped`. */
-  keyFingerprint?: string
 }
 
 const count = (body: string) => body.split('\n').length - 1
+
+/** Saves still in flight for a closed client, by saved-state key. A replacement client waits for its own key here before it reads. */
+const pendingCloses = new Map<string, Promise<void>>()
 const bytes = (body: string) => encoder.encode(body).byteLength
 const KEEPALIVE_BYTES = 60 * 1024
 /** Largest single record the gateway accepts; records are stored whole, never truncated. */
@@ -77,13 +78,6 @@ function positive(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback
   if (!Number.isSafeInteger(value) || value < 1) throw new Error('limits and intervals must be positive safe integers')
   return value
-}
-
-/** A short stable fingerprint of a key (FNV-1a), so saved state can tell the key was replaced without storing the key. */
-function fingerprint(key: string): string {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < key.length; i++) { hash ^= key.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0 }
-  return hash.toString(16)
 }
 
 /** True for one complete JSON object. The gateway validates a request as a whole, so one damaged line costs every event batched with it. */
@@ -117,7 +111,6 @@ export function createClient(options: SlurpOptions): SlurpClient {
   const maxQueue = positive(options.maxQueue, 10_000)
   const maxQueueBytes = positive(options.maxQueueBytes, 4 * 1024 * 1024)
   const requestTimeoutMs = positive(options.requestTimeoutMs, 30_000)
-  const keyPrint = fingerprint(options.key)
   const sessionTimeout = positive(options.sessionTimeoutMs, 30 * 60 * 1000)
   let accepted = 0
   let rejected = 0
@@ -126,10 +119,9 @@ export function createClient(options: SlurpOptions): SlurpClient {
     try { options.onError?.(error instanceof Error ? error : new Error(String(error)), dropped) } catch { /* callbacks cannot break delivery */ }
   }
   const storage = options.storage ?? defaultStorage(report)
-  // A Slurp key names its project (`slurp_pk_<project>_<random>`), so the saved queue and visitor identity belong to the project
-  // and survive replacing the key. A key of any other shape is its own identity.
-  const identity = /^slurp_pk_([0-9a-f]{16})_[0-9a-f]{48}$/.exec(options.key)?.[1] ?? options.key
-  const storageKey = `@hitslop/slurp-sdk:v1:${resolveEndpoint(options.endpoint).replace(/[?#].*$/, "").replace(/\/$/, "")}:${identity}`
+  // Saved state belongs to one key: two senders sharing a storage (two sites on one origin) never send each other's queued events,
+  // and a replaced key starts clean. Replacing a key therefore starts a new visitor identity.
+  const storageKey = `@hitslop/slurp-sdk:v1:${resolveEndpoint(options.endpoint).replace(/[?#].*$/, "").replace(/\/$/, "")}:${options.key}`
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
   let state: State = {
     version: 1, anonymousId: uuidv7(), sessionId: uuidv7(), lastActivity: 0,
@@ -196,15 +188,12 @@ export function createClient(options: SlurpOptions): SlurpClient {
       state = restored.state
       if (restored.damaged) report(new Error(`dropped ${restored.damaged} damaged saved event(s)`), restored.damaged)
     }
-    // A replaced key must not inherit the "stopped" state that the old, refused key left behind.
-    if (state.keyFingerprint !== keyPrint) {
-      if (state.stopped) { state.stopped = false; state.attempts = 0; state.retryAt = 0 }
-      state.keyFingerprint = keyPrint
-    }
     measure()
   }
+  // A client that replaces another one (`init` twice) must read what the first one saved, so it waits for that save to finish.
+  const earlier = pendingCloses.get(storageKey)
   let read: string | null | Promise<string | null> = null
-  try { read = storage.getItem(storageKey) } catch (error) { report(error) }
+  try { read = earlier ? earlier.then(() => storage.getItem(storageKey)) : storage.getItem(storageKey) } catch (error) { report(error) }
   const finishLoad = () => {
     ready = true
     for (const apply of staged.splice(0)) apply()
@@ -442,7 +431,10 @@ export function createClient(options: SlurpOptions): SlurpClient {
       clearTimer()
       hideWindow?.removeEventListener('pagehide', onPageHide)
       hideDocument?.removeEventListener('visibilitychange', onVisibility)
-      return closing = persist().then(() => {})
+      const done = persist().then(() => {})
+      pendingCloses.set(storageKey, done)
+      void done.finally(() => { if (pendingCloses.get(storageKey) === done) pendingCloses.delete(storageKey) })
+      return closing = done
     },
     get pending() { return pending() },
   }

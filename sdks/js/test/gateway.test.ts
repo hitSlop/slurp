@@ -126,7 +126,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.equal(records[0].status, 200)
   assert.equal(records[0].headers['slurp-duplicate'], undefined)
   const persisted = JSON.parse(await readFile(path, 'utf8'))
-  assert.equal(JSON.parse(persisted[`@hitslop/slurp-sdk:v1:${endpoint}:${project.project.id.slice(4)}`]).batches[0], records[0].body.toString())
+  assert.equal(JSON.parse(persisted[`@hitslop/slurp-sdk:v1:${endpoint}:${project.publishableKey}`]).batches[0], records[0].body.toString())
   await first.close()
   const restarted = make({ storage: fileStorage(path), onError })
   await drain(restarted)

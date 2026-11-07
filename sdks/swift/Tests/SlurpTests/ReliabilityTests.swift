@@ -195,6 +195,27 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(sameResult.stopped, "and it stays working across restarts")
     }
 
+    // Saved state belongs to one key: a sender never sends events that another sender queued in the same folder.
+    func testASenderNeverSendsAnotherSendersQueuedEvents() async throws {
+        StubProtocol.handler = { _ in (-1, [:]) } // offline
+        let widget = client({ $0.requestTimeout = 0.3 }, key: "slurp_pk_aaaaaaaaaaaaaaaa_widget")
+        widget.track("from-widget")
+        widget.close()
+        var sentBodies: [String] = []
+        let lock = NSLock()
+        StubProtocol.handler = { sent in
+            lock.lock(); sentBodies.append(String(decoding: sent.body, as: UTF8.self)); lock.unlock()
+            return (200, [:])
+        }
+        let web = client(key: "slurp_pk_aaaaaaaaaaaaaaaa_web")
+        web.track("from-web")
+        let result = await web.flush()
+        XCTAssertEqual(result.accepted, 1)
+        lock.lock(); let joined = sentBodies.joined(); lock.unlock()
+        XCTAssertTrue(joined.contains("from-web"))
+        XCTAssertFalse(joined.contains("from-widget"), "the other sender's event is not sent under this key")
+    }
+
     // A request that never gets an answer is cancelled and retried with the same bytes.
     func testAnUnansweredRequestIsRetriedWithTheSameBytes() async throws {
         var calls = 0

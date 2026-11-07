@@ -8,6 +8,7 @@ import DeployButton from '../components/DeployButton.astro';
 import Workbench from '../components/Workbench.astro';
 import {githubUrl,discordUrl} from '../lib/links.mjs';
 import PriceStrip from '../components/PriceStrip.astro';
+import {count,freePlanEventsPerMonth} from '../lib/pricing.mjs';
 import {Image} from 'astro:assets';
 import flagship from '../assets/reports/export-health.png';
 import retention from '../assets/reports/retention.png';
@@ -32,7 +33,8 @@ const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'}
 <p class="eyebrow">The feedback loop for your coding agent</p>
 <h1>You already have a data science expert.<br/><span class="hot">Your coding agent.</span></h1>
 <p class="lede">Slurp collects events and user feedback in your own Cloudflare account. <code>slurp sync</code> pulls them to your laptop (or an external SSD) as a DuckDB file. Your agent analyzes them with SQL, finds what to fix and ships the change.</p>
-<div class="actions"><DeployButton id="home"/><a class="btn" href="#loop">See the workflow</a><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
+<div class="actions"><DeployButton id="home" cli={false}/><a class="btn" href="#loop">See the workflow</a><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
+<p class="free-note"><strong>Free to start.</strong> Cloudflare's free plan covers about {count(freePlanEventsPerMonth())} events a month. <button type="button" class="free-cli" data-deploy-open="home">Install with the CLI instead ↗</button></p>
 <p class="loopline" aria-label="The loop: events and feedback, then DuckDB, then your agent, then a better product"><span>events + feedback</span><i>→</i><span>DuckDB</span><i>→</i><span>your agent</span><i>→</i><span class="hot">a better product</span></p>
 </div>
 <a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
@@ -101,7 +103,11 @@ slurp report open ./report`}/>
 .hero-grid{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:28px;align-items:center}
 .hero h1{font-size:clamp(38px,4.4vw,60px);margin-bottom:16px}
 .hero .lede{font-size:clamp(16px,1.35vw,18px);max-width:520px;margin-bottom:20px}
-.hero .actions{margin:0}
+.hero .actions{margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px}
+.hero .actions .btn{box-sizing:border-box;height:39px;padding-block:0;display:inline-flex;align-items:center}
+.hero .actions .hero-links{margin-left:2px}
+.free-note{margin:14px 0 0;font:500 13.5px/1.5 var(--body);color:var(--muted)}.free-note strong{color:var(--ink);font-weight:700}
+.free-cli{border:0;background:none;padding:0;font:inherit;color:var(--ink);text-decoration:underline;text-underline-offset:3px;cursor:pointer;white-space:nowrap}.free-cli:hover{color:var(--red)}
 .snapshot{display:block;text-decoration:none;color:inherit}
 .snapshot figure{margin:0;border:1px solid var(--rule);border-radius:12px;background:#fff;box-shadow:0 14px 40px #17191c1f;overflow:hidden;transition:transform .2s,box-shadow .2s}
 .snapshot:hover figure{transform:translateY(-2px);box-shadow:0 18px 48px #17191c2e}
@@ -111,7 +117,7 @@ slurp report open ./report`}/>
 .snapshot figcaption span:last-child{color:var(--red)}
 .how{margin:34px 0 0;font:700 13px var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .hero-links{display:inline-flex;gap:6px;margin-left:4px}.hero-links a{display:grid;place-items:center;width:38px;height:38px;border:1px solid var(--rule);border-radius:50%;color:var(--muted);transition:color .15s,border-color .15s}.hero-links a:hover{color:var(--ink);border-color:var(--ink)}.hero-links .icon{width:17px;height:17px}
-.loopline{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:4px 0 0;padding-top:14px;border-top:1px solid var(--rule);font:600 12.5px var(--mono);color:var(--muted)}.loopline i{font-style:normal;color:var(--red)}.loopline span{white-space:nowrap}
+.loopline{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:20px 0 0;padding-top:14px;border-top:1px solid var(--rule);font:600 12.5px var(--mono);color:var(--muted)}.loopline i{font-style:normal;color:var(--red)}.loopline span{white-space:nowrap}
 .steps.four{grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}.steps.four>div+div{padding-left:18px}.steps.four code{display:block;margin-top:10px;overflow-wrap:anywhere}
 @media(max-width:900px){.steps.four{grid-template-columns:repeat(2,minmax(0,1fr))}.steps.four>div:nth-child(3){border-left:0;padding-left:0}}
 @media(max-width:560px){.steps.four{display:block}.steps.four>div+div{padding:20px 0 0;border-left:0;border-top:1px solid var(--rule);margin-top:20px}}

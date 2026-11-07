@@ -2,7 +2,7 @@
 import Code from './Code.astro';
 import {deployButtonUrl} from '../lib/config.mjs';
 import {installShell,installNpm} from '../lib/links.mjs';
-const {id='deploy'}=Astro.props;
+const {id='deploy',cli=true}=Astro.props;
 const oneClick=deployButtonUrl();
 const init=`${installShell}
 # or: ${installNpm}
@@ -23,7 +23,7 @@ slurp init --name "My app"`;
 ---
 <span class="deploy-actions">
 {oneClick&&<a class="deploy-official" href={oneClick} rel="noopener"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" width="184" height="39"/></a>}
-<button type="button" class="deploy-cli" data-deploy-open={id}>{oneClick?'Install with the CLI instead':'Install and deploy'} ↗</button>
+{cli&&<button type="button" class="deploy-cli" data-deploy-open={id}>{oneClick?'Install with the CLI instead':'Install and deploy'} ↗</button>}
 </span>
 <dialog class="deploy" id={`dialog-${id}`} aria-labelledby={`title-${id}`}>
 <form method="dialog" class="close"><button aria-label="Close">×</button></form>

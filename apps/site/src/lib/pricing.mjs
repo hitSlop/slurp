@@ -31,6 +31,8 @@ export const assumptions = {
   rowsIncluded: 50e6, rowsPerMillion: 1.0,
   r2FreeGB: 10, r2PerGBMonth: 0.015,
 };
+/** Events a month that stay on the Workers Free plan under the assumptions above (before the $5 Workers Paid plan is needed). */
+export const freePlanEventsPerMonth = (a = assumptions) => a.freeRequestsPerDay * a.freeHeadroom * a.eventsPerRequest * a.days;
 /** How many sources (Durable Objects) a monthly volume needs so peak traffic stays under what one source sustains. */
 export const sourcesNeeded = (events, a = assumptions) =>
   Math.max(1, Math.ceil(events / (a.days * 86400) * a.peakFactor / a.eventsPerSecondPerSource));

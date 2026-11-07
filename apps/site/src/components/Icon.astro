@@ -1,5 +1,8 @@
 ---
-import {icons} from '../../../../packages/web-shared/icons.js';
+import {icons, brandIcons} from '../../../../packages/web-shared/icons.js';
 const {name}=Astro.props;
+const brand=brandIcons[name as keyof typeof brandIcons];
 ---
-<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icons[name as keyof typeof icons] ?? icons.connections}/></svg>
+{brand
+  ? <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d={brand}/></svg>
+  : <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icons[name as keyof typeof icons] ?? icons.connections}/></svg>}

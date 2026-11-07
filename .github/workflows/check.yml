@@ -99,5 +99,7 @@ jobs:
       - run: pnpm --filter slurp-site check
       - run: pnpm --filter slurp-site build
       - run: pnpm --filter @slurp/sdk typecheck
+      - name: The README pricing table matches the site
+        run: node apps/site/scripts/readme-pricing.mjs --check
       - name: CI policy scripts
         run: node --test scripts/ci/attribution.test.mjs

@@ -1,4 +1,10 @@
-# Slurp
+<p align="center">
+  <img src="docs/assets/slurp-mascot.png" width="300" alt="The Slurp anteater sipping a blue and red slushie through its long snout">
+</p>
+
+<h1 align="center"><img src="docs/assets/slurp-logo.png" width="170" alt="Slurp"></h1>
+
+<p align="center"><b>Product analytics for coding agents, in your own Cloudflare account.</b></p>
 
 Bring your events home. Capture application events into **your own Cloudflare account**, sync them into a local DuckDB file, and give your coding agent raw data for product analysis and reports.
 

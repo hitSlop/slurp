@@ -126,7 +126,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.equal(records[0].status, 200)
   assert.equal(records[0].headers['slurp-duplicate'], undefined)
   const persisted = JSON.parse(await readFile(path, 'utf8'))
-  assert.equal(JSON.parse(persisted[`@slurp/sdk:v2:${project.publishableKey}`]).batches[0], records[0].body.toString())
+  assert.equal(JSON.parse(persisted[`@hitslop/slurp-sdk:v2:${project.publishableKey}`]).batches[0], records[0].body.toString())
   await first.close()
   const restarted = make({ storage: fileStorage(path), onError })
   await drain(restarted)
@@ -321,7 +321,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
     await refused.body?.cancel()
     const browserEvent = JSON.parse(records[start].body.toString())
     assert.deepEqual(browserEvent.context, {
-      library: { name: '@slurp/sdk', version },
+      library: { name: '@hitslop/slurp-sdk', version },
       page: { url: window.location.href, path: '/pricing', referrer: document.referrer, title: 'Pricing' },
       user_agent: 'SDK browser fixture', locale: 'en-CA', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     })
@@ -380,7 +380,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
     assert.equal(new Date(event.timestamp).toISOString(), event.timestamp)
     assert.equal(event.type, event.event === undefined ? 'identify' : 'track')
     assert.equal(Object.getPrototypeOf(event.data), Object.prototype)
-    if (!event.context.page) assert.deepEqual(event.context, { library: { name: '@slurp/sdk', version }, runtime: { name: 'node', version: process.version } })
+    if (!event.context.page) assert.deepEqual(event.context, { library: { name: '@hitslop/slurp-sdk', version }, runtime: { name: 'node', version: process.version } })
   }
   t.diagnostic(`archive: exactly ${delivered.length} delivered IDs once each; every compressed object digest verified`)
 })

@@ -1,0 +1,48 @@
+name: Publish SDK
+
+# Publishes @hitslop/slurp-sdk to npm from packages/sdk-js. Manual on purpose: a tag trigger would also start the CLI release
+# (cargo-dist reacts to any version-looking tag). Needs the NPM_TOKEN repository secret (granular token with write access to @hitslop).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-sdk
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck, test and build the SDK
+        run: |
+          pnpm --filter @hitslop/slurp-sdk typecheck
+          pnpm --filter @hitslop/slurp-sdk build
+          cd packages/sdk-js && node --test --test-force-exit --test-timeout=150000 test/capture.test.ts
+      - name: Refuse to republish a version
+        working-directory: packages/sdk-js
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "::error::$name@$version is already on npm; bump the version in packages/sdk-js/package.json first"
+            exit 1
+          fi
+          echo "Publishing $name@$version"
+      - name: Publish
+        working-directory: packages/sdk-js
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

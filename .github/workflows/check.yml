@@ -104,7 +104,7 @@ jobs:
         run: git diff --exit-code -- crates/slurp-cli/assets/setup.html
       - run: pnpm --filter slurp-site check
       - run: pnpm --filter slurp-site build
-      - run: pnpm --filter @slurp/sdk typecheck
+      - run: pnpm --filter @hitslop/slurp-sdk typecheck
       - name: The README pricing table matches the site
         run: node apps/site/scripts/readme-pricing.mjs --check
       - name: CI policy scripts

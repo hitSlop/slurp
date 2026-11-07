@@ -108,8 +108,8 @@ export function createClient(options: SlurpOptions): SlurpClient {
   }
   const storage = options.storage ?? defaultStorage(report)
   const storageKey = options.sourceId
-    ? `@slurp/sdk:v2:${new URL(options.endpoint, typeof window === 'undefined' ? undefined : window.location.href).toString().replace(/[?#].*$/, "").replace(/\/$/, "")}:${options.sourceId}`
-    : `@slurp/sdk:v2:${options.key}`
+    ? `@hitslop/slurp-sdk:v2:${new URL(options.endpoint, typeof window === 'undefined' ? undefined : window.location.href).toString().replace(/[?#].*$/, "").replace(/\/$/, "")}:${options.sourceId}`
+    : `@hitslop/slurp-sdk:v2:${options.key}`
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
   let state: State = {
     version: 2, anonymousId: uuidv7(), sessionId: uuidv7(), lastActivity: 0,

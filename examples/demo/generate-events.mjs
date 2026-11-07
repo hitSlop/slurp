@@ -32,7 +32,7 @@ export function generate({ days = 90, seed = 7 } = {}) {
   const id = () => `evt_${(++n).toString(36).padStart(6, '0')}`
   const emit = (ts, event, user, session, version, data) => events.push({
     id: id(), type: 'track', event, timestamp: new Date(ts).toISOString(), user_id: user, session_id: session,
-    data, context: { app: { name: 'Pixel', version }, library: { name: '@slurp/sdk', version: '0.1.0' } },
+    data, context: { app: { name: 'Pixel', version }, library: { name: '@hitslop/slurp-sdk', version: '0.1.0' } },
   })
   const hourWeights = Array.from({ length: 24 }, (_, h) => [h, 0.15 + Math.max(0, Math.sin(((h - 7) / 17) * Math.PI)) ** 1.6])
   const at = (dayStart, jitter = 0) => dayStart + pick(r, hourWeights) * 3_600_000 + Math.floor(r() * 3_600_000) + jitter

@@ -39,10 +39,10 @@ test('capture preserves queued identities and context, source-scoped reloads, an
   assert.equal(records[1].event, undefined)
   await first.close()
   // A rotating publishable key keeps the same identity and exact persisted body.
-  const raw = await storage.getItem('@slurp/sdk:v2:https://events.example/v1/events:shop')
+  const raw = await storage.getItem('@hitslop/slurp-sdk:v2:https://events.example/v1/events:shop')
   const state = JSON.parse(raw!)
   state.retryAt = 0
-  await storage.setItem('@slurp/sdk:v2:https://events.example/v1/events:shop', JSON.stringify(state))
+  await storage.setItem('@hitslop/slurp-sdk:v2:https://events.example/v1/events:shop', JSON.stringify(state))
   status = 200
   const next = createClient({ ...options, key: 'key-two' })
   const accepted = await next.flush()
@@ -93,13 +93,13 @@ test('quota refusal stops delivery and reports a typed owner-action error', asyn
   await client.flush()
   assert.equal(requests, 1)
   await client.close()
-  const before = JSON.parse((await storage.getItem('@slurp/sdk:v2:https://example.test/events:quota-test'))!)
+  const before = JSON.parse((await storage.getItem('@hitslop/slurp-sdk:v2:https://example.test/events:quota-test'))!)
   const resumed = createClient({ ...options, fetch: async () => { requests++; return new Response(null, { status: 200 }) } })
   resumed.track('after-owner-upgrade')
   const recovered = await resumed.flush()
   assert.equal(recovered.accepted, 1)
   assert.equal(recovered.stopped, false)
-  const after = JSON.parse((await storage.getItem('@slurp/sdk:v2:https://example.test/events:quota-test'))!)
+  const after = JSON.parse((await storage.getItem('@hitslop/slurp-sdk:v2:https://example.test/events:quota-test'))!)
   assert.equal(after.anonymousId, before.anonymousId)
   assert.equal(after.sessionId, before.sessionId)
   await resumed.close()

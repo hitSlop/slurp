@@ -37,7 +37,7 @@ export function jsonData(data: unknown): Record<string, unknown> {
 }
 
 export function context(): Record<string, unknown> {
-  const value: Record<string, unknown> = { library: { name: '@slurp/sdk', version } }
+  const value: Record<string, unknown> = { library: { name: '@hitslop/slurp-sdk', version } }
   if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     value.page = { url: window.location.href, path: window.location.pathname, referrer: document.referrer, title: document.title }
     value.user_agent = navigator.userAgent

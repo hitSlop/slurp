@@ -1,0 +1,8 @@
+---
+// The DuckDB logo, used to name DuckDB, the engine Slurp's queries and reports run on.
+import {Image} from 'astro:assets';
+import logo from '../assets/duckdb.jpeg';
+const {size=18,class:cls=''}=Astro.props;
+---
+<Image class={`duckdb ${cls}`} src={logo} width={size*2} height={size*2} widths={[size*2,size*3]} sizes={`${size}px`} alt="DuckDB" style={`width:${size}px;height:${size}px`}/>
+<style>.duckdb{flex:none;display:inline-block;vertical-align:middle;border-radius:22%}</style>

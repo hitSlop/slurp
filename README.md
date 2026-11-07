@@ -5,6 +5,7 @@
 <h1 align="center"><img src="docs/assets/slurp-logo.png" width="170" alt="Slurp"></h1>
 
 <p align="center"><b>Product analytics for coding agents, in your own Cloudflare account.</b></p>
+<p align="center">Events in your Cloudflare account &nbsp;→&nbsp; <a href="https://duckdb.org"><img src="docs/assets/duckdb.jpeg" height="20" align="top" alt="DuckDB"></a> <a href="https://duckdb.org"><b>DuckDB</b></a> on your machine &nbsp;→&nbsp; your coding agent</p>
 <p align="center">
   <a href="https://github.com/hitSlop/slurp/actions/workflows/check.yml"><img src="https://github.com/hitSlop/slurp/actions/workflows/check.yml/badge.svg?branch=master" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-e8002a" alt="MIT license"></a>

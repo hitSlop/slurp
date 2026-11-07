@@ -6,8 +6,9 @@ basepath = /rpc
 
 # Slurp backend: the public client API (webrpc, POST JSON per method). webrpc-gen v0.49.0 syntax:
 # per-method errors go on indented `+ error A | B` lines below the method signature.
-# Each method is tagged `+ @public` (a client outside this repo may use it: reads and health) or
-# `+ @internal` (CLI and control-plane plumbing). webrpc-gen filters on that: `-match=@public` keeps only the public
+# Each method is tagged `+ @public` (supported for clients outside this repo: archive reads, health, whoami) or
+# `+ @internal` (CLI and control-plane plumbing). `@public` means supported for third parties, not unauthenticated: archive
+# reads still need a key. webrpc-gen filters on that: `-match=@public` keeps only the public
 # methods and `-ignore=@internal` drops the internal ones (the `@` is required). The Worker and the CLI are generated from the
 # whole schema; a client published for third parties would be generated with `-match=@public`.
 # SDK ingest is NOT here: POST /v1/events stays a plain HTTP endpoint (raw NDJSON bodies, a

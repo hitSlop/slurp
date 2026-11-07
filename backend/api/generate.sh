@@ -7,8 +7,9 @@
 #   backend/api/generate.sh ts            # only some targets
 #   backend/api/generate.sh --check       # regenerate into a temp dir; exit 1 if any committed file is stale
 #
-# Methods are tagged `+ @public` or `+ @internal` in slurp.ridl (checked below); a client for third parties would be generated with
-# `-match=@public`, the Worker and the CLI from the whole schema.
+# Methods are tagged `+ @public` or `+ @internal` in slurp.ridl (exactly one each, checked below); a client for third parties is generated
+# with `-match=@public`, the Worker and the CLI from the whole schema. `--check` also generates that public client and fails if it
+# exposes anything but the methods listed in PUBLIC_METHODS.
 # webrpc-gen is pinned below and run with `go run`, so Go is needed only to run the generator (no go.mod in this repo).
 # The typescript template is embedded in webrpc-gen. Output is deterministic: no timestamps.
 set -eu
@@ -36,10 +37,19 @@ trap 'rm -rf "$tmp"' EXIT
 # shellcheck disable=SC2086
 gen() { (cd "$BACKEND" && $WEBRPC_GEN -schema=api/slurp.ridl "$@" >/dev/null); }
 
-# Every method must say who it is for (`+ @public` or `+ @internal`): webrpc-gen filters on these tags and silently treats an untagged
-# method as neither, so a forgotten tag would leak a control-plane method into a published public-only client.
-untagged=$(awk '/^  - [A-Za-z]+\(/ { if (name != "" && !tagged) print name; name = $2; tagged = 0; next } /^    \+ @(public|internal)$/ { tagged = 1 } END { if (name != "" && !tagged) print name }' "$API/slurp.ridl")
-if [ -n "$untagged" ]; then echo "slurp.ridl: methods without + @public or + @internal: $untagged" >&2; exit 1; fi
+# Every method must say who it is for with exactly one tag, `+ @public` or `+ @internal`: webrpc-gen filters on these tags and silently
+# treats an untagged method as neither, so a forgotten tag would leak a control-plane method into a published public-only client, and
+# a method tagged both ways is ambiguous.
+badtags=$(awk '
+  function finish() { if (name != "" && pub + internal != 1) print name " (" pub " @public, " internal " @internal)" }
+  /^  - [A-Za-z]+\(/ { finish(); name = $2; pub = 0; internal = 0; next }
+  /^    \+ @public$/ { pub++ }
+  /^    \+ @internal$/ { internal++ }
+  END { finish() }' "$API/slurp.ridl")
+if [ -n "$badtags" ]; then echo "slurp.ridl: each method needs exactly one of + @public and + @internal: $badtags" >&2; exit 1; fi
+
+# The methods a client for third parties may call. Adding one here is a decision to support it for people outside this repo.
+PUBLIC_METHODS="getCoverage listObjects version whoami"
 
 stale=0
 for t in $targets; do
@@ -85,6 +95,13 @@ if [ "$check" = 1 ] && [ -d "$API/gen-rust/testdata" ]; then
     echo "gen-rust: unknown option was accepted" >&2; stale=1
   elif ! grep -F -- '-unknown-option="" is not supported target option' "$tmp/stderr" >/dev/null; then
     cat "$tmp/stderr" >&2; stale=1
+  fi
+fi
+if [ "$check" = 1 ]; then
+  gen -target=typescript -client -match=@public -out="$tmp/public.ts"
+  exposed=$(grep -oE '^  [a-zA-Z]+ = \(req:' "$tmp/public.ts" | sed -E 's/^  ([a-zA-Z]+) = .*/\1/' | sort | tr '\n' ' ' | sed 's/ $//')
+  if [ "$exposed" != "$PUBLIC_METHODS" ]; then
+    echo "the public client exposes: $exposed (expected: $PUBLIC_METHODS); check the @public and @internal tags in slurp.ridl" >&2; stale=1
   fi
 fi
 exit $stale

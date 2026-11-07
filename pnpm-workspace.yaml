@@ -3,3 +3,4 @@ packages:
   - packages/*
   - sdks/*
   - report-assets
+autoInstallPeers: false

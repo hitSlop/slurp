@@ -86,6 +86,12 @@ jobs:
         run: node --test --test-force-exit --test-timeout=150000 test/*.test.ts
         working-directory: sdks/js
         timeout-minutes: 6
+      - name: React Native package (needs the built core)
+        run: |
+          pnpm --filter @hitslop/slurp-sdk build
+          pnpm --filter @hitslop/slurp-react-native typecheck
+          pnpm --filter @hitslop/slurp-react-native build
+          pnpm --filter @hitslop/slurp-react-native test
 
   web:
     runs-on: ubuntu-latest

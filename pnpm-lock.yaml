@@ -1,7 +1,7 @@
 lockfileVersion: '9.0'
 
 settings:
-  autoInstallPeers: true
+  autoInstallPeers: false
   excludeLinksFromLockfile: false
 
 importers:
@@ -46,12 +46,6 @@ importers:
         specifier: 4.158.0
         version: 4.158.0
 
-  sdks/js:
-    devDependencies:
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
-
   report-assets:
     dependencies:
       vega:
@@ -67,6 +61,22 @@ importers:
       esbuild:
         specifier: 0.27.4
         version: 0.27.4
+
+  sdks/js:
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  sdks/react-native:
+    dependencies:
+      '@hitslop/slurp-sdk':
+        specifier: workspace:^
+        version: link:../js
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
 
 packages:
 

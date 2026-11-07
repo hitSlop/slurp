@@ -1,0 +1,68 @@
+{
+  "name": "@hitslop/slurp-react-native",
+  "version": "0.1.0",
+  "description": "React Native and Expo event capture for Slurp: durable queue in AsyncStorage, flush when the app backgrounds, device context. Built on @hitslop/slurp-sdk.",
+  "keywords": [
+    "analytics",
+    "product-analytics",
+    "react-native",
+    "expo",
+    "events",
+    "slurp",
+    "cloudflare",
+    "duckdb",
+    "coding-agents"
+  ],
+  "license": "MIT",
+  "author": "Longtail Labs",
+  "homepage": "https://slurp.run/docs/#capture",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hitSlop/slurp.git",
+    "directory": "sdks/react-native"
+  },
+  "bugs": {
+    "url": "https://github.com/hitSlop/slurp/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@hitslop/slurp-sdk": "workspace:^"
+  },
+  "peerDependencies": {
+    "react-native": ">=0.70",
+    "@react-native-async-storage/async-storage": ">=1.17"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p . --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "peerDependenciesMeta": {
+    "react-native": {
+      "optional": true
+    },
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    }
+  }
+}

@@ -1,9 +1,18 @@
 name: Publish SDK
 
-# Publishes @hitslop/slurp-sdk to npm from sdks/js. Manual on purpose: a tag trigger would also start the CLI release
+# Publishes an SDK from sdks/ to npm. Manual on purpose: a tag trigger would also start the CLI release
 # (cargo-dist reacts to any version-looking tag). Needs the NPM_TOKEN repository secret (granular token with write access to @hitslop).
+# Publish `js` first when its version changed: the React Native package depends on it.
 on:
   workflow_dispatch:
+    inputs:
+      package:
+        description: Which SDK to publish
+        type: choice
+        options:
+          - js
+          - react-native
+        default: js
 
 permissions:
   contents: read
@@ -26,23 +35,38 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - name: Typecheck, test and build the SDK
+      - name: Typecheck, build and test
+        env:
+          PACKAGE: ${{ inputs.package }}
         run: |
           pnpm --filter @hitslop/slurp-sdk typecheck
           pnpm --filter @hitslop/slurp-sdk build
-          cd sdks/js && node --test --test-force-exit --test-timeout=150000 test/capture.test.ts
-      - name: Refuse to republish a version
-        working-directory: sdks/js
+          (cd sdks/js && node --test --test-force-exit --test-timeout=150000 test/capture.test.ts test/react-native.test.ts)
+          if [ "$PACKAGE" = react-native ]; then
+            pnpm --filter @hitslop/slurp-react-native typecheck
+            pnpm --filter @hitslop/slurp-react-native build
+            pnpm --filter @hitslop/slurp-react-native test
+          fi
+      - name: Refuse to republish a version, and require the core to be published first
+        working-directory: sdks/${{ inputs.package }}
         run: |
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
           if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "::error::$name@$version is already on npm; bump the version in sdks/js/package.json first"
+            echo "::error::$name@$version is already on npm; bump the version in sdks/${{ inputs.package }}/package.json first"
             exit 1
+          fi
+          if [ "${{ inputs.package }}" = react-native ]; then
+            core=$(node -p "require('../js/package.json').version")
+            if ! npm view "@hitslop/slurp-sdk@$core" version >/dev/null 2>&1; then
+              echo "::error::@hitslop/slurp-sdk@$core is not on npm yet; publish the js SDK first"
+              exit 1
+            fi
           fi
           echo "Publishing $name@$version"
       - name: Publish
-        working-directory: sdks/js
-        run: npm publish --access public
+        working-directory: sdks/${{ inputs.package }}
+        # pnpm rewrites the workspace:^ dependency to the real version range; npm publish would not.
+        run: pnpm publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

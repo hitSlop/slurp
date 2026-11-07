@@ -44,7 +44,14 @@ The Slurp row is the Cloudflare bill for running your own Worker, not a Slurp fe
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2FhitSlop%2Fslurp%2Ftree%2Fmaster%2Fbackend)
 
-One click deploys the Worker, Durable Objects and R2 bucket to your Cloudflare account (you choose an `ADMIN_TOKEN`). Then open the Worker's address: it shows the command that connects the CLI. Or do it all from a terminal (to build the CLI from source instead, see [Development](#development)):
+Cloudflare copies the self-contained `backend/` directory into your GitHub or GitLab account and provisions the Worker, Durable Objects, and R2 bucket.
+
+1. Click **Deploy to Cloudflare** and choose your account and repository name.
+2. Generate an admin token with `openssl rand -base64 32`. Enter it as `ADMIN_TOKEN` during setup and save it in your password manager.
+3. Install the CLI using the installer below, then open the deployed Worker's address. Connect with `slurp connect https://YOUR_WORKER.workers.dev --token-stdin`, paste the token into standard input, and finish with Control-D.
+4. Run `slurp setup`, then `slurp init --name "My app"` in your application folder to open its private quickstart.
+
+Alternatively, install and deploy entirely from your terminal (to build from source, see [Development](#development)):
 
 ```sh
 # 1. Install the CLI (macOS or Linux), then deploy your Worker (needs a Cloudflare account and Node 20+)

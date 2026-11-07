@@ -18,7 +18,6 @@ import funnel from '../assets/reports/funnel.png';
 import formatsDark from '../assets/reports/formats-dark.png';
 import byRelease from '../assets/reports/by-release.png';
 import byReleaseSource from '../../../../examples/demo/by-release.md?raw';
-import mascot from '../../../../packages/web-shared/assets/mascot.png';
 import snippets from '../../../../docs/onboarding/snippets.json';
 const sections=[{id:'loop',label:'The loop'},{id:'reports',label:'Reports'},{id:'markdown',label:'Markdown'},{id:'code',label:'In code'},{id:'connections',label:'Connections'},{id:'tools',label:'Your toolkit'}];
 ---
@@ -33,7 +32,7 @@ const sections=[{id:'loop',label:'The loop'},{id:'reports',label:'Reports'},{id:
 <p class="loopline" aria-label="The loop: events and feedback, then DuckDB, then your agent, then a better product"><span>events + feedback</span><i>→</i><span>DuckDB</span><i>→</i><span>your agent</span><i>→</i><span class="hot">a better product</span></p>
 </div>
 <div class="product-demo"><div class="sync-preview"><span class="terminal-label">YOUR TERMINAL</span><pre><code><span class="prompt">$</span> slurp sync</code></pre><p>Cloudflare archives.<br/>A local DuckDB file.<br/>Ready for your agent.</p><span class="terminal-foot">Your data stays yours.</span></div><a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
-<figure><div class="crop"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 420px, 90vw" alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
+<figure><div class="crop"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 650px, 90vw" alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
 </a></div>
 </div>
 <PriceStrip/>
@@ -72,7 +71,7 @@ const sections=[{id:'loop',label:'The loop'},{id:'reports',label:'Reports'},{id:
 <p>A report is a Markdown file with named SQL and a few blocks. The query stays with the finding, so every number can be reproduced. This is the whole source of the chart beside it.</p>
 <div class="source-output">
 <Code label="by-release.md" code={byReleaseSource.trim()}/>
-<figure><Image src={byRelease} width={840} widths={[420,840]} sizes="(min-width: 1100px) 420px, 90vw" alt="The rendered chart: exports completed by release, with v1.2.4 lower than the others" loading="lazy"/><figcaption>What <code>slurp report build</code> makes from it</figcaption></figure>
+<figure><Image src={byRelease} width={840} widths={[420,840]} sizes="(min-width: 1100px) 650px, 90vw" alt="The rendered chart: exports completed by release, with v1.2.4 lower than the others" loading="lazy"/><figcaption>What <code>slurp report build</code> makes from it</figcaption></figure>
 </div>
 <ul class="points"><li><b>Markdown is the source of truth.</b> Diffable, reviewable, sanitized.</li><li><b>HTML is the main output.</b> One self-contained file with its charts and fonts.</li><li><b>PNG and PDF come from the same source.</b> Ready for Slack, email and slides.</li><li><b>Your agent already knows how.</b> <code>slurp agent setup</code> installs the skill.</li></ul>
 <Code label="Terminal" code={`slurp report check report.md

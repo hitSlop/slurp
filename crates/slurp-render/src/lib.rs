@@ -14,16 +14,11 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_INPUT: usize = 32 * 1024 * 1024;
 const MAX_PIXELS: u64 = 64 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
 pub struct ChartError {
     pub message: String,
 }
-impl std::fmt::Display for ChartError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-impl std::error::Error for ChartError {}
 impl ChartError {
     fn new(message: impl ToString) -> Self {
         Self {
@@ -477,6 +472,14 @@ pub fn versions() -> Value {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chart_errors_display_their_message() {
+        assert_eq!(
+            super::ChartError::new("series must be a list").to_string(),
+            "series must be a list"
+        );
+        assert_eq!(super::ChartError::new(7).message, "7");
+    }
     #[test]
     fn characters_outside_the_bundled_fonts_are_reported() {
         assert!(super::undrawable_chars("Ünïcödé café – 12.5% → ok", super::MONO).is_empty());

@@ -25,6 +25,7 @@ slurp-client = { path = "../slurp-client" }
 slurp-document = { path = "../slurp-document" }
 slurp-render = { path = "../slurp-render" }
 clap = { version = "4", features = ["derive", "env"] }
+strsim = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 uuid = { version = "1", features = ["v4", "v7"] }
 tempfile = "3"

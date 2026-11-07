@@ -2918,6 +2918,7 @@ dependencies = [
  "slurp-client",
  "slurp-document",
  "slurp-render",
+ "strsim",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2976,6 +2977,7 @@ dependencies = [
  "takumi",
  "takumi-pdf",
  "tempfile",
+ "thiserror",
  "tiny-skia",
  "zstd",
 ]

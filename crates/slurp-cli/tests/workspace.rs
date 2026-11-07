@@ -196,7 +196,7 @@ fn truncation_parameters_and_cancelled_transaction() {
     assert_eq!(result["truncated"], true);
     assert_eq!(result["rows"].as_array().expect("rows").len(), 1000);
     let file = temp.path().join("parameter.md");
-    std::fs::write(&file,"---\nparams:\n  amount: {type: number, default: 42}\n---\n# Parameter\n```sql total\nSELECT $amount AS n\n```\n```metric\nquery: total\nfield: n\n```\n").expect("report source");
+    std::fs::write(&file,"---\nparams:\n  amount: {type: number, default: 42}\n---\n# Parameter\n```sql total\nSELECT $amount AS n -- a comment may mention $price without defining it\n```\n```metric\nquery: total\nfield: n\n```\n").expect("report source");
     slurp_app::report::build(
         &w,
         &file,

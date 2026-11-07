@@ -5,34 +5,21 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
 use tokio::io::AsyncWriteExt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RemoteError {
+    #[error("unauthenticated: a valid read key or admin token is required (slurp connect)")]
     Unauthenticated,
+    #[error("permission_denied: project read access required")]
     PermissionDenied,
+    #[error("retention_gap: checkpoint is below the retained floor")]
     RetentionGap,
+    #[error("expired: object URL expired or object deleted")]
     Expired,
+    #[error("transport: {0}")]
     Transport(String),
+    #[error("protocol: {0}")]
     Protocol(String),
 }
-impl std::fmt::Display for RemoteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unauthenticated => f.write_str(
-                "unauthenticated: a valid read key or admin token is required (slurp connect)",
-            ),
-            Self::PermissionDenied => {
-                f.write_str("permission_denied: project read access required")
-            }
-            Self::RetentionGap => {
-                f.write_str("retention_gap: checkpoint is below the retained floor")
-            }
-            Self::Expired => f.write_str("expired: object URL expired or object deleted"),
-            Self::Transport(s) => write!(f, "transport: {s}"),
-            Self::Protocol(s) => write!(f, "protocol: {s}"),
-        }
-    }
-}
-impl std::error::Error for RemoteError {}
 fn io_error(_: std::io::Error) -> RemoteError {
     RemoteError::Transport("staging or directory I/O failed".into())
 }
@@ -177,19 +164,6 @@ fn map_rpc_error(error: rpc::Error) -> RemoteError {
         _ => RemoteError::Transport(error.to_string()),
     }
 }
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    if let Ok(secs) = value.parse::<u64>() {
-        return Some(Duration::from_secs(secs));
-    }
-    let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
-    Some(
-        (at.with_timezone(&chrono::Utc) - chrono::Utc::now())
-            .to_std()
-            .unwrap_or_default(),
-    )
-}
-
 #[async_trait::async_trait]
 impl Remote for HttpRemote {
     async fn list(&self, after: Option<i64>, limit: usize) -> Result<ListPage, RemoteError> {
@@ -253,7 +227,7 @@ impl Remote for HttpRemote {
                     RemoteError::Transport("object body interrupted".into())
                 }
                 Ok(response) => {
-                    delay = retry_after(response.headers());
+                    delay = crate::http::retry_after(response.headers());
                     Self::object_status(response.status())
                 }
                 Err(_) => RemoteError::Transport("object request failed".into()),
@@ -264,5 +238,45 @@ impl Remote for HttpRemote {
             self.backoff(attempt, delay).await;
         }
         unreachable!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RemoteError;
+
+    #[test]
+    fn errors_read_the_same_everywhere() {
+        let cases = [
+            (
+                RemoteError::Unauthenticated,
+                "unauthenticated: a valid read key or admin token is required (slurp connect)",
+            ),
+            (
+                RemoteError::PermissionDenied,
+                "permission_denied: project read access required",
+            ),
+            (
+                RemoteError::RetentionGap,
+                "retention_gap: checkpoint is below the retained floor",
+            ),
+            (
+                RemoteError::Expired,
+                "expired: object URL expired or object deleted",
+            ),
+            (
+                RemoteError::Transport("HTTP 503".into()),
+                "transport: HTTP 503",
+            ),
+            (
+                RemoteError::Protocol("bad page".into()),
+                "protocol: bad page",
+            ),
+        ];
+        for (error, text) in cases {
+            assert_eq!(error.to_string(), text);
+        }
+        let boxed: Box<dyn std::error::Error + Send + Sync> = RemoteError::Expired.into();
+        assert!(boxed.to_string().starts_with("expired"));
     }
 }

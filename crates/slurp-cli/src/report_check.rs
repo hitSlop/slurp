@@ -119,35 +119,17 @@ const MARKS: [&str; 17] = [
     "trail",
 ];
 
-/// Edit distance where swapping two neighbouring letters (`feild`) counts as one change.
-fn distance(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in d[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
-            }
-        }
-    }
-    d[a.len()][b.len()]
-}
 /// The candidate closest to `word`, when it is plausibly a typo of it.
 pub fn closest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let limit = (word.chars().count() / 3).clamp(1, 3);
     candidates
         .into_iter()
-        .map(|c| (distance(&word.to_lowercase(), &c.to_lowercase()), c))
+        .map(|c| {
+            (
+                strsim::osa_distance(&word.to_lowercase(), &c.to_lowercase()),
+                c,
+            )
+        })
         .filter(|(d, _)| *d <= limit)
         .min_by_key(|(d, _)| *d)
         .map(|(_, c)| c)
@@ -776,5 +758,49 @@ mod tests {
     fn closest_only_suggests_plausible_matches() {
         assert_eq!(closest("feild", ["field", "label"]), Some("field"));
         assert_eq!(closest("zzzzz", ["field", "label"]), None);
+    }
+
+    /// The suggestion rules, pinned: a swap of neighbours is one change, case is ignored, the allowed number of changes grows with
+    /// the length of the word (1 up to five letters, then 2, then 3), and the first of equally close candidates wins.
+    #[test]
+    fn suggestions_follow_the_edit_distance_rules() {
+        assert_eq!(
+            closest("widht", ["height", "width"]),
+            Some("width"),
+            "a transposition is one change"
+        );
+        assert_eq!(
+            closest("FIELD", ["field"]),
+            Some("field"),
+            "case is ignored"
+        );
+        assert_eq!(
+            closest("bax", ["bar", "bat"]),
+            Some("bar"),
+            "a tie goes to the first candidate"
+        );
+        assert_eq!(
+            closest("fild", ["field", "filed"]),
+            Some("field"),
+            "the closest wins over the first"
+        );
+        assert_eq!(closest("lable", ["label"]), Some("label"));
+        assert_eq!(
+            closest("fld", ["field"]),
+            None,
+            "two missing letters are too many for a three-letter word"
+        );
+        assert_eq!(closest("headin", ["heading"]), Some("heading"));
+        assert_eq!(closest("headng", ["heading"]), Some("heading"));
+        assert_eq!(
+            closest("hdng", ["heading"]),
+            None,
+            "three changes are too many for a four-letter word"
+        );
+        assert_eq!(
+            closest("héllo", ["hello"]),
+            Some("hello"),
+            "an accented letter is one change, not two bytes"
+        );
     }
 }

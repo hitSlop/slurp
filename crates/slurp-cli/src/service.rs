@@ -584,12 +584,8 @@ async fn send(
             Ok(response)
                 if response.status().as_u16() == 429 || response.status().is_server_error() =>
             {
-                response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(1 << attempt)
+                slurp_client::retry_after(response.headers())
+                    .map_or(1 << attempt, |wait| wait.as_secs())
                     .min(30)
             }
             Ok(response) => bail!("event send rejected (HTTP {})", response.status().as_u16()),

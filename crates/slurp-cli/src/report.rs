@@ -672,39 +672,98 @@ pub(crate) fn param_preamble(params: &BTreeMap<String, Value>) -> Result<String>
     Ok(sql)
 }
 
+/// Replace `$name` with the report parameter of that name. Everything that is not code is copied as written, so a `$` in a string,
+/// a comment or a dollar-quoted string is never taken for a parameter: `'...'` and `"..."` (a doubled quote is an escape), `-- ...`
+/// to the end of the line, `/* ... */` (which nests, as in DuckDB), and `$$...$$` or `$tag$...$tag$`. The rest of the SQL is
+/// untouched, so error positions still point at the author's own text.
 pub(crate) fn bind_variables(sql: &str, params: &BTreeMap<String, Value>) -> Result<String> {
-    let mut out = String::new();
-    let mut chars = sql.chars().peekable();
-    let mut quote = None;
-    while let Some(c) = chars.next() {
-        if let Some(q) = quote {
-            out.push(c);
-            if c == q {
-                if chars.peek() == Some(&q) {
-                    out.push(chars.next().context("escaped quote")?);
-                } else {
-                    quote = None;
+    let chars: Vec<char> = sql.chars().collect();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match c {
+            '\'' | '"' => {
+                // A quoted string or identifier; a doubled quote is an escaped quote.
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    out.push(chars[i]);
+                    if chars[i] == c {
+                        if chars.get(i + 1) == Some(&c) {
+                            out.push(c);
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            '-' if next == Some('-') => {
+                while i < chars.len() && chars[i] != '\n' {
+                    out.push(chars[i]);
+                    i += 1;
                 }
             }
-            continue;
-        }
-        if c == '\'' || c == '"' {
-            quote = Some(c);
-            out.push(c);
-            continue;
-        }
-        if c == '$' {
-            let mut name = String::new();
-            while chars
-                .peek()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
-            {
-                name.push(chars.next().context("parameter")?);
+            '/' if next == Some('*') => {
+                let mut depth = 0;
+                while i < chars.len() {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        out.push_str("/*");
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        out.push_str("*/");
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        out.push(chars[i]);
+                        i += 1;
+                    }
+                }
             }
-            anyhow::ensure!(params.contains_key(&name), "missing parameter {name}");
-            out.push_str(&format!("getvariable('{}')", name));
-        } else {
-            out.push(c);
+            '$' => {
+                let mut end = i + 1;
+                while chars
+                    .get(end)
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+                {
+                    end += 1;
+                }
+                let name: String = chars[i + 1..end].iter().collect();
+                if chars.get(end) == Some(&'$') && !name.starts_with(|c: char| c.is_ascii_digit()) {
+                    // `$$` or `$tag$` opens a dollar-quoted string that runs to the same marker (or to the end).
+                    let marker: Vec<char> = chars[i..=end].to_vec();
+                    let mut j = end + 1;
+                    while j < chars.len()
+                        && chars[j..].len() >= marker.len()
+                        && chars[j..j + marker.len()] != marker[..]
+                    {
+                        j += 1;
+                    }
+                    let stop = if j < chars.len() {
+                        j + marker.len()
+                    } else {
+                        chars.len()
+                    };
+                    out.extend(&chars[i..stop]);
+                    i = stop;
+                } else {
+                    anyhow::ensure!(params.contains_key(&name), "missing parameter {name}");
+                    out.push_str(&format!("getvariable('{name}')"));
+                    i = end;
+                }
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
         }
     }
     Ok(out)
@@ -814,5 +873,91 @@ mod extension_tests {
         assert!(refused.to_string().contains("unsupported DuckDB extension"));
         assert!(parse("---\nextensions: behavioral\n---\n# R\n").is_err());
         assert!(parse("---\nextensions: [1]\n---\n# R\n").is_err());
+    }
+}
+
+#[cfg(test)]
+mod parameter_binding_tests {
+    use super::bind_variables;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn params(names: &[&str]) -> BTreeMap<String, serde_json::Value> {
+        names.iter().map(|n| ((*n).to_owned(), json!(1))).collect()
+    }
+    const VAR: &str = "getvariable('price')";
+
+    #[test]
+    fn a_parameter_is_bound_and_everything_else_is_left_as_written() {
+        assert_eq!(
+            bind_variables("SELECT $price + 1", &params(&["price"])).unwrap(),
+            format!("SELECT {VAR} + 1")
+        );
+        assert_eq!(
+            bind_variables("SELECT 1", &params(&[])).unwrap(),
+            "SELECT 1"
+        );
+        assert!(
+            bind_variables("SELECT $nope", &params(&["price"]))
+                .unwrap_err()
+                .to_string()
+                .contains("missing parameter nope")
+        );
+    }
+
+    #[test]
+    fn dollar_signs_in_strings_and_comments_are_not_parameters() {
+        let none = params(&[]);
+        for sql in [
+            "SELECT '$price'",
+            "SELECT \"$price\"",
+            "SELECT 'it''s $price'",
+            "SELECT 1 -- documentation mentions $price",
+            "SELECT 1 -- $price\nFROM t",
+            "SELECT /* $price */ 1",
+            "SELECT /* outer /* nested $price */ still a comment $price */ 1",
+            "SELECT $$ $price $$",
+            "SELECT $note$ a $price here $note$",
+        ] {
+            assert_eq!(bind_variables(sql, &none).unwrap(), sql, "{sql}");
+        }
+    }
+
+    #[test]
+    fn comment_and_string_markers_inside_each_other_do_not_confuse_the_scan() {
+        let p = params(&["price"]);
+        // `--` and `/*` inside a string are text, so the parameter after it is still bound.
+        assert_eq!(
+            bind_variables("SELECT '--' || $price", &p).unwrap(),
+            format!("SELECT '--' || {VAR}")
+        );
+        assert_eq!(
+            bind_variables("SELECT '/*' , $price", &p).unwrap(),
+            format!("SELECT '/*' , {VAR}")
+        );
+        // A line comment ends at the newline: the parameter on the next line is bound.
+        assert_eq!(
+            bind_variables("-- $ignored\nSELECT $price", &p).unwrap(),
+            format!("-- $ignored\nSELECT {VAR}")
+        );
+        // A quote inside a comment does not start a string.
+        assert_eq!(
+            bind_variables("-- it's a comment\nSELECT $price", &p).unwrap(),
+            format!("-- it's a comment\nSELECT {VAR}")
+        );
+        assert_eq!(
+            bind_variables("/* don't */ SELECT $price", &p).unwrap(),
+            format!("/* don't */ SELECT {VAR}")
+        );
+        // Minus and division are not comments.
+        assert_eq!(
+            bind_variables("SELECT 5 - $price / 2", &p).unwrap(),
+            format!("SELECT 5 - {VAR} / 2")
+        );
+        // An unterminated comment or string swallows the rest, as it does in DuckDB.
+        assert_eq!(
+            bind_variables("SELECT 1 /* $price", &params(&[])).unwrap(),
+            "SELECT 1 /* $price"
+        );
     }
 }

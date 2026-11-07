@@ -6,7 +6,7 @@ pub mod rpc;
 pub mod connection;
 
 mod http;
-pub use http::http_client;
+pub use http::{http_client, retry_after};
 
 mod archive;
 pub use archive::{Key, open_jsonl, parse_key};

@@ -12,7 +12,6 @@ interface Ctx { env: Env; principal: Principal; origin: string }
 const MIN_ADMIN_TOKEN = 20
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024
 const SIGNED_URL_TTL_S = 3600
-const RETENTION_FALLBACK_S = 90 * 86400
 
 const bearer = (req: Request) => /^Bearer (.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1] ?? null
 const registry = (env: Env) => env.REGISTRY.get(env.REGISTRY.idFromName('registry'))
@@ -111,7 +110,8 @@ async function archiveAuth(c: Ctx, ref: string): Promise<SourceRow> {
   if (c.principal.kind === 'key' && (c.principal.scope !== 'secret' || c.principal.source !== s.id)) throw new w.ForbiddenError()
   return s
 }
-const retentionSeconds = (env: Env) => (Number(env.RETENTION_DAYS) > 0 ? Number(env.RETENTION_DAYS) * 86400 : RETENTION_FALLBACK_S)
+/** The archive retention window in seconds; 0 means archives are kept until they are deleted. */
+const retentionSeconds = (env: Env) => (Number(env.RETENTION_DAYS) > 0 ? Number(env.RETENTION_DAYS) * 86400 : 0)
 const covOut = (c: Ctx, cov: { archiveId: string; firstRetained: string; latestPublished: string; latestPublishedAt: number }): w.Coverage =>
   ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) })
 
@@ -141,7 +141,7 @@ const archiveService: w.ArchiveServer<Ctx> = {
     const stub = sourceDO(c.env, s.id)
     const cov = await stub.coverage()
     const st = await stub.stats()
-    const publication = { state: st.alarm === null ? 'idle' : 'pending', observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1000), ...(st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {}) }
+    const publication = { state: st.pending ? 'pending' : 'idle', observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1000), ...(st.pending && st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {}) }
     return { coverage: cov ? covOut(c, cov) : undefined, publication }
   },
 }
@@ -246,6 +246,7 @@ export default {
       if (op === 'seal') { await stub.flush(); return Response.json(await stub.seal()) }
       if (op === 'rotate') { await stub.flush(); return Response.json(await stub.rotate()) }
       if (op === 'sweep') { await stub.sweep(); return Response.json(await stub.stats()) }
+      if (op === 'fail-flush') { await stub.failNextFlush(); return Response.json({ ok: true }) }
       if (op === 'stats') return Response.json(await stub.stats())
     }
     return (await w.serveHealthRpc(healthService, ctx, req))

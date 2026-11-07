@@ -23,7 +23,7 @@ struct Coverage
   - latestPublished?: Seq
   # When the latest published object was created.
   - latestPublishedAt?: timestamp
-  # The archive retention window in seconds.
+  # The archive retention window in seconds. 0 means archives are kept until they are deleted.
   - retentionSeconds: uint64
 
 # One immutable archive object, downloadable with a plain GET of url until expiresAt.

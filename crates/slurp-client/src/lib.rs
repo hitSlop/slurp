@@ -14,7 +14,7 @@ pub mod protocol;
 pub mod remote;
 pub use rpc::{ArchiveObject as ListedObject, ListObjectsResponse as ListPage};
 
-pub use remote::{DirRemote, HttpRemote, Remote, RemoteCounts, RemoteError};
+pub use remote::{DirRemote, HttpRemote, Remote, RemoteCounts, RemoteError, download_verified};
 
 pub mod folder;
 mod locking;

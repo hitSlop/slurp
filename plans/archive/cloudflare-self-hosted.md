@@ -1,6 +1,8 @@
+> **Historical.** This is the design exploration from before the Worker was built: it compares a Basin-based path with the Worker-only path (the one that shipped) and describes a machine-level spool that was never built. The current design is in [docs/architecture.md](../../docs/architecture.md); measured results are in [spikes/results/](../../spikes/results/).
+
 # Self-hosted Slurp on Cloudflare: plan, Basin vs Worker-only, and spikes
 
-Status: Path W chosen and prototyped in `spikes/worker/` (results: `spikes/results/cloudflare-summary.md`). The Basin material below is kept for reference only. Written 2026-11-06. Nothing here is built. Decisions marked **(decided)** came from the product owner; everything else is a recommendation to be confirmed by the spikes in section 9.
+Status: Path W chosen and prototyped in `spikes/worker/` (results: `spikes/results/cloudflare-summary.md`). The Basin material below is kept for reference only. Written 2026-11-06. The status section below says what exists today; the rest is the original plan. Decisions marked **(decided)** came from the product owner; everything else is a recommendation to be confirmed by the spikes in section 9.
 
 ## Status (2026-11-07)
 

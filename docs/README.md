@@ -9,4 +9,4 @@
 | [Architecture](architecture.md) | Data flow, contracts and the durability design |
 | [Agent skills](../crates/slurp-cli/skills/slurp/SKILL.md) | Instrumentation, SQL analysis and the product learning loop |
 
-Design notes and spike results are in [`plans/`](../plans/cloudflare-self-hosted.md) and [`spikes/results/`](../spikes/results/cloudflare-summary.md).
+Historical design notes are in [`plans/archive/`](../plans/archive/cloudflare-self-hosted.md); measured spike and load results are in [`spikes/results/`](../spikes/results/cloudflare-summary.md).

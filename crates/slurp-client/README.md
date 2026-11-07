@@ -17,7 +17,9 @@ Environment credentials and source read keys can use the RPC/transport directly.
 `folder::Folder::open(path, backend, source_id)` locks and binds a portable event
 folder. `sync(&remote, accept_reset)` downloads one catch-up run using `HttpRemote`
 or an injected `Remote`. `Folder::load(path)` and `read()` work offline.
-The CLI and lake adapter are being connected to these APIs separately.
+The CLI's DuckDB sync (`Workspace::sync`) and this folder sync share one download path, `download_verified`: it checks size and
+SHA-256 against the listing and asks for a fresh signed link when one expires mid-sync. The DuckDB sync keeps its own cursor (the
+receipts table in the database); the folder keeps archives and a manifest on disk.
 
 ```text
 events/

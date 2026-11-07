@@ -300,7 +300,6 @@ impl Folder {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let mut expired = 0;
         let mut delayed_for_test = false;
         loop {
             let checkpoint = self.manifest.archives[index].checkpoint()?;
@@ -331,7 +330,6 @@ impl Folder {
                 report.first_retained = Some(current.first_retained.clone());
                 return Ok(report);
             }
-            let mut relist = false;
             for object in &page.objects {
                 let expected = self.manifest.archives[index]
                     .checkpoint()?
@@ -382,16 +380,7 @@ impl Folder {
                             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                         }
                     }
-                    match remote.download(object, &temporary).await {
-                        Ok(identity) if identity == (object.sha256.clone(), object.size) => {}
-                        Ok(_) => bail!("download failed size/SHA256 verification"),
-                        Err(RemoteError::Expired) if expired < 3 => {
-                            expired += 1;
-                            relist = true;
-                            break;
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
+                    crate::download_verified(remote, object, &temporary).await?;
                     pause_for_test("after_download", &self.root)?;
                     File::open(&temporary)?.sync_all()?;
                     fs::rename(temporary, &final_path)?;
@@ -420,13 +409,9 @@ impl Folder {
                 });
                 self.save()?;
                 pause_for_test("after_manifest", &self.root)?;
-                expired = 0;
             }
             let checkpoint = self.manifest.archives[index].checkpoint()?;
             report.checkpoint = (checkpoint > 0).then(|| checkpoint.to_string());
-            if relist {
-                continue;
-            }
             if let Some(after) = &page.next_after {
                 if page.objects.is_empty() || protocol::parse_sequence(after)? != checkpoint {
                     bail!("invalid pagination cursor");

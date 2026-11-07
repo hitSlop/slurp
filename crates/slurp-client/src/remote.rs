@@ -73,6 +73,48 @@ pub trait Remote: Send + Sync {
     }
 }
 
+/// How many times one object is re-listed for a fresh link before giving up.
+const LINK_REFRESHES: u32 = 3;
+
+/// Download one listed object, verify its size and SHA-256 against the listing, and survive expired links.
+///
+/// Signed download links last a limited time, and a long catch-up (many or large archives, a slow connection) can outlive
+/// them. When a download answers [`RemoteError::Expired`], the object is listed again for a fresh link and retried, up to
+/// three times. Both the portable folder sync and the DuckDB sync download through this one function.
+///
+/// # Errors
+/// Returns the transport error, [`RemoteError::Expired`] when the object is gone or links keep expiring,
+/// [`RemoteError::RetentionGap`] when the archive was removed meanwhile, or a protocol error when the bytes do not match
+/// the listed identity (the partial file is left for the caller to discard).
+pub async fn download_verified(
+    remote: &dyn Remote,
+    obj: &ListedObject,
+    dest: &Path,
+) -> Result<(), RemoteError> {
+    let mut current = obj.clone();
+    for refresh in 0..=LINK_REFRESHES {
+        match remote.download(&current, dest).await {
+            Ok((sha, size)) if sha == obj.sha256 && size == obj.size => return Ok(()),
+            Ok(_) => {
+                return Err(RemoteError::Protocol(
+                    "download failed size/SHA256 verification".into(),
+                ));
+            }
+            Err(RemoteError::Expired) if refresh < LINK_REFRESHES => {
+                let seq = crate::protocol::parse_sequence(&obj.seq)?;
+                let page = remote.list(Some(seq - 1), 1).await?;
+                current = page
+                    .objects
+                    .into_iter()
+                    .find(|fresh| fresh.seq == obj.seq && fresh.sha256 == obj.sha256)
+                    .ok_or(RemoteError::Expired)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(RemoteError::Expired)
+}
+
 /// Shared gateway transport, independent of the lake adapter.
 pub fn http_client() -> Result<reqwest::Client, RemoteError> {
     crate::http_client().map_err(|error| RemoteError::Transport(error.to_string()))

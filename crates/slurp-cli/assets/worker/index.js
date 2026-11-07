@@ -1667,7 +1667,10 @@ var SourceDO = class extends DurableObject2 {
   queue = [];
   queuedBytes = 0;
   timer = null;
+  /** Identical request bodies seen lately, keyed by hash. The promise settles when that request's batch is committed (or fails). */
   recent = /* @__PURE__ */ new Map();
+  /** Test hook (DEBUG only): make the next group commit fail once. */
+  failNext = false;
   /** Rows written by this object since it was last constructed (what Durable Object SQLite bills). */
   rows = 0;
   constructor(ctx, env) {
@@ -1725,24 +1728,46 @@ var SourceDO = class extends DurableObject2 {
     }
     return id;
   }
+  /** True while accepted events are waiting for their archive (a retention alarm alone is not a pending publication). */
+  hasBuffered() {
+    return this.pendingBytes > 0 || this.queue.length > 0 || this.intent() !== null;
+  }
   publication(alarm) {
-    return { state: alarm === null ? "idle" : "pending", observedAt: (/* @__PURE__ */ new Date()).toISOString(), intervalSeconds: Math.round(this.num("SEAL_INTERVAL_MS", 6e5) / 1e3), ...alarm !== null ? { estimatedAt: new Date(alarm).toISOString() } : {} };
+    const pending = this.hasBuffered();
+    return { state: pending ? "pending" : "idle", observedAt: (/* @__PURE__ */ new Date()).toISOString(), intervalSeconds: Math.round(this.num("SEAL_INTERVAL_MS", 6e5) / 1e3), ...pending && alarm !== null ? { estimatedAt: new Date(alarm).toISOString() } : {} };
+  }
+  /** When the oldest archive reaches RETENTION_DAYS, or null when retention is off or nothing is archived. */
+  nextExpiry() {
+    const days = this.num("RETENTION_DAYS", 0);
+    if (days <= 0) return null;
+    const oldest = this.sql.exec("SELECT MIN(created_at) m FROM manifest").one().m;
+    return oldest === null ? null : oldest + days * 864e5;
+  }
+  /** With nothing buffered, keep an alarm only for the next retention expiry; otherwise none. */
+  async settleIdleAlarm() {
+    const expiry = this.nextExpiry();
+    if (expiry === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.max(expiry, Date.now() + 1e3));
   }
   async ingest(source, body, geo) {
     const checked = checkBody(body, geo);
     if ("reason" in checked) return { ok: false, status: 400, reason: `line ${checked.line}: ${checked.reason}` };
     if (checked.lines.length === 0) return { ok: true, accepted: 0, duplicate: false, publication: this.publication(await this.ctx.storage.getAlarm()) };
     const hash = await sha256Hex(body);
-    if (this.recent.has(hash)) return { ok: true, accepted: checked.lines.length, duplicate: true, publication: this.publication(await this.ctx.storage.getAlarm()) };
+    const earlier = this.recent.get(hash);
+    if (earlier) {
+      const outcome = await earlier;
+      return outcome.ok ? { ...outcome, duplicate: true } : outcome;
+    }
     const cap = this.num("BUFFER_CAP_BYTES", 64 * 1024 * 1024);
     if (this.pendingBytes + this.queuedBytes + body.length > cap) return { ok: false, status: 429, reason: "buffer full", retryAfter: 10 };
-    this.recent.set(hash, true);
-    if (this.recent.size > RECENT_HASHES) this.recent.delete(this.recent.keys().next().value);
     const window = this.num("GROUP_COMMIT_MS", 500);
     const done = new Promise((resolve) => {
       this.queue.push({ lines: checked.lines, atMs: Date.now(), hash, done: resolve });
       this.queuedBytes += body.length;
     });
+    this.recent.set(hash, done);
+    if (this.recent.size > RECENT_HASHES) this.recent.delete(this.recent.keys().next().value);
     if (window <= 0) await this.flush();
     else if (!this.timer) this.timer = setTimeout(() => {
       void this.flush();
@@ -1780,6 +1805,10 @@ var SourceDO = class extends DurableObject2 {
       rows.push(cur);
       let bytes = 0;
       const g = this.gen();
+      if (this.failNext) {
+        this.failNext = false;
+        throw new Error("injected flush failure");
+      }
       this.ctx.storage.transactionSync(() => {
         for (const r of rows) {
           bytes += r.bytes;
@@ -1790,7 +1819,7 @@ var SourceDO = class extends DurableObject2 {
       const alarm = await this.ctx.storage.getAlarm();
       let next = alarm;
       if (this.pendingBytes >= this.num("SEAL_MAX_BYTES", 8 * 1024 * 1024)) next = Date.now();
-      else if (alarm === null) next = Date.now() + this.num("SEAL_INTERVAL_MS", 6e5);
+      else if (alarm === null || alarm > Date.now() + this.num("SEAL_INTERVAL_MS", 6e5)) next = Date.now() + this.num("SEAL_INTERVAL_MS", 6e5);
       if (next !== alarm) await this.ctx.storage.setAlarm(next);
       const pub = this.publication(next);
       for (const item of q) item.done({ ok: true, accepted: item.lines.length, duplicate: false, publication: pub });
@@ -1811,7 +1840,7 @@ var SourceDO = class extends DurableObject2 {
     if (left > 0 && await this.ctx.storage.getAlarm() === null) {
       const due = this.pendingBytes >= this.num("SEAL_MAX_BYTES", 8 * 1024 * 1024);
       await this.ctx.storage.setAlarm(Date.now() + (due ? 0 : this.num("SEAL_INTERVAL_MS", 6e5)));
-    }
+    } else if (left === 0 && this.queue.length === 0 && this.intent() === null) await this.settleIdleAlarm();
   }
   /**
    * Seal the buffered batches into one gzip NDJSON archive. Safe to replay: rotation and the intent commit together,
@@ -1844,7 +1873,7 @@ var SourceDO = class extends DurableObject2 {
     });
     this.pendingBytes = Math.max(0, this.pendingBytes - rawBytes);
     const left = this.sql.exec(`SELECT COUNT(*) c FROM b_${this.gen()}`).one().c;
-    if (left === 0 && this.queue.length === 0) await this.ctx.storage.deleteAlarm();
+    if (left === 0 && this.queue.length === 0) await this.settleIdleAlarm();
     return row;
   }
   /** Optional retention: drop archives older than RETENTION_DAYS (0 keeps everything). */
@@ -1867,8 +1896,12 @@ var SourceDO = class extends DurableObject2 {
   listObjects(after, limit) {
     return this.sql.exec("SELECT * FROM manifest WHERE seq>? ORDER BY seq LIMIT ?", after, limit).toArray();
   }
+  /** Test hook (DEBUG only). */
+  async failNextFlush() {
+    this.failNext = true;
+  }
   async stats() {
-    return { rows: this.rows, pendingBytes: this.pendingBytes, queued: this.queue.length, gen: this.gen(), sealing: this.intent(), manifest: this.sql.exec("SELECT COUNT(*) n FROM manifest").one().n, alarm: await this.ctx.storage.getAlarm() };
+    return { pending: this.hasBuffered(), rows: this.rows, pendingBytes: this.pendingBytes, queued: this.queue.length, gen: this.gen(), sealing: this.intent(), manifest: this.sql.exec("SELECT COUNT(*) n FROM manifest").one().n, alarm: await this.ctx.storage.getAlarm() };
   }
   /** Delete every archive object this source wrote and all of its Durable Object storage (used by `slurp cloud destroy`). */
   async purge() {
@@ -1903,7 +1936,6 @@ var SourceDO = class extends DurableObject2 {
 var MIN_ADMIN_TOKEN = 20;
 var DEFAULT_MAX_BODY = 10 * 1024 * 1024;
 var SIGNED_URL_TTL_S = 3600;
-var RETENTION_FALLBACK_S = 90 * 86400;
 var bearer = /* @__PURE__ */ __name((req) => /^Bearer (.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1] ?? null, "bearer");
 var registry = /* @__PURE__ */ __name((env) => env.REGISTRY.get(env.REGISTRY.idFromName("registry")), "registry");
 var sourceDO = /* @__PURE__ */ __name((env, id) => env.SOURCE.get(env.SOURCE.idFromName(id)), "sourceDO");
@@ -2021,7 +2053,7 @@ async function archiveAuth(c, ref) {
   return s;
 }
 __name(archiveAuth, "archiveAuth");
-var retentionSeconds = /* @__PURE__ */ __name((env) => Number(env.RETENTION_DAYS) > 0 ? Number(env.RETENTION_DAYS) * 86400 : RETENTION_FALLBACK_S, "retentionSeconds");
+var retentionSeconds = /* @__PURE__ */ __name((env) => Number(env.RETENTION_DAYS) > 0 ? Number(env.RETENTION_DAYS) * 86400 : 0, "retentionSeconds");
 var covOut = /* @__PURE__ */ __name((c, cov) => ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) }), "covOut");
 var archiveService = {
   async listObjects(c, r) {
@@ -2049,7 +2081,7 @@ var archiveService = {
     const stub = sourceDO(c.env, s.id);
     const cov = await stub.coverage();
     const st = await stub.stats();
-    const publication = { state: st.alarm === null ? "idle" : "pending", observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1e3), ...st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {} };
+    const publication = { state: st.pending ? "pending" : "idle", observedAt: iso(Date.now()), intervalSeconds: Math.round(Number(c.env.SEAL_INTERVAL_MS) / 1e3), ...st.pending && st.alarm !== null ? { estimatedAt: iso(st.alarm) } : {} };
     return { coverage: cov ? covOut(c, cov) : void 0, publication };
   }
 };
@@ -2187,6 +2219,10 @@ var index_default = {
       if (op === "sweep") {
         await stub.sweep();
         return Response.json(await stub.stats());
+      }
+      if (op === "fail-flush") {
+        await stub.failNextFlush();
+        return Response.json({ ok: true });
       }
       if (op === "stats") return Response.json(await stub.stats());
     }

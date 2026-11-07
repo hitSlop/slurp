@@ -86,6 +86,76 @@ test('retention sweep removes old archives and reports a gap for stale checkpoin
   } finally { await w.stop() }
 })
 
+test('an identical retry is never acknowledged before the original is durable', async () => {
+  const w = await startWorker({ GROUP_COMMIT_MS: '400' })
+  try {
+    const s = await newSource(w.base, name('dupflight'))
+    const body = evt('same')
+    await debug(w.base, 'fail-flush', s.id)                      // the next group commit fails once
+    const [first, retry] = await Promise.all([post(w.base, s.pk, body), (async () => { await new Promise(r => setTimeout(r, 100)); return post(w.base, s.pk, body) })()])
+    assert.equal(first.status, 503, 'the original reports the failed commit')
+    assert.equal(retry.status, 503, 'the in-flight retry must not claim success for events that were never stored')
+    assert.equal((await stats(w.base, s.id)).pending, false)
+    const again = await post(w.base, s.pk, body)                  // a later retry is a fresh attempt and succeeds
+    assert.equal(again.status, 200); assert.equal(again.headers.get('slurp-duplicate'), null)
+    const dup = await post(w.base, s.pk, body)                    // once stored, retries are acknowledged as duplicates
+    assert.equal(dup.status, 200); assert.equal(dup.headers.get('slurp-duplicate'), '1')
+    await debug(w.base, 'seal', s.id)
+    assert.deepEqual(ids(await readArchives(w.base, s.id, s.sk)), ['same'], 'stored exactly once')
+  } finally { await w.stop() }
+})
+
+test('a concurrent identical retry waits for the commit and then reports a duplicate', async () => {
+  const w = await startWorker({ GROUP_COMMIT_MS: '300' })
+  try {
+    const s = await newSource(w.base, name('dupok'))
+    const body = evt('twice')
+    const [a, b] = await Promise.all([post(w.base, s.pk, body), (async () => { await new Promise(r => setTimeout(r, 50)); return post(w.base, s.pk, body) })()])
+    assert.deepEqual([a.status, b.status], [200, 200])
+    assert.equal(b.headers.get('slurp-duplicate'), '1')
+    await debug(w.base, 'seal', s.id)
+    assert.deepEqual(ids(await readArchives(w.base, s.id, s.sk)), ['twice'])
+  } finally { await w.stop() }
+})
+
+test('retention keeps sweeping after the source goes quiet, with no further ingest', async () => {
+  const w = await startWorker({ RETENTION_DAYS: '0.00004', SEAL_INTERVAL_MS: '600', GROUP_COMMIT_MS: '10' }) // expires about 3.5 s after sealing
+  try {
+    const s = await newSource(w.base, name('idle'))
+    await post(w.base, s.pk, evt('old'))
+    const deadline = Date.now() + 20_000
+    while ((await stats(w.base, s.id)).manifest === 0) { assert.ok(Date.now() < deadline, 'never sealed'); await new Promise(r => setTimeout(r, 200)) }
+    const st = await stats(w.base, s.id)
+    assert.equal(st.pending, false); assert.ok(st.alarm !== null, 'an alarm stays armed for the retention expiry')
+    const cov = await w.clients.archive.getCoverage({ source: s.id }, admin)
+    assert.equal(cov.publication?.state, 'idle', 'a retention alarm is not a pending publication'); assert.equal(cov.publication?.estimatedAt, undefined)
+    while ((await stats(w.base, s.id)).manifest !== 0) { assert.ok(Date.now() < deadline + 20_000, 'old archive never expired'); await new Promise(r => setTimeout(r, 300)) }
+    assert.equal((await stats(w.base, s.id)).alarm, null, 'nothing left to wait for')
+  } finally { await w.stop() }
+})
+
+test('with retention off, coverage reports 0 (kept until deleted), not a made-up window', async () => {
+  const w = await startWorker()
+  try {
+    const s = await newSource(w.base, name('keep'))
+    await post(w.base, s.pk, evt('k')); await debug(w.base, 'seal', s.id)
+    assert.equal((await w.clients.archive.getCoverage({ source: s.id }, admin)).coverage?.retentionSeconds, 0)
+  } finally { await w.stop() }
+})
+
+test('a buffered event still seals on time when a retention alarm is armed far ahead', async () => {
+  const w = await startWorker({ RETENTION_DAYS: '30', SEAL_INTERVAL_MS: '1200', GROUP_COMMIT_MS: '10' })
+  try {
+    const s = await newSource(w.base, name('pull'))
+    await post(w.base, s.pk, evt('a'))
+    const wait = async (n: number) => { const d = Date.now() + 15_000; while ((await stats(w.base, s.id)).manifest < n) { assert.ok(Date.now() < d, `archive ${n} never sealed`); await new Promise(r => setTimeout(r, 200)) } }
+    await wait(1)                                                // idle now, alarm armed ~30 days out for retention
+    await post(w.base, s.pk, evt('b'))                           // must pull the alarm in to the seal interval
+    await wait(2)
+    assert.deepEqual(ids(await readArchives(w.base, s.id, s.sk)).sort(), ['a', 'b'])
+  } finally { await w.stop() }
+})
+
 test('rows stay under the 2 MB Durable Object SQLite limit: huge requests and coalesced bursts are split, nothing is lost', async () => {
   const w = await startWorker({ GROUP_COMMIT_MS: '300' })
   try {

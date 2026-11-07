@@ -452,11 +452,9 @@ COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false
                     .filter(|key| slurp_client::is_jsonl(key.ext))
                     .ok_or_else(|| anyhow::anyhow!("unsupported archive object name"))?;
                 let path = tmp.path().join(format!("events.{}", key.ext));
-                let (sha, size) = remote.download(&obj, &path).await?;
-                if sha != obj.sha256 || size != obj.size {
-                    bail!("archive checksum mismatch")
-                }
-                let stats = self.import(&c.archive_id, seq, &sha, size, &path)?;
+                // Verifies size and SHA-256 and asks for a fresh link if the listed one expired mid-sync.
+                slurp_client::download_verified(&remote, &obj, &path).await?;
+                let stats = self.import(&c.archive_id, seq, &obj.sha256, obj.size, &path)?;
                 imported += stats[0]["imported"].as_u64().unwrap_or(0);
                 duplicates += stats[0]["duplicates"].as_u64().unwrap_or(0);
                 after = seq;

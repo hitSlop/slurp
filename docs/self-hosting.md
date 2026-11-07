@@ -76,7 +76,7 @@ Plain variables in `backend/wrangler.jsonc` (`vars`); change and run `wrangler d
 | `GROUP_COMMIT_MS` | `500` | Concurrent requests inside this window share one write. `0` writes each request on its own. Higher saves cost, adds latency to each acknowledgement. |
 | `BUFFER_CAP_BYTES` | `67108864` | Unsealed data per source. Beyond it ingestion answers `429` with `Retry-After`. |
 | `MAX_BODY_BYTES` | `10485760` | Largest accepted request body (`413` beyond). |
-| `RETENTION_DAYS` | `0` | Delete archives older than this many days. `0` keeps everything. |
+| `RETENTION_DAYS` | `0` | Delete archives older than this many days, even when the source has gone quiet (the Worker wakes itself when the oldest archive expires). `0` keeps everything and the API reports a retention window of 0. |
 
 Secret: `ADMIN_TOKEN` (at least 20 characters). `DEBUG` enables `/__debug` routes for tests; never set it on a real deployment.
 

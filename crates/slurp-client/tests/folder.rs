@@ -213,3 +213,62 @@ async fn sigkill_before_and_after_manifest_commit_never_skips_a_delivery() {
         assert_eq!(String::from_utf8(output).unwrap().lines().count(), 1);
     }
 }
+
+/// Both syncs download through `download_verified`; these pin its behaviour on its own.
+mod download_verified {
+    use super::*;
+    use slurp_client::{Remote, RemoteError, download_verified};
+
+    async fn first_object(remote: &DirRemote) -> slurp_client::ListedObject {
+        remote.list(Some(0), 10).await.unwrap().objects.remove(0)
+    }
+
+    #[tokio::test]
+    async fn an_expired_link_is_refreshed_and_the_download_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let path = publish(root.path(), "a_one", 1);
+        coverage(root.path(), "a_one", 1, 1);
+        let remote = DirRemote::new(root.path().into(), "s");
+        remote.expire_once(path.file_name().unwrap().to_str().unwrap());
+        let object = first_object(&remote).await;
+        let out = tempfile::tempdir().unwrap();
+        let dest = out.path().join("o.jsonl.zst");
+        download_verified(&remote, &object, &dest).await.unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), fs::read(&path).unwrap());
+        assert_eq!(
+            remote.counts().object_gets,
+            2,
+            "one expired attempt, one that worked"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_object_deleted_meanwhile_reports_expired_not_a_checksum_error() {
+        let root = tempfile::tempdir().unwrap();
+        let path = publish(root.path(), "a_two", 1);
+        coverage(root.path(), "a_two", 1, 1);
+        let remote = DirRemote::new(root.path().into(), "s");
+        let object = first_object(&remote).await;
+        fs::remove_file(&path).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let error = download_verified(&remote, &object, &out.path().join("o"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RemoteError::Expired), "{error}");
+    }
+
+    #[tokio::test]
+    async fn bytes_that_do_not_match_the_listing_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let path = publish(root.path(), "a_three", 1);
+        coverage(root.path(), "a_three", 1, 1);
+        let remote = DirRemote::new(root.path().into(), "s");
+        let object = first_object(&remote).await;
+        fs::write(&path, b"tampered").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let error = download_verified(&remote, &object, &out.path().join("o"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("SHA256 verification"), "{error}");
+    }
+}

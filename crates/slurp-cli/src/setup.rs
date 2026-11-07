@@ -183,7 +183,6 @@ pub struct PageContext {
 }
 /// Write an atomically replaced, owner-only page; external scripts and connections are blocked.
 pub fn write_page(path: &std::path::Path, context: &PageContext) -> Result<()> {
-    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     let parent = path.parent().context("setup page parent")?;
     fs::create_dir_all(parent)?;
@@ -194,13 +193,7 @@ pub fn write_page(path: &std::path::Path, context: &PageContext) -> Result<()> {
         .replace('<', "\\u003c")
         .replace('>', "\\u003e");
     let html = include_str!("../assets/setup.html").replace("__SLURP_CONTEXT__", &payload);
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(html.as_bytes())?;
-    file.as_file().sync_all()?;
-    file.persist(path)?;
-    Ok(())
+    slurp_client::files::write_atomic(path, html.as_bytes())
 }
 
 /// Write a public-content storage guide without source context or credentials.

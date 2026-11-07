@@ -17,6 +17,11 @@ pub fn home() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("SLURP_HOME or HOME is required"))
 }
 
+/// A non-empty environment variable, or `None`.
+pub fn env_value(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
 pub fn normalize_backend(value: &str) -> Result<String> {
     let url = crate::reqwest::Url::parse(value.trim())?;
     if !matches!(url.scheme(), "http" | "https")

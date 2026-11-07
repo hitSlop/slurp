@@ -248,6 +248,22 @@ fn init_applies_settings_and_status_reads_the_receipt() {
     );
 }
 
+/// A damaged receipt is an error that names the file, not a deployment that quietly does not exist.
+#[test]
+fn a_damaged_receipt_is_reported_with_its_path() {
+    let fake = setup();
+    let cloud = fake.path("home").join("cloud");
+    std::fs::create_dir_all(&cloud).expect("receipts folder");
+    std::fs::write(cloud.join("broken.json"), "{ not json").expect("damaged receipt");
+    let out = slurp(&fake, &["cloud", "status"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    let message = text(&out);
+    assert!(
+        message.contains("broken.json") && message.contains("not a valid deployment receipt"),
+        "{message}"
+    );
+}
+
 #[test]
 fn an_r2_failure_names_the_dashboard_and_deploys_nothing() {
     let fake = setup();

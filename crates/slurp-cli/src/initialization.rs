@@ -69,7 +69,7 @@ fn bound_environment(backend: &str, project: &str) -> bool {
         })
 }
 fn environment(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
+    config::env_value(name)
 }
 fn shell(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))

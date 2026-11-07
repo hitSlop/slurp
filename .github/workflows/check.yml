@@ -64,6 +64,8 @@ jobs:
         run: sh backend/api/generate.sh --check
       - run: npm ci
         working-directory: backend
+      - name: Shared tools have one pinned version across the repo
+        run: node scripts/ci/pins.mjs
       - name: The Worker embedded in the CLI is current
         run: node scripts/bundle.mjs --check
         working-directory: backend

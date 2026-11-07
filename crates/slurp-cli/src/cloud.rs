@@ -300,22 +300,31 @@ fn receipts_dir() -> Result<PathBuf> {
     Ok(slurp_client::config::home()?.join("cloud"))
 }
 fn save_receipt(receipt: &Receipt) -> Result<()> {
-    let dir = receipts_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{}.json", receipt.worker));
-    std::fs::write(&path, serde_json::to_vec_pretty(receipt)?)?;
-    Ok(())
+    let path = receipts_dir()?.join(format!("{}.json", receipt.worker));
+    slurp_client::files::write_atomic(&path, &serde_json::to_vec_pretty(receipt)?)
 }
 fn load_receipts() -> Result<Vec<Receipt>> {
     let dir = receipts_dir()?;
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Ok(vec![]);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
     };
-    let mut receipts: Vec<Receipt> = entries
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
-        .collect();
+    // A receipt that cannot be read is an error that names the file, not a deployment that quietly does not exist.
+    let mut receipts: Vec<Receipt> = vec![];
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        receipts.push(serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "{} is not a valid deployment receipt; fix or delete it",
+                path.display()
+            )
+        })?);
+    }
     receipts.sort_by(|a, b| a.worker.cmp(&b.worker));
     Ok(receipts)
 }

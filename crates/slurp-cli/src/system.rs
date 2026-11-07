@@ -56,13 +56,14 @@ fn edit(home: &Path, change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<
     };
     let mut document: toml_edit::DocumentMut = text.parse().context("reading system settings")?;
     change(&mut document)?;
-    let mut file = tempfile::NamedTempFile::new_in(home)?;
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(document.to_string().as_bytes())?;
-    file.as_file().sync_all()?;
-    file.persist(path)?;
-    Ok(())
+    slurp_client::files::write_atomic(&path, document.to_string().as_bytes())
+}
+
+impl Settings {
+    /// The default Worker (the local `wrangler dev` one when none is saved).
+    pub fn backend_url(&self) -> &str {
+        self.backend.as_deref().unwrap_or(config::DEFAULT_BACKEND)
+    }
 }
 
 /// Save machine preferences while retaining comments and unrelated TOML settings.
@@ -192,20 +193,12 @@ fn update(home: &Path, edit: impl FnOnce(&mut Vec<Project>)) -> Result<()> {
     let mut projects = projects(home)?;
     edit(&mut projects);
     projects.sort_by(|a, b| a.root.cmp(&b.root));
-    let mut file = tempfile::NamedTempFile::new_in(home)?;
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    serde_json::to_writer_pretty(
-        &mut file,
-        &Registry {
-            version: 1,
-            projects,
-        },
-    )?;
-    file.write_all(b"\n")?;
-    file.as_file().sync_all()?;
-    file.persist(home.join("projects.json"))?;
-    Ok(())
+    let mut text = serde_json::to_string_pretty(&Registry {
+        version: 1,
+        projects,
+    })?;
+    text.push('\n');
+    slurp_client::files::write_atomic(&home.join("projects.json"), text.as_bytes())
 }
 
 /// Register a verified workspace by canonical project path, without moving any data.

@@ -136,18 +136,8 @@ pub(crate) fn main(global: Global, command: Command) -> ExitCode {
 pub(crate) fn home() -> Result<PathBuf> {
     slurp_client::config::home()
 }
-fn service_error(error: rpc::Error) -> anyhow::Error {
-    // Decode errors may contain credential-bearing response bodies. Keep them private.
-    anyhow!(match error.code() {
-        Some(1000) => "not connected; run slurp connect <worker-url> --token-stdin",
-        Some(1001) => "permission denied",
-        Some(2000) => "invalid service arguments",
-        Some(2001) => "a project with that name already exists",
-        Some(3000) => "project not found",
-        _ => "service unavailable or returned an invalid response",
-    })
-}
 pub(crate) use crate::output::configure as configure_output;
+use slurp_app::project_setup::service_error;
 pub(crate) fn emit(value: &impl serde::Serialize) -> Result<()> {
     crate::output::emit(crate::output::Kind::General, value)
 }
@@ -228,19 +218,9 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
         return crate::cloud::run(cloud, cli.json || cli.output == "json").await;
     }
     let cwd = std::env::current_dir()?;
-    let root = if let Some(root) = &cli.workspace {
-        root.clone()
-    } else {
-        slurp_app::project::discover(&cwd)?.unwrap_or(cwd)
-    };
-    let environment_backend = std::env::var("SLURP_BACKEND")
-        .ok()
-        .filter(|value| !value.is_empty());
-    let backend = crate::backend::resolve(
-        &root,
-        &home()?,
-        cli.backend.as_deref().or(environment_backend.as_deref()),
-    )?;
+    let root = slurp_app::project::root_for(&cwd, cli.workspace.as_deref())?;
+    let backend =
+        crate::backend::resolve_with_environment(&root, &home()?, cli.backend.as_deref())?;
     let backend = backend.as_str();
     let http = slurp_client::http_client()?;
     let backend = slurp_client::config::normalize_backend(backend)?;
@@ -463,17 +443,20 @@ fn validate_record(line: &str) -> Result<()> {
     if record
         .get("id")
         .and_then(Value::as_str)
-        .is_none_or(|v| v.is_empty())
+        .is_none_or(|v| v.is_empty() || v.len() > 256)
         || !record.get("data").is_some_and(Value::is_object)
     {
-        bail!("records require a nonempty id and object data");
+        bail!("records require an id of 1 to 256 bytes and object data");
     }
-    chrono::DateTime::parse_from_rfc3339(
-        record
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("record timestamp is required"))?,
-    )?;
+    let timestamp = record
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("record timestamp is required"))?;
+    chrono::DateTime::parse_from_rfc3339(timestamp)?;
+    // RFC 3339 allows a lowercase `t` between date and time; the Worker wants the usual capital.
+    if timestamp.as_bytes().get(10) != Some(&b'T') {
+        bail!("record timestamp must be RFC 3339 with a capital T");
+    }
     match record.get("type").and_then(Value::as_str) {
         Some("track")
             if record
@@ -640,5 +623,60 @@ async fn stream_stdin(
                 send(http,endpoint,key,std::mem::take(&mut body)).await?;events=0;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_record;
+    use serde_json::Value;
+
+    /// The Worker is the authority on what a record may contain; the CLI's check is only a courtesy that saves a round trip.
+    /// So the CLI must never refuse a record the Worker accepts. It may accept some the Worker refuses (the Worker scans the raw
+    /// bytes for nesting depth, lone surrogates, duplicate keys and number forms; the CLI parses JSON), but that list is kept
+    /// here, by name, so a new difference is noticed.
+    const LENIENT: &[&str] = &[
+        "duplicate key via escape at depth 2",
+        "duplicate top-level id",
+        "duplicate key at depth 2",
+    ];
+
+    #[test]
+    fn the_cli_never_refuses_what_the_worker_accepts_and_its_leniency_is_listed() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../backend/fixtures/canonical/records.json"
+        );
+        let fixture: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
+        let mut lenient = vec![];
+        for record in fixture["records"].as_array().expect("records") {
+            let name = record["name"].as_str().unwrap();
+            // Some vectors are raw bytes; the CLI reads its input as UTF-8 text before it validates, so bytes that are not text
+            // are refused there.
+            let line = match record["line"].as_str() {
+                Some(line) => Some(line.to_owned()),
+                None => {
+                    use base64::Engine as _;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(record["line_b64"].as_str().unwrap())
+                        .unwrap();
+                    String::from_utf8(bytes).ok()
+                }
+            };
+            let accepted = line.is_some_and(|line| validate_record(&line).is_ok());
+            if record["valid"] == true {
+                assert!(
+                    accepted,
+                    "the CLI refuses a record the Worker accepts: {name}"
+                );
+            } else if accepted {
+                lenient.push(name.to_owned());
+            }
+        }
+        assert_eq!(
+            lenient, LENIENT,
+            "the CLI accepts records the Worker refuses; update the list if that is intended"
+        );
     }
 }

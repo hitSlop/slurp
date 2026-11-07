@@ -4,7 +4,7 @@
 //! automatically (and `cargo install` works, because the sources live inside this crate).
 use anyhow::{Context, Result, ensure};
 use include_dir::{Dir, DirEntry, include_dir};
-use std::{fs, io::Write, path::Path};
+use std::{fs, path::Path};
 
 static SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/skills");
 
@@ -101,11 +101,7 @@ pub fn install(out: &Path, force: bool, all: bool) -> Result<()> {
     for (root, files) in packages {
         for file in files {
             let path = root.join(&file.relative);
-            let parent = path.parent().context("resource parent")?;
-            fs::create_dir_all(parent)?;
-            let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-            temp.write_all(file.content)?;
-            temp.persist(&path)?;
+            slurp_client::files::write_atomic(&path, file.content)?;
         }
     }
     Ok(())

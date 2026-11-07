@@ -19,9 +19,11 @@ pub use remote::{HttpRemote, Remote, RemoteError, download_verified};
 pub use reqwest;
 
 pub mod config;
+pub mod files;
 pub mod storage;
 
 pub mod reader;
+pub mod walk;
 
 pub mod publication;
 mod sync_types;

@@ -248,10 +248,7 @@ fn settings_menu(
             "Machine settings",
             &format!(
                 "Backend: {}\nLibrary: {}{}\nDuckDB: {}{}",
-                saved
-                    .backend
-                    .as_deref()
-                    .unwrap_or(slurp_client::config::DEFAULT_BACKEND),
+                saved.backend_url(),
                 saved
                     .library_dir
                     .as_deref()
@@ -319,10 +316,7 @@ fn settings_menu(
                     let path = prepare_library(selected)?;
                     system::save_machine(
                         home,
-                        saved
-                            .backend
-                            .as_deref()
-                            .unwrap_or(slurp_client::config::DEFAULT_BACKEND),
+                        saved.backend_url(),
                         &path,
                         saved.duckdb.as_deref().context("saved DuckDB")?,
                     )?;
@@ -360,10 +354,7 @@ fn settings_menu(
                     ),
                 )?;
                 match tokio::runtime::Runtime::new()?.block_on(login::ensure(
-                    saved
-                        .backend
-                        .as_deref()
-                        .unwrap_or(slurp_client::config::DEFAULT_BACKEND),
+                    saved.backend_url(),
                     ui,
                     no_open,
                 )) {
@@ -406,11 +397,7 @@ pub fn run(options: Options, machine_output: bool) -> Result<Value> {
     }
     ui.welcome(saved.library_dir.is_none() || saved.duckdb.is_none())?;
     let backend = slurp_client::config::normalize_backend(
-        options
-            .backend
-            .as_deref()
-            .or(saved.backend.as_deref())
-            .unwrap_or(slurp_client::config::DEFAULT_BACKEND),
+        options.backend.as_deref().unwrap_or(saved.backend_url()),
     )?;
     let selected = if let Some(path) = &options.library {
         library(storage::resolve(&std::env::current_dir()?, path)?, None)?

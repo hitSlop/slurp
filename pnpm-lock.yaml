@@ -40,7 +40,7 @@ importers:
         specifier: 1.11.3
         version: 1.11.3
       typescript:
-        specifier: ^5.9.0
+        specifier: 5.9.3
         version: 5.9.3
       wrangler:
         specifier: 4.158.0

@@ -9,6 +9,16 @@ struct Project {
     backend: String,
 }
 
+/// Like [`resolve`], but `SLURP_BACKEND` stands in for an explicit `--backend`.
+pub fn resolve_with_environment(
+    root: &Path,
+    home: &Path,
+    explicit: Option<&str>,
+) -> Result<String> {
+    let environment = config::env_value("SLURP_BACKEND");
+    resolve(root, home, explicit.or(environment.as_deref()))
+}
+
 pub fn resolve(root: &Path, home: &Path, explicit: Option<&str>) -> Result<String> {
     if let Some(value) = explicit {
         return config::normalize_backend(value);

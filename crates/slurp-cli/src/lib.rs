@@ -451,7 +451,6 @@ COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false
         mut progress: impl FnMut(&SyncProgress) -> std::ops::ControlFlow<()>,
     ) -> Result<Value> {
         storage::require_database(&self.database)?;
-        use slurp_client::Remote;
         let remote = slurp_client::HttpRemote::new(&self.backend, &self.project, token)?;
         let status = remote.get_status().await?;
         let Some(c) = status.coverage else {
@@ -488,49 +487,34 @@ COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false
         let mut downloaded = 0;
         let mut imported = 0;
         let mut duplicates = 0;
-        while after < head {
+        let mut walk = slurp_client::walk::Walk::new(&remote, &c.archive_id, after, head, 100);
+        loop {
             if self.cancellation.is_cancelled() {
                 bail!(Failure::new(ErrorCode::Cancelled, "cancelled"))
             }
-            let page = remote.list(Some(after), 100).await?;
-            if page
-                .coverage
-                .as_ref()
-                .is_none_or(|v| v.archive_id != c.archive_id)
+            let Some(archive) = walk.next(|| self.scratch()).await? else {
+                break;
+            };
+            let sequence = archive.sequence;
+            let stats = self.import(
+                &c.archive_id,
+                sequence,
+                &archive.object.sha256,
+                archive.object.size,
+                &archive.path,
+            )?;
+            imported += stats[0]["imported"].as_u64().unwrap_or(0);
+            duplicates += stats[0]["duplicates"].as_u64().unwrap_or(0);
+            after = sequence;
+            downloaded += 1;
+            if progress(&SyncProgress {
+                archive: c.archive_id.clone(),
+                sequence,
+                downloaded,
+            })
+            .is_break()
             {
-                bail!("archive reset during sync")
-            }
-            if page.objects.is_empty() {
-                bail!("publication gap")
-            }
-            for obj in page.objects {
-                let seq = slurp_client::protocol::parse_sequence(&obj.seq)?;
-                if seq > head {
-                    break;
-                }
-                if seq != after + 1 {
-                    bail!("publication gap")
-                }
-                let tmp = self.scratch()?;
-                slurp_client::parse_key(&obj.name)
-                    .ok_or_else(|| anyhow::anyhow!("unsupported archive object name"))?;
-                let path = tmp.path().join("events.jsonl.gz");
-                // Verifies size and SHA-256 and asks for a fresh link if the listed one expired mid-sync.
-                slurp_client::download_verified(&remote, &obj, &path).await?;
-                let stats = self.import(&c.archive_id, seq, &obj.sha256, obj.size, &path)?;
-                imported += stats[0]["imported"].as_u64().unwrap_or(0);
-                duplicates += stats[0]["duplicates"].as_u64().unwrap_or(0);
-                after = seq;
-                downloaded += 1;
-                if progress(&SyncProgress {
-                    archive: c.archive_id.clone(),
-                    sequence: seq,
-                    downloaded,
-                })
-                .is_break()
-                {
-                    bail!(Failure::new(ErrorCode::Cancelled, "cancelled"))
-                }
+                bail!(Failure::new(ErrorCode::Cancelled, "cancelled"))
             }
         }
         Ok(

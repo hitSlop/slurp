@@ -31,6 +31,19 @@ pub fn discover(start: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+/// The folder a command works in: the explicit one, else the nearest project above `cwd`, else `cwd` itself. A command that
+/// needs an initialized project uses [`resolve`] instead.
+///
+/// # Errors
+/// Returns an error if the nearest project's configuration is invalid.
+pub fn root_for(cwd: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
+    Ok(match explicit {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => cwd.join(path),
+        None => discover(cwd)?.unwrap_or_else(|| cwd.to_path_buf()),
+    })
+}
+
 /// Select an exact explicit workspace, or discover the nearest parent of the current folder.
 ///
 /// # Errors

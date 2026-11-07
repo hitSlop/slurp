@@ -10,7 +10,7 @@ pub struct Target {
     pub key: String,
 }
 fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
+    config::env_value(name)
 }
 
 /// The project to send to and its backend: an explicit reference (`--to`), or the project the current folder is bound to.
@@ -23,21 +23,8 @@ pub async fn resolve(
     let home = config::home()?;
     let project_mode = explicit_project.is_none();
     let (backend, project) = if let Some(reference) = explicit_project {
-        let environment_backend = env("SLURP_BACKEND");
-        let backend = if let Some(value) = backend_override.or(environment_backend.as_deref()) {
-            config::normalize_backend(value)?
-        } else {
-            let root = if let Some(root) = explicit_workspace {
-                if root.is_absolute() {
-                    root.to_path_buf()
-                } else {
-                    cwd.join(root)
-                }
-            } else {
-                project::discover(&cwd)?.unwrap_or(cwd.clone())
-            };
-            crate::backend::resolve(&root, &home, None)?
-        };
+        let root = project::root_for(&cwd, explicit_workspace)?;
+        let backend = crate::backend::resolve_with_environment(&root, &home, backend_override)?;
         let project = if reference.starts_with("prj_") {
             reference.to_owned()
         } else {

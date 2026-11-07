@@ -17,6 +17,15 @@ test('record vectors (ported from the Go canonical tests)', () => {
   }
 })
 
+test('a record is accepted whole up to exactly 1 MiB and refused above it', () => {
+  const frame = '{"id":"one","type":"track","event":"e","timestamp":"2026-11-03T00:00:00Z","data":{"t":""}}'
+  const make = (bytes: number) => frame.replace('"t":""', `"t":"${'x'.repeat(bytes - frame.length)}"`)
+  assert.equal(enc.encode(make(1024 * 1024)).length, 1024 * 1024)
+  assert.ok('lines' in checkBody(enc.encode(make(1024 * 1024)), null), 'exactly 1 MiB')
+  const over = checkBody(enc.encode(make(1024 * 1024 + 1)), null)
+  assert.ok('reason' in over && /exceeds 1 MiB/.test(over.reason))
+})
+
 test('nesting boundary matches the Go gateway (root -> data -> values nested d arrays)', () => {
   const n = fixture('nesting')
   for (const d of n.tried) {

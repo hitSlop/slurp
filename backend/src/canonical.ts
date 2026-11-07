@@ -4,8 +4,10 @@
  * Records are validated and rewritten *textually*: client bytes are never parsed and re-serialized, so
  * arbitrary JSON numbers (9007199254740993123456789, 1e1000, -0, 1.2300) survive exactly.
  */
-export const MAX_RECORD_BYTES = 32 * 1024
+/** One record is stored whole, never truncated. 1 MiB leaves room under the 1.5 MB row target and the 2 MB Durable Object SQLite value limit. */
+export const MAX_RECORD_BYTES = 1024 * 1024
 export const MAX_DEPTH = 128
+export const RECORD_TOO_LARGE = 'record exceeds 1 MiB'
 const RESERVED = ['received_at', 'received_seq', 'rt', 'rseq', 'ts', 'props']
 const MAX_LINES = 1 << 20
 
@@ -220,7 +222,7 @@ export function checkBody(body: Uint8Array, geo: Geo | null): CheckResult {
     let stop = body.indexOf(0x0a, start)
     if (stop === -1 || stop > end) stop = end
     const bytes = body.subarray(start, stop)
-    if (bytes.length > MAX_RECORD_BYTES) return { line: n, reason: 'record exceeds 32 KiB' }
+    if (bytes.length > MAX_RECORD_BYTES) return { line: n, reason: RECORD_TOO_LARGE }
     let text: string
     try { text = decoder.decode(bytes) } catch { return { line: n, reason: 'invalid UTF-8' } }
     const r = validateRecord(text)

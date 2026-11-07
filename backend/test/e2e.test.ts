@@ -105,6 +105,26 @@ test('ingest rules, CORS, dedupe, wide numbers', async () => {
   assert.match(arc.raw.split('\n')[0], /^\{"received_at":"[^"]+","received_seq":"\d+","id":"a"/)
 })
 
+test('large records are stored whole: 900 KB survives sealing, 1.1 MB is refused with 413 and nothing is cut', async () => {
+  const s = await newSource(w.base, name('big'))
+  const pad = (n: number, tail: string) => ({ data: { blob: 'x'.repeat(n) + tail } })
+  const small = await post(w.base, s.pk, evt('a'))
+  assert.equal(small.status, 200)
+  const big = await post(w.base, s.pk, evt('b', pad(900_000, 'END-OF-BLOB')))
+  assert.equal(big.status, 200)
+  const two = await post(w.base, s.pk, [evt('c', pad(700_000, 'C-END')), evt('d', pad(700_000, 'D-END'))].join('\n'))
+  assert.equal(two.status, 200, 'two large records in one request pack into separate rows')
+  const refused = await post(w.base, s.pk, [evt('e'), evt('f', pad(1_100_000, 'F-END'))].join('\n'))
+  assert.equal(refused.status, 413)
+  assert.match(((await refused.json()) as any).error, /line 2: record exceeds 1 MiB/)
+  await debug(w.base, 'seal', s.id)
+  const lines = (await readArchives(w.base, s.id, s.sk)).flatMap(a => a.lines)
+  assert.deepEqual(lines.map(l => l.id).sort(), ['a', 'b', 'c', 'd'], 'the refused batch stored nothing')
+  const stored = new Map(lines.map(l => [l.id, l]))
+  assert.ok(stored.get('b').data.blob.endsWith('END-OF-BLOB') && stored.get('b').data.blob.length === 900_000 + 'END-OF-BLOB'.length)
+  assert.ok(stored.get('c').data.blob.endsWith('C-END') && stored.get('d').data.blob.endsWith('D-END'))
+})
+
 test('geo enrichment from request.cf only, when the source opts in', async () => {
   const on = await newSource(w.base, name('geo'), true), off = await newSource(w.base, name('nogeo'), false)
   const rec = (id: string, ctx?: object) => '{"id":"' + id + '","type":"track","event":"v","timestamp":"2026-11-06T00:00:00Z","data":{"wide":9007199254740993123456789}' + (ctx ? ',"context":' + JSON.stringify(ctx) : '') + '}'

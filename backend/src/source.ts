@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers'
 import { type Env, sha256Hex, randomHex, gzip, retry } from './util.ts'
-import { checkBody, stampOne, type Geo } from './canonical.ts'
+import { checkBody, RECORD_TOO_LARGE, stampOne, type Geo } from './canonical.ts'
 
 export type Publication = { state: 'pending' | 'idle'; observedAt: string; intervalSeconds: number; estimatedAt?: string }
 export type IngestResult =
   | { ok: true; accepted: number; duplicate: boolean; publication: Publication }
-  | { ok: false; status: 400 | 429 | 503; reason: string; retryAfter?: number }
+  | { ok: false; status: 400 | 413 | 429 | 503; reason: string; retryAfter?: number }
 export type ManifestRow = { seq: number; name: string; r2key: string; size: number; sha256: string; events: number; created_at: number }
 export type Coverage = { archiveId: string; firstRetained: string; latestPublished: string; latestPublishedAt: number }
 
@@ -100,7 +100,7 @@ export class SourceDO extends DurableObject<Env> {
 
   async ingest(source: string, body: Uint8Array, geo: Geo | null): Promise<IngestResult> {
     const checked = checkBody(body, geo)
-    if ('reason' in checked) return { ok: false, status: 400, reason: `line ${checked.line}: ${checked.reason}` }
+    if ('reason' in checked) return { ok: false, status: checked.reason === RECORD_TOO_LARGE ? 413 : 400, reason: `line ${checked.line}: ${checked.reason}` }
     if (checked.lines.length === 0) return { ok: true, accepted: 0, duplicate: false, publication: this.publication(await this.ctx.storage.getAlarm()) }
     const hash = await sha256Hex(body)
     const earlier = this.recent.get(hash)

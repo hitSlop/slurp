@@ -223,7 +223,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   const rejectedAt = records.length
   for (const [event, props] of [
     ['', {}], ['a'.repeat(201), {}], ['invalid', { number: NaN }], ['invalid', cyclic],
-    ['invalid', { date: new Date() }], ['invalid', { value: undefined }], ['oversized', { pad: 'x'.repeat(33 * 1024) }],
+    ['invalid', { date: new Date() }], ['invalid', { value: undefined }], ['oversized', { pad: 'x'.repeat(1024 * 1024 + 1024) }],
   ] as [string, Record<string, unknown>][]) limited.track(event, props)
   await limited.flush()
   assert.equal(records.length, rejectedAt)

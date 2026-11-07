@@ -65,7 +65,7 @@ test('invalid capture does not switch identity and permanent rejections are obse
   const client = createClient({ key: 'key', endpoint: 'https://example.test/events', storage: memoryStorage(), flushAt: 100,
     fetch: async (_url, init) => { bodies.push(String(init?.body)); return new Response(null, { status: 401 }) } })
   client.identify('alice')
-  client.identify('bob', { oversized: 'x'.repeat(33 * 1024) })
+  client.identify('bob', { oversized: 'x'.repeat(1024 * 1024 + 1024) })
   client.track('still-alice')
   client.track('forged-geo', {}, { context: { geo: { country: 'CA' } } })
   const result = await client.flush()

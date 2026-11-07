@@ -73,6 +73,8 @@ interface State {
 const count = (body: string) => body.split('\n').length - 1
 const bytes = (body: string) => encoder.encode(body).byteLength
 const KEEPALIVE_BYTES = 60 * 1024
+/** Largest single record the gateway accepts; records are stored whole, never truncated. */
+const MAX_EVENT_BYTES = 1024 * 1024
 
 function positive(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback
@@ -347,7 +349,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
         anonymous_id: identity.anonymousId ?? anonymousId,
         session_id: identity.sessionId ?? sessionId, data: payload, context: eventContext,
       })
-      if (bytes(line) > 32 * 1024) { report(new Error('event exceeds 32 KB'), 1); return }
+      if (bytes(line) > MAX_EVENT_BYTES) { report(new Error('event exceeds 1 MiB'), 1); return }
       state.anonymousId = anonymousId
       state.sessionId = sessionId
       if (identified !== undefined) state.userId = identified

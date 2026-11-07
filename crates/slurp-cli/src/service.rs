@@ -679,9 +679,12 @@ fn record(
         anonymous_id,
     })?)
 }
+/// Largest single record the Worker accepts. Records are stored whole, never truncated.
+const MAX_RECORD_BYTES: usize = 1024 * 1024;
+
 fn validate_record(line: &str) -> Result<()> {
-    if line.len() > 32 * 1024 {
-        bail!("record exceeds 32 KiB");
+    if line.len() > MAX_RECORD_BYTES {
+        bail!("record exceeds 1 MiB");
     }
     let record: Value = serde_json::from_str(line)?;
     if record
@@ -827,7 +830,7 @@ async fn stream_stdin(
             let mut line = Vec::new();
             let result = reader
                 .by_ref()
-                .take(32 * 1024 + 2)
+                .take(MAX_RECORD_BYTES as u64 + 2)
                 .read_until(b'\n', &mut line);
             match result {
                 Ok(0) => break,
@@ -853,7 +856,7 @@ async fn stream_stdin(
                 let line=line?;
                 let text=std::str::from_utf8(&line)?.trim_end_matches(['\r','\n']);
                 if text.trim().is_empty() { continue; }
-                if text.len()>32*1024 { bail!("stdin record exceeds 32 KiB"); }
+                if text.len()>MAX_RECORD_BYTES { bail!("stdin record exceeds 1 MiB"); }
                 validate_record(text)?;
                 if !body.is_empty() && (events>=1000 || body.len()+text.len()+1>900*1024) {
                     send(http,endpoint,source,key,std::mem::take(&mut body)).await?; events=0;

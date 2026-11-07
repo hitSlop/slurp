@@ -20,11 +20,11 @@ slurp sync ──► Worker (webrpc Archive.ListObjects) ──► signed GET li
 - **SourceDO**: one per source. Buffers accepted batches durably, seals them into R2 archives on an alarm and keeps the manifest.
 - **R2**: immutable archives `v1/sources/<source>/archives/<archive id>/events/<20-digit seq>-<sha256>.jsonl.gz`. The CLI never receives R2 credentials.
 - **CLI** (`crates/`): Rust. Downloads and verifies archives, imports into DuckDB idempotently, runs SQL and builds reports. `slurp-client` owns transport and archive validation, `slurp-document` sanitizes Markdown, `slurp-render` renders HTML/PNG/PDF.
-- **SDKs** (`packages/sdk-js`): durable queue, byte-identical retries, batching.
+- **SDKs** (`sdks/js`): durable queue, byte-identical retries, batching.
 
 ## Contracts
 
-- **Event format:** newline-delimited JSON, at most 32 KiB per record. Required: `id`, `type` (`track` or `identify`), `timestamp` (RFC 3339), `data` (object); `track` needs `event`, `identify` needs `user_id`. Server-owned fields (`received_at`, `received_seq`, `context.geo`) are rejected from clients. Records are validated and stamped *textually*: client bytes, including arbitrary JSON numbers, are never re-serialized. The test vectors are in `backend/fixtures/canonical/`.
+- **Event format:** newline-delimited JSON, at most 1 MiB per record, stored whole and never truncated. Required: `id`, `type` (`track` or `identify`), `timestamp` (RFC 3339), `data` (object); `track` needs `event`, `identify` needs `user_id`. Server-owned fields (`received_at`, `received_seq`, `context.geo`) are rejected from clients. Records are validated and stamped *textually*: client bytes, including arbitrary JSON numbers, are never re-serialized. The test vectors are in `backend/fixtures/canonical/`.
 - **Delivery:** `200` accepted durably; `413` too large (SDK splits); `429` / `503` with `Retry-After`; `401` / `403` stop the client. Retrying identical bytes is safe: a retry that arrives while the original is still being committed waits for that commit (it is never acknowledged before the events are durable), later retries answer `Slurp-Duplicate: 1`, and `events.id` dedupes locally.
 - **Archives:** gapless sequence per source, gzip, with a SHA-256 verified before import. Retention is optional (`RETENTION_DAYS`); a stale checkpoint gets `410 RetentionGap`.
 - **Keys:** `slurp_pk_` publishable keys only send events; `slurp_sk_` secret keys only read one source's archives; the admin token controls the deployment.

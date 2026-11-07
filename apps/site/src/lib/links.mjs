@@ -2,8 +2,8 @@
 export const siteUrl = 'https://slurp.run';
 export const githubUrl = 'https://github.com/hitSlop/slurp';
 export const defaultBranch = 'master';
-// The Discord invite. Leave it empty until there is one: an empty link is not shown anywhere.
-export const discordUrl = '';
+// The Discord invite. An empty value hides every Discord link on the site.
+export const discordUrl = 'https://discord.gg/jprRVWSRdn';
 
 // Installing the CLI (macOS and Linux). Both come from the GitHub Release for the latest v* tag.
 export const installShell = `curl -LsSf ${githubUrl}/releases/latest/download/slurp-cli-installer.sh | sh`;

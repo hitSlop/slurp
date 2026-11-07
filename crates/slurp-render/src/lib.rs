@@ -9,7 +9,7 @@ use std::{
 };
 
 mod page;
-pub use page::{PAGE_WIDTH, RenderedPage};
+pub use page::{PAGE_WIDTH, PNG_SCALE, RenderedPage};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_INPUT: usize = 32 * 1024 * 1024;

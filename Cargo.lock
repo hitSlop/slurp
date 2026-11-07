@@ -3107,6 +3107,7 @@ dependencies = [
  "takumi",
  "takumi-pdf",
  "tempfile",
+ "tiny-skia",
  "zstd",
 ]
 

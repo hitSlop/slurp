@@ -23,6 +23,8 @@ fn fixture(dir: &str, name: &str) -> PathBuf {
         .join(name)
 }
 /// Width and height from the PNG header.
+/// Device pixels per layout pixel in report PNGs (slurp_render::page::PNG_SCALE).
+const SCALE: u32 = slurp_render::PNG_SCALE;
 fn png_size(path: &Path) -> (u32, u32) {
     let bytes = std::fs::read(path).expect("png");
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
@@ -65,7 +67,8 @@ fn hostile_layouts_do_not_clip_overflow_or_lose_their_notices() {
     // Thirds and halves are laid out in rows, and a lone half fills its row.
     assert!(html.matches("class=\"row\"").count() >= 3);
     let (width, height) = png_size(&out.join("report.png"));
-    assert_eq!(width, 840);
+    let height = height / SCALE; // the PNG is drawn at 2x; layout heights are in layout pixels
+    assert_eq!(width, 840 * SCALE);
     within(height, 1240, "layout fixture");
     assert!(manifest.get("warnings").is_none(), "{manifest}");
 }
@@ -90,7 +93,8 @@ fn text_charts_and_empty_results_render_safely() {
     let warnings = manifest["warnings"].to_string();
     assert!(warnings.contains("cannot be drawn"), "{warnings}");
     let (width, height) = png_size(&out.join("report.png"));
-    assert_eq!(width, 840);
+    let height = height / SCALE; // the PNG is drawn at 2x; layout heights are in layout pixels
+    assert_eq!(width, 840 * SCALE);
     within(height, 2170, "text and charts fixture");
     // Hover details: a native tooltip on every data mark, and one script that the policy allows by hash and nothing else.
     assert!(
@@ -135,7 +139,8 @@ fn markdown_constructs_are_styled_and_unsafe_html_stays_text() {
     assert!(!html.contains("<details"));
     assert!(html.contains(".text blockquote{"), "blockquotes are styled");
     let (width, height) = png_size(&out.join("report.png"));
-    assert_eq!(width, 840);
+    let height = height / SCALE; // the PNG is drawn at 2x; layout heights are in layout pixels
+    assert_eq!(width, 840 * SCALE);
     within(height, 950, "markdown fixture");
 }
 

@@ -14,3 +14,4 @@ The first release.
 - **Use your Segment SDK**: change its host to your Worker (`/v1/t|i|p|s|g|a`, `/v1/b`, `/v1/batch` and the settings document). Verified with analytics-node, analytics-next and analytics-swift.
 - **Use your Sentry SDK**: change the DSN (the public key is your publishable key in hex). Errors are stored whole as `error` events and read with the new `errors` view. No symbolication or issue UI. Verified with `@sentry/node` and `@sentry/browser`.
 - **Records up to 1 MiB**, stored whole and never truncated (was 32 KiB); a larger record is refused with `413`.
+- **Sharper report PNGs**: drawn at 2x (1680 px wide for the 840 px layout), so text and charts stay crisp on high-density screens and when shared in chat or email.

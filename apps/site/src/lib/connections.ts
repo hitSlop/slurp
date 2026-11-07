@@ -2,7 +2,7 @@ export type Connection = {name:string;description:string;icon?:string;logo?:stri
 export type ConnectionGroup = {id:string;title:string;items:Connection[]};
 const future=(name:string,description:string,logo?:string,icon='connections'):Connection=>({name,description,logo,icon,status:'Exploring'});
 export const current:Connection[]=[
- {name:'JavaScript / TypeScript',description:'Browser and Node event capture. Install the private SDK from source.',icon:'code',status:'Available locally',href:'/docs/#capture'},
+ {name:'JavaScript / TypeScript',description:'Browser and Node event capture. npm install @hitslop/slurp-sdk.',icon:'code',status:'Works today',href:'/docs/#capture'},
  {name:'HTTP API',description:'Send canonical events as NDJSON to your configured backend.',icon:'globe',status:'Works today',href:'/docs/#http'},
  ...['Claude Code','Codex','Cursor'].map((name,i):Connection=>({name,description:'Run the Slurp CLI and query your local DuckDB data.',logo:['claude','codex','cursor'][i],status:'Works today',href:'/docs/#agent'}))
 ];

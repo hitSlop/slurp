@@ -7,7 +7,7 @@ Capture application events with the Slurp SDK, sync them into a local DuckDB fil
 Install a release (macOS or Linux; Windows is not supported yet):
 
 ```sh
-curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh
+curl -LsSf https://slurp.run/install | sh
 # or: npm install -g @hitslop/slurp
 ```
 

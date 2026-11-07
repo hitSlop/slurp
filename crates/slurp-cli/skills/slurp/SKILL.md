@@ -16,7 +16,7 @@ Use DuckDB 2.x. Run saved queries with `slurp sql --file query.sql`. Preserve me
 
 Inside an initialized app or its subfolders, use `slurp send EVENT` and `slurp identify USER_ID`. The nearest parent project supplies the source and SDK key; no database or human login is needed to send. `--workspace` selects an exact project; `--source` is an explicit ingestion override. Never guess a project from the global registry.
 
-Human onboarding uses `slurp setup` once per computer, then `slurp init` in each app. Setup configures a library and DuckDB and signs in; it never creates a source or project. Init creates or selects a project by name and opens its private SDK quickstart. Source IDs are an advanced scripting interface.
+Human onboarding uses `slurp setup` once per computer, then `slurp init` in each app. Setup configures a library and DuckDB and signs in; it never creates a source or project. Init creates or selects a project by name and opens a local quickstart page with its SDK snippet. Source IDs are an advanced scripting interface.
 
 For noninteractive work, use explicit `init --source SOURCE` with a supplied read key and available DuckDB, or `init --name NAME` when authorized to create a project. Missing prerequisites return `setup_required`; do not retry an interactive wizard in a headless agent. Existing init runs reuse the source, database and key.
 
@@ -28,12 +28,12 @@ HTTP 429 and 503 are retryable: honor `Retry-After` and back off. HTTP 401 and 4
 
 ## Instrument and connect
 
-The SDK is private until published; use the built packages/sdk-js package by path in development. Replace placeholders with source setup values. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup HTML is private.
+Install the JavaScript SDK with `npm install @hitslop/slurp-sdk`. Replace placeholders with source setup values, or send from the CLI with `slurp send EVENT --data JSON` and `slurp send --stdin` (NDJSON), or over HTTP from any language. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup page is local and holds your keys: do not share it.
 
 ### sdk
 
 ```js
-import { init, track, flush } from '@slurp/sdk';
+import { init, track, flush } from '@hitslop/slurp-sdk';
 
 init({
   endpoint: 'YOUR_INGEST_URL',

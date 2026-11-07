@@ -5,10 +5,7 @@ Send six events to your own Worker, wait for the next archive, sync them into Du
 ## 1. Connect this computer
 
 ```sh
-cd /path/to/this/repository
-# Install a release (curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh), or build from source:
-cargo build -p slurp-cli
-export PATH="$PWD/target/debug:$PATH"
+curl -LsSf https://slurp.run/install | sh      # or: npm install -g @hitslop/slurp
 slurp cloud init            # skip if you already deployed: slurp connect <url> --token-stdin
 slurp setup
 ```
@@ -18,12 +15,12 @@ slurp setup
 ## 2. Create and connect a fresh app folder
 
 ```sh
-mkdir -p demos/live-walkthrough
-cd demos/live-walkthrough
+mkdir -p ~/slurp-walkthrough
+cd ~/slurp-walkthrough
 slurp init --name "Slurp live walkthrough"
 ```
 
-Review and accept the proposed data folder. Init opens the private SDK quickstart and saves the source binding and SDK key for the commands below. There is no source ID or key to copy.
+Review and accept the proposed data folder. Init opens a local quickstart page with your SDK snippet and saves the source binding and SDK key for the commands below. There is no source ID or key to copy.
 
 ## 3. Send six synthetic events
 
@@ -51,7 +48,7 @@ Successful sends report `Accepted 1 event.` (`accepted: true` in JSON) and your 
 Your Worker seals archives about every 10 minutes by default (sooner when a batch reaches 8 MB). Return after the estimated time. This block also works in a new terminal:
 
 ```sh
-cd /path/to/this/repository/demos/live-walkthrough
+cd ~/slurp-walkthrough
 SLURP_DEMO_RUN="$(cat .slurp/walkthrough-run)"
 
 slurp sync
@@ -70,7 +67,8 @@ Expected totals: `signed_up = 3`, `project_created = 2`, `report_built = 1`. `co
 ## 5. Open a local report
 
 ```sh
-slurp report build ../../examples/events.md --out .slurp/output/first
+curl -fsSL https://raw.githubusercontent.com/hitSlop/slurp/master/examples/events.md -o events.md   # a small sample report
+slurp report build events.md --out .slurp/output/first
 slurp report open .slurp/output/first
 ```
 

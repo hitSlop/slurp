@@ -5,6 +5,7 @@ export const defaultBranch = 'master';
 // The Discord invite. An empty value hides every Discord link on the site.
 export const discordUrl = 'https://discord.gg/jprRVWSRdn';
 
-// Installing the CLI (macOS and Linux). Both come from the GitHub Release for the latest v* tag.
-export const installShell = `curl -LsSf ${githubUrl}/releases/latest/download/slurp-cli-installer.sh | sh`;
+// Installing the CLI (macOS and Linux). slurp.run/install redirects to the installer on the latest GitHub Release.
+export const installShell = `curl -LsSf ${siteUrl}/install | sh`;
 export const installNpm = 'npm install -g @hitslop/slurp';
+export const installSdk = 'npm install @hitslop/slurp-sdk';

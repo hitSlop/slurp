@@ -7,7 +7,7 @@ Slurp runs in your own Cloudflare account: one Worker, two SQLite Durable Object
 You need a Cloudflare account and Node.js 20+ (slurp fetches wrangler itself with `npx`; an installed wrangler 4.100+ is used if you have one).
 
 ```sh
-curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh
+curl -LsSf https://slurp.run/install | sh
 # or: npm install -g @hitslop/slurp
 slurp cloud init
 slurp setup
@@ -63,8 +63,8 @@ publishable key slurp_pk_…                   created with the source; safe to 
 
 1. **Deploy.** `slurp cloud init` from a terminal, or the button above.
 2. **Connect this computer.** After `slurp cloud init` this is already done. After the button, open your Worker's address and run the command it shows: `slurp connect https://slurp.<subdomain>.workers.dev --token-stdin` (paste the token when asked, or pipe it from a file).
-3. **Create the source.** `slurp setup` once, then `slurp init --name "My app"` in your app's folder. The Worker creates the source and a publishable key and returns the ingest URL. The CLI saves them and opens a private quickstart page with the exact SDK snippet. You never type the URL or the key.
-4. **Send an event, then `slurp sync`.** The SDK needs only `endpoint` (the ingest URL) and `key` (the publishable key). Events appear in DuckDB after the next archive seal (about 10 minutes by default).
+3. **Create the source.** `slurp setup` once, then `slurp init --name "My app"` in your app's folder. The Worker creates the source and a publishable key and returns the ingest URL. The CLI saves them and opens a local quickstart page with the exact SDK snippet. You never type the URL or the key.
+4. **Send an event, then `slurp sync`.** Install the SDK with `npm install @hitslop/slurp-sdk`; it needs only `endpoint` (the ingest URL) and `key` (the publishable key). From a terminal, `slurp send signed_up --data '{"plan":"pro"}'` does the same, and any language can POST to the ingest URL. Events appear in DuckDB after the next archive seal (about 10 minutes by default).
 
 ## Settings
 

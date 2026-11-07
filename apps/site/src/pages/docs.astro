@@ -3,7 +3,7 @@ import Page from '../layouts/Page.astro';
 import Code from '../components/Code.astro';
 import DeployButton from '../components/DeployButton.astro';
 import snippets from '../../../../docs/onboarding/snippets.json';
-import {installShell,installNpm} from '../lib/links.mjs';
+import {installShell,installNpm,installSdk} from '../lib/links.mjs';
 const sections=[{id:'deploy',label:'Deploy'},{id:'install',label:'Install & connect'},{id:'capture',label:'Capture'},{id:'sync',label:'Sync'},{id:'agent',label:'Agent'},{id:'report',label:'Report'}];
 ---
 <Page title="Quickstart" description="Deploy your own Slurp Worker on Cloudflare, connect the CLI, capture events, sync to DuckDB, and give your agent local data." current="docs" sections={sections}>
@@ -15,10 +15,7 @@ slurp cloud init
 slurp setup
 cd /path/to/your/app
 slurp init --name "My app"`}/><p><code>slurp init</code> opens a private offline quickstart with your project’s SDK instructions. Rerun init to refresh that page.</p></section>
-<section class="section" id="capture"><span class="section-number">02 / CAPTURE</span><h2>Send your first event.</h2><p>The SDK is private until published. For development, build it and install the local package into your application:</p><Code label="Terminal" code={`pnpm install
-pnpm --filter @slurp/sdk build
-# In your application:
-npm install /absolute/path/to/this/repository/packages/sdk-js`}/><p>Replace the placeholders with values in your private project quickstart. Publishable keys are ingest-only.</p><Code label="JavaScript / Node" code={snippets.sdk}/></section>
+<section class="section" id="capture"><span class="section-number">02 / CAPTURE</span><h2>Send your first event.</h2><p>Install the SDK from npm, then paste the snippet <code>slurp init</code> shows for your app: it has your real ingest URL, source ID and publishable key. Publishable keys are ingest-only, so they are safe in a web page.</p><Code label="Terminal" code={installSdk}/><Code label="JavaScript / Node" code={snippets.sdk}/><p>User feedback is just another event: <code>{"track('feedback', { message, rating });"}</code> Your agent finds it later with SQL.</p></section>
 <section class="section"><h2>Test from your terminal.</h2><p>Inside your app or a subfolder, Slurp uses the nearest project binding and its saved SDK key.</p><Code label="Your app folder" code={`slurp send signed_up --user-id demo_alice --data '{"demo":true}'
 slurp sync`}/><p class="fine">Sending confirms durable acceptance. Events appear in <code>slurp sync</code> after your Worker next seals an archive, about every 10 minutes by default (earlier when a batch reaches 8 MB).</p></section>
 <section class="section" id="http"><h2>Send events over HTTP.</h2><p>Any language can POST canonical events as newline-delimited JSON to <code>/v1/events</code> on your Worker. Use <code>Authorization: Bearer YOUR_PUBLISHABLE_KEY</code> and <code>Content-Type: application/x-ndjson</code>. Tool-specific webhook payloads need translation into this format.</p><Code label="One NDJSON record (end with a newline)" code={'{"id":"YOUR_UNIQUE_EVENT_ID","type":"track","timestamp":"2026-11-05T12:00:00Z","event":"signed_up","data":{"plan":"pro"}}'}/><p class="fine">A successful response means durable acceptance. Retrying the exact same bytes is safe: the Worker answers with <code>Slurp-Duplicate: 1</code> and local import ignores repeated event IDs.</p></section>

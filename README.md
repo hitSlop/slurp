@@ -57,20 +57,64 @@ One click deploys the Worker, Durable Objects and R2 bucket to your Cloudflare a
 
 ```sh
 # 1. Install the CLI (macOS or Linux), then deploy your Worker (needs a Cloudflare account and Node 20+)
-curl -LsSf https://github.com/hitSlop/slurp/releases/latest/download/slurp-cli-installer.sh | sh
+curl -LsSf https://slurp.run/install | sh
 # or: npm install -g @hitslop/slurp
 slurp cloud init             # logs in, creates the bucket, deploys the Worker, connects this computer
 slurp setup                  # once per computer: library folder and DuckDB
 
-# 2. In your app
+# 2. In your app (npm install @hitslop/slurp-sdk to capture from code, or send from the CLI)
 cd /path/to/your/app
-slurp init --name "My app"   # connects this app, opens its private quickstart
+slurp init --name "My app"   # connects this app, opens its quickstart page with your keys
 slurp send signed_up --user-id demo_alice --data '{"demo":true}'
 slurp sync                   # archives are sealed about every 10 minutes
 slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 ```
 
 Each project binds one source to one DuckDB file, stored locally or on an external drive. SQL, report definitions and project metadata stay with your app. No daemon is required. DuckDB 2.x is used for analysis.
+
+## Send events
+
+Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the next archive seal (about 10 minutes by default). `slurp init` prints your real ingest URL, source ID and publishable key; a publishable key can only send events, so it is safe in a web page.
+
+**JavaScript SDK** (browser and Node, with a durable queue, batching and retries):
+
+```sh
+npm install @hitslop/slurp-sdk
+```
+
+```js
+import { init, track, identify, flush } from '@hitslop/slurp-sdk';
+
+init({
+  endpoint: 'https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events',
+  sourceId: 'src_…',
+  key: 'slurp_pk_…',
+});
+
+identify('user_42', { plan: 'pro' });
+track('signed_up', { plan: 'pro' });
+track('feedback', { message: 'Exporting a 4K video fails at 90%', rating: 2 }); // feedback is just another event
+await flush(); // in scripts, send queued events before exiting
+```
+
+**The CLI**, from your app's folder, with the project's saved key (handy for testing, scripts and cron jobs):
+
+```sh
+slurp send signed_up --user-id user_42 --data '{"plan":"pro"}'
+slurp identify user_42 --data '{"plan":"pro"}'
+slurp send --stdin < events.ndjson        # NDJSON records from a file or a pipeline
+```
+
+**HTTP from any language**: POST newline-delimited JSON to `/v1/events`:
+
+```sh
+curl -X POST "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events" \
+  -H "Authorization: Bearer slurp_pk_…" \
+  -H "Content-Type: application/x-ndjson" \
+  --data-binary $'{"id":"evt_1","type":"track","event":"signed_up","timestamp":"2026-11-07T12:00:00Z","user_id":"user_42","data":{"plan":"pro"}}\n'
+```
+
+Retrying the exact same bytes is safe: the Worker answers `Slurp-Duplicate: 1`. The event format is described in [docs/architecture.md](docs/architecture.md#contracts).
 
 ## Community
 

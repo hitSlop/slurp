@@ -1,5 +1,5 @@
 {
-  "sdk": "import { init, track, flush } from '@slurp/sdk';\n\ninit({\n  endpoint: 'YOUR_INGEST_URL',\n  sourceId: 'YOUR_SOURCE_ID',\n  key: 'YOUR_PUBLISHABLE_KEY',\n});\n\ntrack('signed_up', { plan: 'pro' });\nawait flush(); // Node: flush before exiting",
+  "sdk": "import { init, track, flush } from '@hitslop/slurp-sdk';\n\ninit({\n  endpoint: 'YOUR_INGEST_URL',\n  sourceId: 'YOUR_SOURCE_ID',\n  key: 'YOUR_PUBLISHABLE_KEY',\n});\n\ntrack('signed_up', { plan: 'pro' });\nawait flush(); // Node: flush before exiting",
   "sync": "slurp init --backend YOUR_BACKEND --source YOUR_SOURCE_ID\nslurp sync\nslurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'",
   "agent": "slurp agent setup --out .agents/skills/slurp\n# Put the bot read key in its secret store as SLURP_TOKEN.\nslurp init --backend YOUR_BACKEND --source YOUR_SOURCE_ID\nslurp sync",
   "key": "slurp --backend YOUR_BACKEND source key create YOUR_SOURCE_ID --scope secret --name grok",

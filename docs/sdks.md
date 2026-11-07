@@ -11,12 +11,13 @@ Your values come from `slurp init` (or the setup page it opens): the **ingest UR
 | [JavaScript and TypeScript](../sdks/js) | `npm install @hitslop/slurp-sdk` | Published. Browser and Node. Tested against a real Worker |
 | [React Native and Expo](../sdks/react-native) | `npm install @hitslop/slurp-react-native @react-native-async-storage/async-storage` | Tested against fakes of the React Native APIs; not yet run on a device |
 | [Swift](../sdks/swift) | Add `https://github.com/hitSlop/slurp` in Xcode | Unit tested, and run against a local Worker; not yet in an app on a device |
-| Segment SDKs | Change the host (below) | Verified with `@segment/analytics-node`, `@segment/analytics-next` (single and batching) and `analytics-swift` |
-| Sentry SDKs | Change the DSN (below) | Verified with `@sentry/node` and `@sentry/browser` |
+| Segment SDKs | Change the host (below) | Verified with `@segment/analytics-node`, `@segment/analytics-next` (single and batching), `analytics-swift` and **`segment-analytics-python`** 2.4.0 |
+| Sentry SDKs | Change the DSN (below) | Verified with `@sentry/node`, `@sentry/browser` and **`sentry-sdk` for Python** 2.74.0 |
+| Python | `pip install segment-analytics-python` or `sentry-sdk`, then change the host or DSN (below) | Both run unmodified against a local Worker on Python 3.9, 3.12 and 3.14 (`backend/test/compat-python.test.ts`). There is no native Python SDK |
 | HTTP, any language | `POST /v1/events` | Tested |
 | The CLI | `slurp send`, `slurp identify` | Tested |
 
-Coming, with no dates: first-party Python, Rust and Kotlin (Android) SDKs, and local symbolication of Sentry stack traces in the CLI. Other Segment and Sentry SDKs (Kotlin, Python, Go, Ruby, React Native, Cocoa, Android...) speak the same protocols and should work with the same URL change, but have not been run against a Worker, so they are not listed as supported.
+Coming, with no dates: first-party Rust and Kotlin (Android) SDKs, and local symbolication of Sentry stack traces in the CLI. Other Segment and Sentry SDKs (Kotlin, Go, Ruby, React Native, Cocoa, Android...) speak the same protocols and should work with the same URL change, but have not been run against a Worker, so they are not listed as supported.
 
 ## Slurp SDKs
 
@@ -87,6 +88,15 @@ const analytics = new Analytics({ writeKey: 'slurp_pk_…', host: 'WORKER', path
 const [analytics] = await AnalyticsBrowser.load({ writeKey: 'slurp_pk_…', cdnURL: 'WORKER' });
 ```
 
+```python
+# Python: segment-analytics-python (pip install segment-analytics-python)
+import segment.analytics as analytics
+analytics.write_key = 'slurp_pk_…'
+analytics.host = 'WORKER'   # the SDK adds /v1/batch
+analytics.track('user_42', 'signed_up', {'plan': 'pro'})
+analytics.flush()           # in scripts, before the process exits
+```
+
 ```swift
 // Swift: analytics-swift
 let config = Configuration(writeKey: "slurp_pk_…").apiHost("HOST/v1").cdnHost("HOST/v1")
@@ -116,6 +126,12 @@ Change the DSN. The public key in the DSN is your publishable key as is (it is o
 
 ```js
 Sentry.init({ dsn: 'https://slurp_pk_…@HOST/1' }); // the trailing /1 is ignored
+```
+
+```python
+# Python: sentry-sdk (pip install sentry-sdk)
+import sentry_sdk
+sentry_sdk.init(dsn='https://slurp_pk_…@HOST/1')
 ```
 
 The Worker accepts `POST /api/<project>/envelope/` and the legacy `/api/<project>/store/`, with the key in `X-Sentry-Auth`, the query string or the envelope's DSN header, plain or gzipped.

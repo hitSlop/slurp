@@ -7,6 +7,7 @@ export const current:Connection[]=[
  {name:'Swift',logo:'swift',description:'iOS, macOS, tvOS and watchOS. Events are written to disk before they are sent. Not yet run in an app on a device.',install:'Xcode: add github.com/hitSlop/slurp',status:'Preview',href:'/connections/#sdks'},
  {name:'Segment',logo:'segment',description:'Keep your Segment SDK and change its host to your Worker. Verified with analytics-node, analytics-next and analytics-swift.',install:'writeKey: slurp_pk_… · host: your Worker',status:'Works today',href:'/connections/#sdks'},
  {name:'Sentry',description:'Keep your Sentry SDK and change the DSN. Errors are stored whole and read with SQL. No symbolication or issue UI. Verified with @sentry/node and @sentry/browser.',install:'dsn: https://slurp_pk_…@your-worker/1',logo:'sentry',status:'Works today',href:'/connections/#sdks'},
+ {name:'Python',description:'Keep the Segment or Sentry Python SDK and change the host or the DSN. Run unmodified against a real Worker (segment-analytics-python 2.4.0, sentry-sdk 2.74.0) on Python 3.9, 3.12 and 3.14.',install:'analytics.host = "https://your-worker" · sentry_sdk.init(dsn="https://slurp_pk_…@your-worker/1")',logo:'python',status:'Works today',href:'/connections/#sdks'},
  {name:'MCP',description:'Let Claude Code, Cursor, Codex, Claude Desktop or Windsurf read your events: describe the schema, run read-only SQL in a sandbox, sync and build reports. Verified with the official MCP Inspector client.',install:'claude mcp add slurp -- slurp mcp',icon:'agent',status:'Works today',href:'/docs/#agent'},
  {name:'Slack',description:'Post a report image and a summary to a channel: slurp notify slack, for scheduled reports. Tested against a fake Slack API, not yet a real workspace.',install:'slurp notify slack --file report.png',logo:'slack',status:'Preview',href:'/docs/#agent'},
  {name:'Discord',description:'The same from the command line with a Discord webhook, image included. Tested against a fake Discord server.',install:'slurp notify discord --file report.png',icon:'webhook',status:'Preview',href:'/docs/#agent'},
@@ -17,7 +18,7 @@ export const current:Connection[]=[
  ...['Claude Code','Codex','Cursor'].map((name,i):Connection=>({name,description:'Run the Slurp CLI and query your local DuckDB data.',logo:['claude','codex','cursor'][i],status:'Works today',href:'/docs/#agent'}))
 ];
 export const groups:ConnectionGroup[]=[
- {id:'capture',title:'More ways to capture',items:[future('Rust','A dedicated capture SDK.','rust'),future('Python','Capture from Python applications.','python'),future('Kotlin (Android)','A native Android SDK. Segment and Sentry Android SDKs may already work by changing the URL, but are untested.','kotlin'),future('File uploads','Bring CSV, Parquet, JSONL, and logs.',undefined,'file')]},
+ {id:'capture',title:'More ways to capture',items:[future('Rust','A dedicated capture SDK.','rust'),future('Python (first-party SDK)','A native Python SDK. Today the Segment and Sentry Python SDKs already work by changing the host or the DSN.','python'),future('Kotlin (Android)','A native Android SDK. Segment and Sentry Android SDKs may already work by changing the URL, but are untested.','kotlin'),future('File uploads','Bring CSV, Parquet, JSONL, and logs.',undefined,'file')]},
  {id:'analytics',title:'Product analytics inputs',items:['Mixpanel','Amplitude','RudderStack'].map(n=>future(n,'Bring existing product events into Slurp.'))},
  {id:'errors',title:'Errors and support inputs',items:[future('Sentry symbolication','Readable stack traces from your own source maps and debug files.','sentry'),future('Bugsnag','Errors and stability.'),future('Customer chat','Support conversations and transcripts.'),future('Bug reports','Feedback directly from users.')]},
  {id:'business',title:'Business and code inputs',items:[future('Linear','Issues and cycles. Its webhooks can use the generic receiver today, but are untested.','linear')]},
@@ -38,7 +39,7 @@ export const worksWith:WorksWith[]=[
  {name:'HTTP API',note:'any language',group:'capture',icon:'webhook',slug:'curl',color:'073551',logoColor:'white'},
  {name:'Segment',note:'change the host',group:'keep',logo:'segment',color:'52BD94'},
  {name:'Sentry',note:'change the DSN',group:'keep',logo:'sentry',slug:'sentry',color:'362D59',logoColor:'white'},
- {name:'Python',note:'coming soon',group:'soon',logo:'python',slug:'python',color:'9CA3AF',logoColor:'white'},
+ {name:'Python',note:'via Segment or Sentry',group:'keep',logo:'python',slug:'python',color:'3776AB',logoColor:'white'},
  {name:'Rust',note:'coming soon',group:'soon',logo:'rust',slug:'rust',color:'9CA3AF',logoColor:'white'},
  {name:'Kotlin',note:'coming soon',group:'soon',logo:'kotlin',slug:'kotlin',color:'9CA3AF',logoColor:'white'},
 ];

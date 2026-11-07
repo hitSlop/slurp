@@ -23,6 +23,7 @@ pub mod helpers;
 pub mod report;
 pub mod report_check;
 pub mod report_format;
+pub mod report_hover;
 pub mod report_style;
 pub mod setup;
 /// Cooperative cancellation shared by a caller and an operation.

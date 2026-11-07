@@ -356,13 +356,8 @@ pub fn build_with_params(
         .date
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().format("%b %-d, %Y").to_string());
-    let icon = {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .encode(include_bytes!("../assets/report-icon.png"))
-    };
     body.push_str(&format!(
-        "<div class=\"bar\"><span class=\"brand\"><img src=\"data:image/png;base64,{icon}\" width=\"20\" height=\"20\" alt=\"\"/><b>slurp</b></span><span class=\"purpose\">{}</span><span class=\"date\">{}</span></div>",
+        "<div class=\"bar\"><span class=\"brand\"><b>slurp</b></span><span class=\"purpose\">{}</span><span class=\"date\">{}</span></div>",
         escape(&purpose),
         escape(&date)
     ));
@@ -594,12 +589,21 @@ pub fn build_with_params(
         extra_css.replace("</", "<\\/")
     );
     use std::io::Write;
+    // The PNG and PDF are drawn from the plain page. The HTML file adds hover details: a <title> on every data mark, and one
+    // inline script that the Content-Security-Policy allows by its hash and nothing else.
     let html = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'\"><style>{css}</style></head><body><main>{body}</main></body></html>"
     );
+    let interactive = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src {}\"><style>{css}{}</style></head><body><main>{}</main><script>{}</script></body></html>",
+        crate::report_hover::script_source(),
+        crate::report_hover::css(palette),
+        crate::report_hover::titles(&body),
+        crate::report_hover::SCRIPT
+    );
     fs::create_dir_all(out.parent().unwrap_or(Path::new(".")))?;
     let temp = tempfile::tempdir_in(out.parent().unwrap_or(Path::new(".")))?;
-    fs::write(temp.path().join("report.html"), &html)?;
+    fs::write(temp.path().join("report.html"), &interactive)?;
     if png || pdf {
         let page = renderer.render_page(&html, png, pdf)?;
         if let Some(bytes) = page.png {

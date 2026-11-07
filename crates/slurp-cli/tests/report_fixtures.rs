@@ -77,7 +77,7 @@ fn text_charts_and_empty_results_render_safely() {
     let manifest = build(&w, "text-and-charts.md", &out);
     let html = std::fs::read_to_string(out.join("report.html")).unwrap();
     assert!(
-        !html.contains("<script"),
+        !html.contains("<script>alert"),
         "cell and label text must be escaped"
     );
     assert!(html.contains("&lt;script&gt;"));
@@ -92,6 +92,26 @@ fn text_charts_and_empty_results_render_safely() {
     let (width, height) = png_size(&out.join("report.png"));
     assert_eq!(width, 840);
     within(height, 2170, "text and charts fixture");
+    // Hover details: a native tooltip on every data mark, and one script that the policy allows by hash and nothing else.
+    assert!(
+        html.matches("<title>").count() > 20,
+        "data marks carry titles"
+    );
+    assert!(html.contains(&format!(
+        "script-src {}",
+        slurp_app::report_hover::script_source()
+    )));
+    assert_eq!(html.matches("<script").count(), 1);
+    assert!(html.contains(&format!(
+        "<script>{}</script>",
+        slurp_app::report_hover::SCRIPT
+    )));
+    assert!(
+        !html.contains("slurp-hover") || html.contains(".slurp-hover{"),
+        "highlight style ships with the script"
+    );
+    // The top bar is just the word and the report's purpose and date: no image.
+    assert!(html.contains("<span class=\"brand\"><b>slurp</b></span>"));
 }
 
 #[test]

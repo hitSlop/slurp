@@ -8,7 +8,6 @@ body{margin:0;background:%BG%;color:%FG%;font-family:%FONT%;font-size:12px}
 main{width:840px;padding:34px 40px 40px;display:flex;flex-direction:column}
 .bar{width:100%;display:flex;flex-direction:row;align-items:center;gap:14px;margin-bottom:18px;padding-bottom:8px;border-bottom:3px double %FG%;font-size:10.5px}
 .brand{display:flex;flex-direction:row;align-items:center;gap:8px}
-.brand img{width:20px;height:20px}
 .brand b{color:%BRAND%;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
 .purpose{flex:1;font-style:italic}
 .date{font-weight:600}

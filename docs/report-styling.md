@@ -105,7 +105,7 @@ The page markup your CSS styles:
 
 ```text
 main
-  .bar                          the top bar: .brand (img + b), .purpose, .date
+  .bar                          the top bar: .brand (b), .purpose, .date
   .text                         Markdown prose (h1, p, blockquote, ...)
   .row                          groups consecutive half or third width blocks
     section.metric|chart|table  (+ .half or .third)

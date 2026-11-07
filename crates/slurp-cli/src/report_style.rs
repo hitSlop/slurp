@@ -13,7 +13,7 @@
 //! ```text
 //! <main>
 //!   <div class="bar">
-//!     <span class="brand"><img/><b>slurp</b></span><span class="purpose">…</span><span class="date">…</span>
+//!     <span class="brand"><b>slurp</b></span><span class="purpose">…</span><span class="date">…</span>
 //!   </div>
 //!   <div class="text"> …markdown… </div>
 //!   <div class="row">                       (consecutive half or third width blocks)
@@ -217,7 +217,6 @@ body{margin:0;background:%BG%;color:%FG%;font-family:%FONT%;font-size:12px}
 main{width:840px;max-width:100%;display:flex;flex-direction:column;gap:1px;background:%LINE%;border:1px solid %LINE%}
 .bar{width:100%;display:flex;flex-direction:row;align-items:center;gap:14px;padding:7px 14px;background:%BRAND%;color:#ffffff;font-size:10.5px}
 .brand{display:flex;flex-direction:row;align-items:center;gap:8px}
-.brand img{width:20px;height:20px;border-radius:10px;background:#ffffff}
 .brand b{font-weight:700;letter-spacing:.16em;text-transform:uppercase}
 .purpose{flex:1;color:#ffffffe6;font-size:11px}
 .date{font-weight:600;letter-spacing:.04em}

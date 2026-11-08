@@ -86,6 +86,7 @@ fn recipes_preserve_denominators_maturity_boundaries_and_zero_activity() {
     };
     let temp = tempfile::tempdir().expect("workspace");
     let w = Workspace::init(
+        &(temp.path()).join("private-home"),
         temp.path(),
         "http://localhost:8080".into(),
         "prj_test".into(),
@@ -144,6 +145,7 @@ fn local_json_flags_and_sql_file_work_through_the_cli() {
     };
     let temp = tempfile::tempdir().expect("workspace");
     Workspace::init(
+        &(temp.path()).join("private-home"),
         temp.path(),
         "http://localhost:8080".into(),
         "prj_test".into(),
@@ -154,6 +156,7 @@ fn local_json_flags_and_sql_file_work_through_the_cli() {
     let sql = temp.path().join("query.sql");
     std::fs::write(&sql, "SELECT 42 AS answer;\n").expect("query file");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_slurp"))
+        .env("SLURP_HOME", temp.path().join("private-home"))
         .arg("--json")
         .arg("--project")
         .arg(temp.path())

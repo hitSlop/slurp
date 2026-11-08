@@ -1,6 +1,6 @@
 // slurp.run measures itself with Slurp: one `page_view` per load, the feedback widget, and two clicks (the Deploy to Cloudflare button
 // and copying an install command). Events go to the Worker at events.slurp.run in the project's own Cloudflare account. An empty key in
-// links.mjs turns all of it off. See docs/dogfood.md.
+// links.mjs turns all of it off. See apps/site/slurp/README.md.
 import { init, track } from '@hitslop/slurp-sdk';
 import { slurpEndpoint, slurpKey } from './links.mjs';
 import { clickEvent, pageContext, pageProperties } from './measure.ts';

@@ -292,7 +292,12 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
         emit(&json!({"ok":true}))?;
         return Ok(0);
     }
-    let auth = crate::login::token(backend)?;
+    let auth = if matches!(command, Command::Whoami) && root.join("slurp/slurp.toml").is_file() {
+        let binding = slurp_app::Workspace::read_binding(&root)?;
+        crate::login::project_token(backend, &binding.project)?
+    } else {
+        crate::login::token(backend)?
+    };
     let projects = Api::new(backend, &auth)?;
     match command {
         Command::Whoami => {
@@ -319,12 +324,15 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
             } => {
                 let project = resolve(&projects, &project).await?.id;
                 let request = create_key_request(project, &scope, source, name)?;
-                emit(
-                    &projects
-                        .call::<api::CreateKey>(&request)
-                        .await
-                        .map_err(service_error)?,
-                )?;
+                let created = projects
+                    .call::<api::CreateKey>(&request)
+                    .await
+                    .map_err(service_error)?;
+                let mut value = serde_json::to_value(&created)?;
+                if matches!(request.scope, KeyScope::Secret) {
+                    value["instructions"] = json!({"join":"In a clone of the project, run slurp init --token-stdin and supply this key. Share it through a password manager.","revoke":format!("slurp project key revoke {} {}", request.project, created.key.key_id)});
+                }
+                emit(&value)?;
             }
             KeyCommand::List { project, scope } => {
                 let project = resolve(&projects, &project).await?.id;

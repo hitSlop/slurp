@@ -40,7 +40,7 @@ The full rules are in [contracts.md](contracts.md). In short:
 - **Delivery:** `200 {"ok":true,"accepted":N}` means durable. A `400` stores nothing and lists every bad line in `rejected`. `413` means too large (the SDK splits); `429` / `503` come with `Retry-After`; `401` / `403` stop the SDK for this run.
 - **Identity and retries:** an event is `(sender, id)`. A record without an `id` is a new event each time it is sent, so anything that may be retried needs one; the SDKs, `slurp send` and the MCP send tools always add one. The import gives a record with no `id` the id `slurp:<archive>:<line>`, and one with no `timestamp` its `received_at`.
 - **Archives:** a gapless sequence per project, gzip, with a SHA-256 verified before import. Retention is optional (`RETENTION_DAYS`).
-- **Keys:** `slurp_pk_` publishable keys only send events, as one source; `slurp_sk_` secret keys only read one project's archives; the admin token controls the deployment. Downloads are authenticated `GET`s: the same bearer token, admin or that project's secret key. A download URL grants nothing by itself. `backend/test/authorization.test.ts` pins this.
+- **Keys:** `slurp_pk_` publishable keys only send events, as one source; `slurp_sk_` secret keys read and publish one project’s archives; the admin token controls the deployment. Downloads are authenticated `GET`s: the same bearer token, admin or that project's secret key. A download URL grants nothing by itself. `backend/test/authorization.test.ts` pins this.
 
 ## How the CLI pulls archives
 
@@ -53,7 +53,7 @@ The full rules are in [contracts.md](contracts.md). In short:
 5. **Sync never stops on content.** For each line, the first copy of a `(sender, id)` wins. A copy with the same content is counted as a duplicate; a copy with different content, a line of the wrong shape, or a run of archives that retention deleted before they were read becomes a row in `_slurp.problems` (`conflict`, `invalid`, `gap`). `slurp sync` counts them and `slurp health` reports them.
 6. Only integrity failures stop a sync: a download that fails after retries, a size or SHA-256 mismatch, a truncated gzip, a receipt for a different project (the project was reset), or a published sequence that skips a number.
 
-`slurp sync --now` first calls `Publish` (admin token only), so events sent a moment ago are in the archives it imports.
+`slurp sync --now` first calls `Publish` (admin token or project secret key), so events sent a moment ago are in the archives it imports.
 
 The database is a **rebuildable cache**: the archives in R2 are the source of truth. One DuckDB file per app is deliberate: one file for the agent to query, typed columns, instant queries, and a cursor that lives with the data. Re-reading raw JSONL on every query would cost seconds at a million events and minutes at a hundred million, and DuckLake would add a catalog and a Parquet folder to solve problems (concurrent writers, shared catalogs, time travel) that a single local writer does not have. It becomes interesting for a shared team database.
 

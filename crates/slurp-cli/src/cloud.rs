@@ -43,6 +43,9 @@ pub struct InitArgs {
     /// R2 bucket for event archives.
     #[arg(long, default_value = "slurp-archive")]
     pub bucket: String,
+    /// Custom domain in a zone owned by this Cloudflare account.
+    #[arg(long)]
+    pub domain: Option<String>,
     /// Cloudflare account ID; needed only when you have several.
     #[arg(long, env = "CLOUDFLARE_ACCOUNT_ID")]
     pub account: Option<String>,
@@ -64,6 +67,7 @@ impl Default for InitArgs {
         Self {
             worker: "slurp".into(),
             bucket: "slurp-archive".into(),
+            domain: None,
             account: None,
             seal_interval: None,
             retention_days: None,
@@ -291,6 +295,8 @@ pub fn parse_buckets(text: &str) -> Vec<String> {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Receipt {
     pub version: u32,
+    #[serde(default)]
+    pub domain: Option<String>,
     pub worker: String,
     pub bucket: String,
     pub account_id: Option<String>,
@@ -438,8 +444,9 @@ fn wrangler_config(
     worker: &str,
     bucket: &str,
     vars: &serde_json::Map<String, Value>,
+    domain: Option<&str>,
 ) -> Value {
-    json!({
+    let mut config = json!({
         "name": worker,
         "main": "index.js",
         "compatibility_date": bundle.compatibility_date,
@@ -448,7 +455,11 @@ fn wrangler_config(
         "r2_buckets": [{"binding": bundle.r2_binding, "bucket_name": bucket}],
         "vars": vars,
         "observability": bundle.observability,
-    })
+    });
+    if let Some(host) = domain {
+        config["routes"] = json!([{ "pattern": host, "custom_domain": true }]);
+    }
+    config
 }
 
 /// Write the bundle and its generated config to a private temporary directory.
@@ -457,12 +468,13 @@ fn stage(
     worker: &str,
     bucket: &str,
     vars: &serde_json::Map<String, Value>,
+    domain: Option<&str>,
 ) -> Result<tempfile::TempDir> {
     let dir = tempfile::Builder::new().prefix("slurp-worker-").tempdir()?;
     std::fs::write(dir.path().join("index.js"), bundle.code)?;
     std::fs::write(
         dir.path().join("wrangler.jsonc"),
-        serde_json::to_vec_pretty(&wrangler_config(bundle, worker, bucket, vars))?,
+        serde_json::to_vec_pretty(&wrangler_config(bundle, worker, bucket, vars, domain))?,
     )?;
     Ok(dir)
 }
@@ -616,6 +628,28 @@ fn choose_account(accounts: &[Account], args: &InitArgs, ui: &Terminal) -> Resul
 }
 
 pub async fn init(args: &InitArgs, ui: &Terminal, machine: bool) -> Result<Deployed> {
+    if let Some(host) = &args.domain {
+        let url = slurp_client::reqwest::Url::parse(&format!("https://{host}"))?;
+        ensure!(
+            host.contains('.')
+                && host.len() <= 253
+                && host.parse::<std::net::IpAddr>().is_err()
+                && host.split('.').all(|label| !label.is_empty()
+                    && label.len() <= 63
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+                && url.host_str().is_some_and(|h| h.eq_ignore_ascii_case(host))
+                && url.port().is_none()
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && url.username().is_empty(),
+            "--domain must be a hostname such as events.example.com"
+        );
+    }
     let progress = Progress { machine };
     let wrangler = Wrangler::discover()?;
     let bundle = bundle()?;
@@ -680,7 +714,13 @@ pub async fn init(args: &InitArgs, ui: &Terminal, machine: bool) -> Result<Deplo
             .text,
     );
     let vars = deploy_vars(&bundle, args);
-    let staged = stage(&bundle, &args.worker, &args.bucket, &vars)?;
+    let staged = stage(
+        &bundle,
+        &args.worker,
+        &args.bucket,
+        &vars,
+        args.domain.as_deref(),
+    )?;
     if buckets.contains(&args.bucket) {
         ensure!(
             args.yes
@@ -722,13 +762,18 @@ pub async fn init(args: &InitArgs, ui: &Terminal, machine: bool) -> Result<Deplo
         deployed.ok,
         explain("deploying the Worker", &deployed.text, account)
     );
-    let url = parse_worker_url(&deployed.text).ok_or_else(|| {
+    let workers_url = parse_worker_url(&deployed.text).ok_or_else(|| {
         anyhow!(
             "the Worker deployed, but wrangler did not print its URL:\n{}",
             deployed.text.trim()
         )
     })?;
 
+    let url = args
+        .domain
+        .as_ref()
+        .map(|host| format!("https://{host}"))
+        .unwrap_or(workers_url);
     progress.step("Setting the admin token");
     let token = new_admin_token();
     let secret = wrangler.run(
@@ -744,6 +789,7 @@ pub async fn init(args: &InitArgs, ui: &Terminal, machine: bool) -> Result<Deplo
 
     save_receipt(&Receipt {
         version: 1,
+        domain: args.domain.clone(),
         worker: args.worker.clone(),
         bucket: args.bucket.clone(),
         account_id: account.map(str::to_owned),
@@ -904,7 +950,7 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
         .map(str::to_owned);
     let api_version = health.as_ref().and_then(|h| h["apiVersion"].as_u64());
     let value = json!({
-        "worker": receipt.worker, "url": receipt.url, "bucket": receipt.bucket,
+        "worker": receipt.worker, "domain": receipt.domain, "url": receipt.url, "bucket": receipt.bucket,
         "reachable": health.is_some(),
         "configured": health.as_ref().is_some_and(|h| h["configured"] == true),
         "release": release, "api_version": api_version, "latest_release": env!("CARGO_PKG_VERSION"),
@@ -1154,7 +1200,13 @@ async fn upgrade(args: &UpgradeArgs, machine: bool) -> Result<u8> {
         );
     }
     let vars = upgraded_vars(&bundle.vars, &receipt.vars, &bundle.build);
-    let staged = stage(&bundle, &receipt.worker, &receipt.bucket, &vars)?;
+    let staged = stage(
+        &bundle,
+        &receipt.worker,
+        &receipt.bucket,
+        &vars,
+        receipt.domain.as_deref(),
+    )?;
     progress.step("Deploying the new Worker (your data, secret and settings are kept)");
     let account = receipt.account_id.as_deref();
     let out = wrangler.run(
@@ -1246,6 +1298,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn custom_domain_is_in_the_deployed_configuration() {
+        let bundle = bundle().unwrap();
+        let config = wrangler_config(&bundle, "w", "b", &bundle.vars, Some("events.example.com"));
+        assert_eq!(
+            config["routes"],
+            json!([{"pattern":"events.example.com","custom_domain":true}])
+        );
+    }
+    #[test]
     fn parses_whoami_with_banner_noise() {
         let text = " ⛅️ wrangler 4.158.0\n──────\n{\n \"loggedIn\": true,\n \"accounts\": [{\"id\": \"abc\", \"name\": \"Acme\", \"type\": \"standard\"}]\n}\n";
         let who = parse_whoami(text).unwrap();
@@ -1332,7 +1393,7 @@ mod tests {
         let bundle = bundle().unwrap();
         assert!(bundle.code.len() > 10_000);
         assert_eq!(bundle.build.len(), 12);
-        let config = wrangler_config(&bundle, "w", "b", &bundle.vars);
+        let config = wrangler_config(&bundle, "w", "b", &bundle.vars, None);
         assert_eq!(config["name"], "w");
         assert_eq!(config["r2_buckets"][0]["bucket_name"], "b");
     }
@@ -1351,7 +1412,7 @@ mod tests {
         )
         .expect("wrangler.jsonc");
         let bundle = bundle().unwrap();
-        let config = wrangler_config(&bundle, "w", "b", &bundle.vars);
+        let config = wrangler_config(&bundle, "w", "b", &bundle.vars, None);
         for key in [
             "compatibility_date",
             "durable_objects",

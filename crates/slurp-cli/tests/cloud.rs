@@ -655,3 +655,21 @@ fn force_cannot_override_an_incompatible_api() {
             .contains("incompatible Worker API")
     );
 }
+
+#[test]
+fn invalid_domain_is_refused_before_cloudflare_is_changed() {
+    let fake = setup();
+    let before = fake.calls();
+    let out = slurp(
+        &fake,
+        &[
+            "cloud",
+            "init",
+            "--domain",
+            "https://events.example.com/path",
+            "--yes",
+        ],
+    );
+    assert!(!out.status.success());
+    assert_eq!(fake.calls(), before);
+}

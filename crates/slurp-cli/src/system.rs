@@ -128,7 +128,6 @@ pub struct Project {
     pub backend: String,
     pub project: String,
     pub database: PathBuf,
-    pub duckdb: PathBuf,
     pub registered_at: String,
 }
 
@@ -192,15 +191,11 @@ pub fn register(home: &Path, root: &Path, workspace: &Workspace) -> Result<()> {
     update(home, |projects| {
         let previous = projects.iter().find(|project| project.root == root);
         let project = Project {
-            name: root
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| root.display().to_string()),
+            name: workspace.name.clone(),
             root: root.clone(),
             backend: workspace.backend.clone(),
             project: workspace.project.clone(),
             database: workspace.database.clone(),
-            duckdb: workspace.duckdb.clone(),
             registered_at: previous
                 .map(|project| project.registered_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
@@ -220,6 +215,30 @@ pub fn forget(home: &Path, root: &Path) -> Result<()> {
     })
 }
 
+pub fn registration_for(home: &Path, root: &Path) -> Result<Option<Project>> {
+    let root = root.canonicalize()?;
+    Ok(projects(home)?.into_iter().find(|p| p.root == root))
+}
+pub fn set_engine(home: &Path, engine: &Path) -> Result<()> {
+    edit(home, |document| {
+        set(document, "duckdb", engine.to_string_lossy().as_ref());
+        Ok(())
+    })
+}
+
+/// Preserve the old location before explicitly resetting a checkout's local registration.
+pub fn reset_registration(home: &Path, root: &Path) -> Result<()> {
+    if let Some(registration) = registration_for(home, root)? {
+        let backup = home
+            .join("registration-backups")
+            .join(format!("{}.json", uuid::Uuid::now_v7()));
+        slurp_client::files::write_atomic(&backup, &serde_json::to_vec_pretty(&registration)?)?;
+        forget(home, root)?;
+        eprintln!("previous registration saved at {}", backup.display());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod version_tests {
     #[test]
@@ -236,8 +255,8 @@ mod version_tests {
     #[test]
     fn project_binding_version_is_checked_before_its_payload() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join(".slurp")).unwrap();
-        let path = root.path().join(".slurp/project.toml");
+        std::fs::create_dir(root.path().join("slurp")).unwrap();
+        let path = root.path().join("slurp/slurp.toml");
         std::fs::write(&path, "version=2").unwrap();
         let error = crate::Workspace::read_binding(root.path()).unwrap_err();
         assert!(error.to_string().contains("newer Slurp"));

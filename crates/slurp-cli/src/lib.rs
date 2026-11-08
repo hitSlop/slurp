@@ -50,10 +50,20 @@ pub struct SyncProgress {
     pub downloaded: usize,
 }
 
+/// Portable project identity. Credentials and machine paths never belong in this file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Binding {
+    pub version: u32,
+    pub name: String,
+    pub backend: String,
+    pub project: String,
+}
+
 /// Versioned, non-secret binding of a local workspace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub version: u32,
+    pub name: String,
     pub backend: String,
     pub project: String,
     pub database: PathBuf,
@@ -156,20 +166,81 @@ pub fn literal(s: &str) -> String {
 impl Workspace {
     /// Initialize a fresh database and project binding. Existing files are never overwritten.
     pub fn init(
+        home: &Path,
         root: &Path,
         backend: String,
         project: String,
         database: Option<PathBuf>,
         duckdb: PathBuf,
     ) -> Result<Self> {
-        if !project.starts_with("prj_") {
+        let binding = Binding {
+            version: 1,
+            name: root
+                .file_name()
+                .context("project folder name")?
+                .to_string_lossy()
+                .into_owned(),
+            backend,
+            project,
+        };
+        Self::init_bound(home, root, &binding, database, duckdb)
+    }
+    /// Initialize local storage for a portable identity, without changing an existing binding.
+    pub fn init_bound(
+        home: &Path,
+        root: &Path,
+        binding: &Binding,
+        database: Option<PathBuf>,
+        duckdb: PathBuf,
+    ) -> Result<Self> {
+        let backend = binding.backend.clone();
+        let project = binding.project.clone();
+        anyhow::ensure!(
+            binding.version == 1
+                && !binding.name.is_empty()
+                && !binding.name.contains(['/', '\\'])
+                && binding.name != "."
+                && binding.name != "..",
+            "invalid project name or binding version"
+        );
+        if !project.starts_with("prj_")
+            || !project
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
             bail!("use a stable prj_ project ID")
         }
+        system::settings(home)?;
+        system::projects(home)?;
         let backend = slurp_client::config::normalize_backend(&backend)?;
         let root = root.canonicalize()?;
-        let config = root.join(".slurp/project.toml");
-        let database = storage::database_path(&root, None, database.as_deref())?;
-        if config.exists() || database.exists() {
+        let config = root.join("slurp/slurp.toml");
+        let settings = system::settings(home)?;
+        let library = settings.library_dir.unwrap_or_else(|| home.join("library"));
+        if !library.exists() && library == home.join("library") {
+            fs::create_dir_all(&library)?;
+        }
+        let default = library
+            .join(format!(
+                "{}-{}",
+                binding.name,
+                project.trim_start_matches("prj_")
+            ))
+            .join("events.duckdb");
+        let database =
+            storage::database_path(&root, None, Some(database.as_deref().unwrap_or(&default)))?;
+        let existing = config.exists();
+        let name = if existing {
+            let binding = Self::read_binding(&root)?;
+            anyhow::ensure!(
+                binding.backend == backend && binding.project == project,
+                "project binding differs"
+            );
+            binding.name
+        } else {
+            binding.name.clone()
+        };
+        if database.exists() {
             bail!("workspace or database already exists")
         }
         let duckdb = if duckdb == Path::new("duckdb")
@@ -187,6 +258,7 @@ impl Workspace {
             .tempdir_in(database.parent().context("database parent")?)?;
         let mut w = Self {
             version: 1,
+            name,
             backend,
             project,
             database: staging.path().join("events.duckdb"),
@@ -207,7 +279,7 @@ impl Workspace {
             true,
         )?;
         w.execute_inner(&helpers::script(), false, true)?;
-        fs::create_dir_all(root.join(".slurp/reports"))?;
+        fs::create_dir_all(root.join("slurp/reports"))?;
         let mut destination = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -220,19 +292,21 @@ impl Workspace {
             destination.sync_all()?;
             let mut file =
                 tempfile::NamedTempFile::new_in(config.parent().context("config parent")?)?;
-            file.write_all(toml::to_string_pretty(&w)?.as_bytes())?;
+            file.write_all(toml::to_string_pretty(&w.binding())?.as_bytes())?;
             file.as_file().sync_all()?;
-            let ignore = root.join(".slurp/.gitignore");
+            let ignore = root.join("slurp/.gitignore");
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(ignore)
             {
-                Ok(mut file) => file.write_all(b"data/\noutput/\n")?,
+                Ok(mut file) => file.write_all(b"out/\n")?,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e.into()),
             }
-            file.persist_noclobber(&config)?;
+            if !existing {
+                file.persist_noclobber(&config)?;
+            }
             Ok(())
         })();
         if let Err(error) = persisted {
@@ -240,17 +314,63 @@ impl Workspace {
                 .context("initialization failed; cannot remove new database")?;
             return Err(error);
         }
+        system::set_engine(home, &w.duckdb)?;
+        system::register(home, &root, &w)?;
+        let report = root.join("slurp/reports/overview.md");
+        if !report.exists() {
+            fs::write(
+                report,
+                "# Overview\n\n```sql daily\nSELECT date_trunc('day', timestamp) AS day, count(*) AS events FROM events GROUP BY 1 ORDER BY 1\n```\n\n```table\nquery: daily\n```\n\n```sql top_events\nSELECT event, count(*) AS events FROM events GROUP BY event ORDER BY events DESC LIMIT 20\n```\n\n```table\nquery: top_events\n```\n",
+            )?;
+        }
         Ok(w)
+    }
+    pub fn attach(
+        home: &Path,
+        root: &Path,
+        binding: &Binding,
+        database: PathBuf,
+        duckdb: PathBuf,
+    ) -> Result<Self> {
+        let database = storage::resolve(root, &database)?;
+        let workspace = Self {
+            version: binding.version,
+            name: binding.name.clone(),
+            backend: binding.backend.clone(),
+            project: binding.project.clone(),
+            database,
+            duckdb,
+            cancellation: Cancellation::default(),
+            extensions: Vec::new(),
+            sandbox: false,
+        };
+        storage::require_database(&workspace.database)?;
+        let (_, schema) = workspace.read_schema()?;
+        anyhow::ensure!(
+            schema <= MIGRATIONS.len() as u64,
+            "this database was made by a newer Slurp; upgrade the CLI"
+        );
+        system::set_engine(home, &workspace.duckdb)?;
+        system::register(home, root, &workspace)?;
+        Self::load_at(home, root)
+    }
+    pub fn binding(&self) -> Binding {
+        Binding {
+            version: 1,
+            name: self.name.clone(),
+            backend: self.backend.clone(),
+            project: self.project.clone(),
+        }
     }
     /// Read a project's binding without opening its database or requiring its drive.
     ///
     /// # Errors
     /// Returns an error for missing, malformed or incompatible project metadata.
-    pub fn read_binding(root: &Path) -> Result<Self> {
-        let text = fs::read_to_string(root.join(".slurp/project.toml"))?;
+    pub fn read_binding(root: &Path) -> Result<Binding> {
+        let text = fs::read_to_string(root.join("slurp/slurp.toml"))?;
         let header: toml::Value = toml::from_str(&text)?;
         slurp_client::config::check_version(
-            &root.join(".slurp/project.toml"),
+            &root.join("slurp/slurp.toml"),
             header
                 .get("version")
                 .and_then(toml::Value::as_integer)
@@ -258,7 +378,7 @@ impl Workspace {
             1,
             "slurp init",
         )?;
-        let w: Self = toml::from_str(&text)?;
+        let w: Binding = toml::from_str(&text)?;
         if w.version != 1 {
             bail!(Failure::new(
                 ErrorCode::WorkspaceUnavailable,
@@ -267,7 +387,14 @@ impl Workspace {
         }
         slurp_client::config::normalize_backend(&w.backend)?;
         anyhow::ensure!(
-            w.project.starts_with("prj_"),
+            !w.name.is_empty() && !w.name.contains(['/', '\\']) && w.name != "." && w.name != "..",
+            "invalid project name"
+        );
+        anyhow::ensure!(
+            w.project.starts_with("prj_")
+                && w.project
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "project configuration requires a stable project ID"
         );
         Ok(w)
@@ -296,9 +423,12 @@ impl Workspace {
         w
     }
     /// Load and verify a workspace without creating missing storage. A database made by an older schema is backed up and
-    /// migrated first (see [`Workspace::load_with_migrations`]).
+    /// migrated first (see [`Workspace::load_with_migrations_at`]).
     pub fn load(root: &Path) -> Result<Self> {
-        Self::load_with_migrations(root, MIGRATIONS)
+        Self::load_at(&slurp_client::config::home()?, root)
+    }
+    pub fn load_at(home: &Path, root: &Path) -> Result<Self> {
+        Self::load_with_migrations_at(home, root, MIGRATIONS)
     }
     /// [`Workspace::load`] with an explicit list of migration steps, so tests can exercise a longer list than the shipped one.
     ///
@@ -307,8 +437,30 @@ impl Workspace {
     /// - A schema older than `steps` is copied to a uniquely reserved directory beside the database and migrated in one DuckDB process,
     ///   so DuckDB's write lock covers the copy and the whole migration. A failing step leaves the database as it was.
     #[doc(hidden)]
-    pub fn load_with_migrations(root: &Path, steps: &[&str]) -> Result<Self> {
-        let w = Self::read_binding(root)?;
+    pub fn load_with_migrations_at(home: &Path, root: &Path, steps: &[&str]) -> Result<Self> {
+        let binding = Self::read_binding(root)?;
+        let registration = system::registration_for(home, root)?.context(Failure::new(
+            ErrorCode::SetupRequired,
+            "run slurp init to set this project up on this computer",
+        ))?;
+        anyhow::ensure!(
+            registration.backend == binding.backend && registration.project == binding.project,
+            "local registration differs from project binding; run slurp init --reset-local"
+        );
+        let settings = system::settings(home)?;
+        let duckdb = setup::find_engine(None, settings.duckdb.as_deref())?
+            .context("run slurp setup to install DuckDB")?;
+        let w = Self {
+            version: binding.version,
+            name: binding.name,
+            backend: binding.backend,
+            project: binding.project,
+            database: registration.database,
+            duckdb,
+            cancellation: Cancellation::default(),
+            extensions: Vec::new(),
+            sandbox: false,
+        };
         storage::require_database(&w.database)?;
         setup::check_engine(&w.duckdb)?;
         let started = Instant::now();
@@ -642,7 +794,7 @@ impl Workspace {
         }
         Ok(status)
     }
-    /// Ask the Worker to publish everything it has buffered now (`Publish`). Needs the admin token.
+    /// Ask the Worker to publish everything it has buffered now (`Publish`). Needs admin or this project’s secret key.
     ///
     /// # Errors
     /// Returns an error when the token is not the admin token, or the Worker refuses or is unavailable.
@@ -657,9 +809,9 @@ impl Workspace {
                 api::CallError::Api {
                     code: Some(api::ErrorCode::Forbidden),
                     ..
-                } => anyhow::anyhow!(
-                    "sync --now needs the admin token: it asks the Worker to publish what it has buffered, and a secret key can only read archives. Connect with the admin token (slurp connect), or run slurp sync without --now to read what is already published"
-                ),
+                } => {
+                    anyhow::anyhow!("sync --now needs an admin token or this project’s secret key")
+                }
                 other => project_setup::service_error(other),
             })?;
         Ok(())
@@ -669,7 +821,7 @@ impl Workspace {
         self.sync_with_progress(token, false, |_| std::ops::ControlFlow::Continue(()))
             .await
     }
-    /// Publish what the Worker has buffered (admin token), then catch up.
+    /// Publish what the Worker has buffered (admin token or project secret key), then catch up.
     pub async fn sync_now(&self, token: &str) -> Result<Value> {
         self.sync_with_progress(token, true, |_| std::ops::ControlFlow::Continue(()))
             .await

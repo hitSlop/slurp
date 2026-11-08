@@ -4,9 +4,9 @@ The landing page uses Slurp itself. Its events go to a Worker in the maintainers
 
 This folder is that setup, kept as a worked example.
 
-- [`reports/site.md`](reports/site.md) is the report source. Everything in it is one SQL query; `slurp report build reports/site.md` makes the page.
-- Built reports are committed under `reports/out/` as the site gathers data, so you can see what a real one looks like.
-- `.slurp/` (the local binding to the project, with absolute paths) is not committed.
+- [`reports/site.md`](reports/site.md) is the report source. Everything in it is one SQL query; `slurp report build slurp/reports/site.md` makes the page.
+- Built reports live in `out/` and are ignored by Git.
+- `slurp.toml` is a portable project binding. The database and credentials remain on each machine.
 
 ## What the site captures
 
@@ -19,15 +19,15 @@ This folder is that setup, kept as a worked example.
 
 Every event also carries the SDK's context: user agent, language, time zone, the page's address **without its query string or fragment**, and a random `anonymous_id` the SDK keeps in the browser's local storage. There is no cookie, no fingerprinting, no IP address stored (Cloudflare's coarse country and city are added by the Worker), and no text a visitor typed except in the feedback form. Feedback messages are read by the maintainers and are not published; the report shows only their count and average rating.
 
-The code is [`apps/site/src/lib/slurp.ts`](../apps/site/src/lib/slurp.ts), with the tracked fields pinned by [a test](../apps/site/test/measure.test.mjs). The key in [`links.mjs`](../apps/site/src/lib/links.mjs) is a publishable key: it can only add events.
+The code is [`apps/site/src/lib/slurp.ts`](../src/lib/slurp.ts), with the tracked fields pinned by [a test](../test/measure.test.mjs). The key in [`links.mjs`](../src/lib/links.mjs) is a publishable key: it can only add events.
 
 ## Run it yourself
 
 ```sh
 slurp connect https://events.slurp.run --token-stdin   # needs the admin token: only the maintainers have it
-slurp init --connect slurp-site                        # in this folder
+slurp init                                            # from apps/site, with a project secret key
 slurp sync
-slurp report build reports/site.md --out reports/out/$(date +%F) --png
+slurp report build slurp/reports/site.md --out slurp/out/$(date +%F) --png
 ```
 
-To measure your own site the same way, see [the JavaScript SDK](../docs/sdks.md) and `mountFeedback`.
+To measure your own site the same way, see [the JavaScript SDK](../../../docs/sdks.md) and `mountFeedback`.

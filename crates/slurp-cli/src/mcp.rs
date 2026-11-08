@@ -154,8 +154,8 @@ impl Server {
             ),
             tool(
                 "sync",
-                "Download new archives from your Worker into the local database. Events become readable about 10 minutes after they are sent; pass now to ask the Worker to publish what it has buffered first (needs the admin token).",
-                json!({"type": "object", "properties": {"now": {"type": "boolean", "description": "Publish buffered events first, so events sent a moment ago are included. Needs the admin token. Default false."}}}),
+                "Download new archives from your Worker into the local database. Events become readable about 10 minutes after they are sent; pass now to ask the Worker to publish what it has buffered first (needs the admin token or project secret key).",
+                json!({"type": "object", "properties": {"now": {"type": "boolean", "description": "Publish buffered events first, so events sent a moment ago are included. Needs the admin token or project secret key. Default false."}}}),
             ),
             tool(
                 "health",
@@ -172,7 +172,7 @@ impl Server {
                 "Build a report into a new folder: report.html, plus report.png (default) and optionally report.pdf. Returns the folder and files.",
                 json!({"type": "object", "properties": {
                     "file": {"type": "string", "description": "Path to the report .md file."},
-                    "out": {"type": "string", "description": "A new folder to write into. Defaults to .slurp/reports/<name>-<time> in the project."},
+                    "out": {"type": "string", "description": "A new folder to write into. Defaults to slurp/out/<name>-<time> in the project."},
                     "png": {"type": "boolean", "description": "Also write report.png (default true)."},
                     "pdf": {"type": "boolean", "description": "Also write report.pdf (default false)."}
                 }, "required": ["file"]}),
@@ -276,7 +276,7 @@ impl Server {
             .unwrap_or("report");
         let out = match args.get("out").and_then(Value::as_str) {
             Some(out) => PathBuf::from(out),
-            None => self.root.join(".slurp/reports").join(format!(
+            None => self.root.join("slurp/out").join(format!(
                 "{stem}-{}",
                 chrono::Utc::now().format("%Y%m%d-%H%M%S")
             )),

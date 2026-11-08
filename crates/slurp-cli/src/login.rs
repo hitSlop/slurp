@@ -12,7 +12,7 @@ pub use slurp_client::connection::environment_token;
 /// The bearer token for a Worker: `SLURP_TOKEN` or `SLURP_READ_KEY` from the environment, else the one `slurp connect` saved.
 /// Fails with [`connection::NotConnected`] when there is neither.
 pub fn token(backend: &str) -> Result<String> {
-    connection::resolve(backend)
+    connection::resolve(backend, None)
 }
 
 /// Ask the Worker what a token is (admin, or a project's secret or publishable key). An `Err` carries the Worker's error code
@@ -133,4 +133,8 @@ async fn connect_existing(ui: &Terminal) -> Result<(String, String)> {
         &format!("{} (admin token).", connected.backend),
     )?;
     Ok((connected.backend, connected.token))
+}
+
+pub fn project_token(backend: &str, project: &str) -> Result<String> {
+    connection::resolve(backend, Some(project))
 }

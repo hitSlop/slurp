@@ -3,7 +3,7 @@ import {
   type CaptureOptions, type FlushResult, type SlurpClient, type SlurpOptions, type StorageAdapter,
 } from '@hitslop/slurp-sdk'
 
-export const version = '0.1.0'
+export const version = '0.2.0'
 
 /** The slice of React Native's AppState that is used. */
 export interface AppStateLike {

@@ -74,9 +74,11 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
     value(cli(project.path(), user.path(), &["init", "--no-open"]));
     let again = value(cli(project.path(), user.path(), &["projects"]));
     assert_eq!(first, again, "repeat setup keeps one stable registration");
-    assert_eq!(
-        fs::read_to_string(home.join("config.toml")).expect("preserved settings"),
-        settings
+    let saved_settings = fs::read_to_string(home.join("config.toml")).expect("preserved settings");
+    assert!(saved_settings.starts_with(settings));
+    assert!(
+        saved_settings.contains("duckdb ="),
+        "engine selection is machine-local"
     );
     let offline = drive.path().join("offline");
     fs::rename(&storage, &offline).expect("disconnect storage");
@@ -104,10 +106,10 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
         offline.join("events.duckdb").is_file(),
         "forget never deletes event data"
     );
-    assert!(project.path().join(".slurp/project.toml").is_file());
+    assert!(project.path().join("slurp/slurp.toml").is_file());
     fs::write(home.join("projects.json"), "invalid index").expect("damaged index");
     let another = tempfile::tempdir().expect("another project");
-    let result = value(cli(
+    let result = cli(
         another.path(),
         user.path(),
         &[
@@ -117,15 +119,12 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
             "--duckdb",
             engine.to_str().expect("engine"),
         ],
-    ));
-    assert!(
-        result["registry_warning"].is_string(),
-        "registration failure must be visible"
     );
     assert!(
-        Workspace::load(another.path()).is_ok(),
-        "registration failure does not undo initialization"
+        !result.status.success(),
+        "a corrupt index must stop initialization"
     );
+    assert!(!another.path().join("slurp/slurp.toml").exists());
     assert_eq!(
         fs::read_to_string(home.join("projects.json")).expect("damaged index preserved"),
         "invalid index"
@@ -153,6 +152,7 @@ fn registry_updates_are_serialized_and_corrupt_indexes_are_preserved() {
             scope.spawn(move || {
                 let workspace = Workspace {
                     version: 1,
+                    name: "test".into(),
                     backend: "https://slurp.example.workers.dev".into(),
                     project: format!("prj_{i}"),
                     database: root.join("events.duckdb"),

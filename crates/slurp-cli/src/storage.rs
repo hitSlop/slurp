@@ -74,7 +74,9 @@ pub fn database_path(
             dir.join("events.duckdb")
         }
         (_, Some(file)) => file.to_path_buf(),
-        _ => PathBuf::from(".slurp/data/events.duckdb"),
+        _ => anyhow::bail!(
+            "choose --data-dir or --database; project initialization selects the machine library"
+        ),
     };
     resolve(root, &path)
 }

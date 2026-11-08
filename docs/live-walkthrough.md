@@ -28,7 +28,8 @@ Use a run marker so later queries isolate this batch even if you repeat the walk
 
 ```sh
 SLURP_DEMO_RUN="live-$(date -u +%Y%m%dT%H%M%SZ)"
-printf '%s\n' "$SLURP_DEMO_RUN" > .slurp/walkthrough-run
+mkdir -p slurp/out
+printf '%s\n' "$SLURP_DEMO_RUN" > slurp/out/walkthrough-run
 SLURP_DEMO_DATA="{\"demo_run\":\"$SLURP_DEMO_RUN\"}"
 
 slurp send signed_up --user-id demo_alice --data "$SLURP_DEMO_DATA"
@@ -49,7 +50,7 @@ Your Worker publishes an archive about every 10 minutes by default (sooner when 
 
 ```sh
 cd ~/slurp-walkthrough
-SLURP_DEMO_RUN="$(cat .slurp/walkthrough-run)"
+SLURP_DEMO_RUN="$(cat slurp/out/walkthrough-run)"
 
 slurp sync --now
 slurp sql "
@@ -68,8 +69,8 @@ Expected totals: `signed_up = 3`, `project_created = 2`, `report_built = 1`. `co
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hitSlop/slurp/master/examples/events.md -o events.md   # a small sample report
-slurp report build events.md --out .slurp/output/first
-slurp report open .slurp/output/first
+slurp report build events.md --out slurp/out/first
+slurp report open slurp/out/first
 ```
 
 The sample report shows all events in this project's database. Choose a fresh output folder for another report.

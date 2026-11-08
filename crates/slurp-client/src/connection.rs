@@ -48,9 +48,72 @@ pub fn forget(backend: &str) -> Result<()> {
 ///
 /// # Errors
 /// Returns [`NotConnected`] when there is neither, or a storage error.
-pub fn resolve(backend: &str) -> Result<String> {
-    if let Some(token) = environment_token() {
+pub fn resolve(backend: &str, project: Option<&str>) -> Result<String> {
+    resolve_with(backend, project, environment_token(), storage::get)
+}
+fn resolve_with(
+    backend: &str,
+    project: Option<&str>,
+    environment: Option<String>,
+    mut read: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<String> {
+    if let Some(token) = environment {
         return Ok(token);
     }
-    load(backend)?.ok_or_else(|| NotConnected.into())
+    let backend = config::normalize_backend(backend)?;
+    if let Some(project) = project
+        && let Some(token) = read(&format!("{backend}#{project}"))?
+    {
+        return Ok(token);
+    }
+    read(&backend)?.ok_or_else(|| NotConnected.into())
+}
+
+/// Save a verified project secret independently of the Worker's admin connection.
+pub fn save_project(backend: &str, project: &str, token: &str) -> Result<()> {
+    storage::set(
+        &format!("{}#{project}", config::normalize_backend(backend)?),
+        token,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn credentials_are_scoped_and_environment_wins_without_reading_saved_state() {
+        let saved = std::collections::HashMap::from([
+            ("https://example.com", "admin"),
+            ("https://example.com#prj_a", "alice"),
+            ("https://example.com#prj_b", "bob"),
+        ]);
+        let read = |key: &str| Ok(saved.get(key).map(|v| (*v).to_string()));
+        assert_eq!(
+            resolve_with("https://example.com/", Some("prj_a"), None, read).unwrap(),
+            "alice"
+        );
+        assert_eq!(
+            resolve_with("https://example.com", Some("prj_b"), None, read).unwrap(),
+            "bob"
+        );
+        assert_eq!(
+            resolve_with("https://example.com", Some("prj_c"), None, read).unwrap(),
+            "admin"
+        );
+        assert_eq!(
+            resolve_with("https://example.com", None, None, read).unwrap(),
+            "admin"
+        );
+        assert_eq!(
+            resolve_with(
+                "https://example.com",
+                Some("prj_a"),
+                Some("environment".into()),
+                |_| panic!("environment must not read the credential store")
+            )
+            .unwrap(),
+            "environment"
+        );
+        assert!(resolve_with("https://another.example", Some("prj_a"), None, read).is_err());
+    }
 }

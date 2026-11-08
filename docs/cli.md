@@ -22,8 +22,8 @@ slurp describe
 slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 slurp duckdb
 # Ask your agent to create report.md, then:
-slurp report build report.md --out .slurp/output/first --png --pdf
-slurp report open .slurp/output/first
+slurp report build report.md --out slurp/out/first --png --pdf
+slurp report open slurp/out/first
 ```
 
 `setup` runs once per computer: choose a default event library, prepare DuckDB, and connect your Worker. It creates no project. `init` runs inside each app: create or select a named project, choose its data folder, and open its personalized quickstart. Running `init` first guides you through missing machine setup.
@@ -34,7 +34,7 @@ For a complete live test, follow the [six-event walkthrough](live-walkthrough.md
 
 Once configured, `slurp setup` opens a short menu: Done, Change the default library, Compare / buy an SSD, and Check setup. Done leaves settings untouched. `slurp --json setup` returns a read-only availability summary, including disconnected storage, without accessing credentials or starting login. The default library change applies only to future projects; physical migration is not included.
 
-Worker commands include `cloud init|status|doctor|upgrade|destroy` (deploy and operate your Worker, see [self-hosting](self-hosting.md)), `connect`, `whoami`, `project create/list/show/setup`, `project key create/list/revoke`, `project webhook PROJECT github|stripe|revenuecat|generic` (the URL and signing secret for a provider; see [webhooks](webhooks.md)), `send`, `identify` and `read`. A project is created once and not edited afterwards; a key belongs to one source, so `project key create PROJECT --scope publishable --source ios` makes the key for `ios` and `--scope secret --name bot` makes a read key. Run `slurp connect https://your-worker.workers.dev --token-stdin < admin-token.txt` once per computer: it verifies the Worker and its admin token, then saves both (see [self-hosting](self-hosting.md)). Without a saved backend the CLI targets the local `wrangler dev` Worker at `http://127.0.0.1:8787`. Backend selection uses `--backend` / `SLURP_BACKEND`, then the saved project binding, then system settings, then the backend saved by `slurp connect`, and finally the local `wrangler dev` default. Local commands accept `--project DIRECTORY`. Init saves the resolved binding in `.slurp/project.toml`; existing databases retain their original backend and project. Use a fresh workspace when changing servers.
+Worker commands include `cloud init|status|doctor|upgrade|destroy` (deploy and operate your Worker, see [self-hosting](self-hosting.md)), `connect`, `whoami`, `project create/list/show/setup`, `project key create/list/revoke`, `project webhook PROJECT github|stripe|revenuecat|generic` (the URL and signing secret for a provider; see [webhooks](webhooks.md)), `send`, `identify` and `read`. A project is created once and not edited afterwards; a key belongs to one source, so `project key create PROJECT --scope publishable --source ios` makes the key for `ios` and `--scope secret --name bot` makes a read key. Run `slurp connect https://your-worker.workers.dev --token-stdin < admin-token.txt` once per computer: it verifies the Worker and its admin token, then saves both (see [self-hosting](self-hosting.md)). Without a saved backend the CLI targets the local `wrangler dev` Worker at `http://127.0.0.1:8787`. Backend selection uses `--backend` / `SLURP_BACKEND`, then the saved project binding, then system settings, then the backend saved by `slurp connect`, and finally the local `wrangler dev` default. Local commands accept `--project DIRECTORY`. Init saves the resolved binding in `slurp/slurp.toml`; existing databases retain their original backend and project. Use a fresh workspace when changing servers.
 
 ## Bot access
 
@@ -49,7 +49,7 @@ Transfer the returned key through your bot's secret store. On its machine set `S
 
 ## Credentials without prompts
 
-How tokens, keys and the saved connection work is described in [How the connection works](connection.md). In short, the CLI saves at most one token per Worker (the admin token from `slurp connect`), as a plain string in `~/.slurp/credentials.json` (or `SLURP_HOME/credentials.json`): plaintext with owner-only permissions (`0600`) inside the private Slurp home (`0700`), written atomically under a lock, and never inside a project or event folder or Git. Another process running as your user can read it. No decryption key or Keychain access is needed for ordinary sync and send. `SLURP_TOKEN` and `SLURP_READ_KEY` in the environment take priority over the saved token, which is how bots run without a saved connection.
+How tokens, keys and the saved connection work is described in [How the connection works](connection.md). In short, the CLI saves an admin token per Worker and separate project secret keys, as a plain string in `~/.slurp/credentials.json` (or `SLURP_HOME/credentials.json`): plaintext with owner-only permissions (`0600`) inside the private Slurp home (`0700`), written atomically under a lock, and never inside a project or event folder or Git. Another process running as your user can read it. No decryption key or Keychain access is needed for ordinary sync and send. `SLURP_TOKEN` and `SLURP_READ_KEY` in the environment take priority over the saved token, which is how bots run without a saved connection.
 
 Native storage is available by setting `credential_store = "keychain"` in `~/.slurp/config.toml`; the default is `"file"`. The stores are independent: missing credentials and file errors never trigger an automatic Keychain fallback. `slurp logout` forgets the saved token for the selected Worker. Publishable keys are not kept on your computer: the Worker has them. Corrupt or overly permissive credential files are rejected without exposing or overwriting their contents.
 
@@ -69,14 +69,14 @@ These commands send to the folder's project as the source `cli` (or `--source NA
 
 `send EVENT` and `identify` always add an `id` (a UUID) and a `timestamp`, so a retry cannot double count. `--stdin` sends your lines as they are: only `event` is required in a record, but a record without an `id` is a new event every time, so add one. Output is `{"accepted":true,"events":N}`, and a bad record is refused before it is sent with the reason. The MCP send tools use the source `mcp`.
 
-Project-aware commands find the nearest `.slurp/project.toml` in the current folder or its parents. This includes send, identify, sync, SQL, status, doctor, describe, and report builds. `--project PATH` selects an exact initialized folder. A malformed nearest configuration fails instead of falling through to a different project. Init still targets the exact current or selected folder, allowing nested projects; setup and the registry are machine-wide. File arguments remain relative to the calling folder.
+Project-aware commands find the nearest `slurp/slurp.toml` in the current folder or its parents. This includes send, identify, sync, SQL, status, doctor, describe, and report builds. `--project PATH` selects an exact initialized folder. A malformed nearest configuration fails instead of falling through to a different project. Init still targets the exact current or selected folder, allowing nested projects; setup and the registry are machine-wide. File arguments remain relative to the calling folder.
 
 In project mode, environment key/endpoint overrides require both `SLURP_PROJECT_ID` and `SLURP_BACKEND` to match the selected binding. Unrelated environment values cannot redirect that project's events, including a backend left over from another app. Explicit `--to` accepts environment credentials, or asks the Worker for the key of the source. Publishable keys only send events; `SLURP_TOKEN` read keys remain separate for sync.
 
 ## Data contract
 
-- `.slurp/project.toml`: non-secret project binding and engine/database paths.
-- `<library>/<project-folder>/events.duckdb`: default database. Explicit scripted project bindings without a library use `.slurp/data/events.duckdb`, ignored by Git. `init --data-dir DIRECTORY` selects another project data folder; `--database FILE` selects an exact database path.
+- `slurp/slurp.toml`: non-secret project binding and engine/database paths.
+- `<library>/<name>-<project ID>/events.duckdb`: default database. Without a configured library, use `~/.slurp/library`. `init --data-dir DIRECTORY` selects another project data folder; `--database FILE` selects an exact database path.
 - `events`: one row per event, with the primary key `(sender, id)`. Columns: `sender`, `id`, `type`, `event`, `timestamp`, `user_id`, `anonymous_id`, `session_id`, JSON `data`, `context` and `geo`, `received_at`, `archive_seq`, `line`, the complete record as sent in `raw`, and a `fingerprint` (the SHA-256 of the record's exact bytes). `sender` is the source of the key that sent it. A record without an `id` gets `slurp:<archive_seq>:<line>`, without a `timestamp` its `received_at`, without `type` `track`, without `data` `{}`.
 - `_slurp.identity`, `_slurp.deliveries` and `_slurp.problems`: the versioned binding, the receipts of imported archives, and what the import set aside. Do not edit these or `events` manually.
 - Reports are ordinary Markdown files. Generated output directories are ignored; choose a fresh `--out` for each successful build.
@@ -287,5 +287,15 @@ slurp projects                       # List registered projects and availability
 slurp projects forget /path/to/app    # Remove only the index entry
 ```
 
-Successful init registers the project by its canonical folder path. Listing uses metadata only, so disconnected drives and missing project folders remain listed without recreating storage. Concurrent updates are locked and written atomically; a damaged index produces an error and is preserved. Registration failures are returned as `registry_warning` after successful initialization.
+Successful init registers the project by its canonical folder path. Listing uses metadata only, so disconnected drives and missing project folders remain listed without recreating storage. Concurrent updates are locked and written atomically; a damaged index produces an error and is preserved. A missing registration requires `slurp init` on that machine; an invalid index is refused before a new database is created.
 
+
+## The slurp folder
+
+Commit `slurp/slurp.toml` and report sources in `slurp/reports/`. The binding contains only `version`, `name`, `backend`, and the stable `project` ID. Report builds default to `slurp/out/`, which is gitignored.
+
+Each machine keeps credentials, its database location, and its DuckDB executable under its own Slurp home. Default databases live at `<library>/<name>-<project ID>/events.duckdb`; the default library is `~/.slurp/library`. A second checkout reuses a verified database for the same project.
+
+In a fresh clone, run `slurp setup`, then `slurp init`. Supply an admin token or a secret key for the bound project. Scripts can use `slurp init --token-stdin --yes`. An admin creates a teammate key with `slurp project key create PROJECT --scope secret --name alice`. That key can sync and publish its project's archives with `slurp sync --now`.
+
+A missing registered database is never recreated automatically. Reconnect its drive, or explicitly run `slurp init --reset-local` to preserve the old registration and choose storage again. Existing database files are kept.

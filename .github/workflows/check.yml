@@ -104,6 +104,30 @@ jobs:
           pnpm --filter @hitslop/slurp-react-native build
           pnpm --filter @hitslop/slurp-react-native test
 
+  # Slurp has no Swift SDK: iOS and macOS apps use Segment's analytics-swift pointed at the Worker. This runs the real SDK, pinned in
+  # sdks/compat/swift/Package.resolved, against a real Worker. SLURP_COMPAT_SWIFT_REQUIRED makes "cannot build" a failure, not a skip.
+  compat-swift:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache@v4
+        with:
+          path: sdks/compat/swift/.build
+          key: swift-build-${{ runner.os }}-${{ hashFiles('sdks/compat/swift/Package.resolved', 'sdks/compat/swift/Package.swift', 'sdks/compat/swift/Sources/**') }}
+      - run: npm ci
+        working-directory: backend
+      - name: analytics-swift against the Worker
+        run: node --test --test-concurrency=1 --test-force-exit --test-timeout=600000 --experimental-strip-types test/compat-swift.test.ts
+        working-directory: backend
+        timeout-minutes: 25
+        env:
+          WRANGLER_SEND_METRICS: "false"
+          SLURP_COMPAT_SWIFT_REQUIRED: "1"
+
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 15

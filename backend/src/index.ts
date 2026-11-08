@@ -4,7 +4,7 @@ import { setupPage } from './landing.ts'
 import * as w from './slurp.gen.ts'
 import type { ProjectRow, Result } from './registry.ts'
 import type { KeyRow } from './project.ts'
-import type { CompatHost } from './compat/common.ts'
+import { BodyTooLarge, readBounded, type CompatHost } from './compat/common.ts'
 import { segmentIngest, segmentRoute } from './compat/segment.ts'
 import { sentryIngest, sentryRoute } from './compat/sentry.ts'
 import { hookIngest, hookRoute, isProvider } from './compat/hooks.ts'
@@ -206,10 +206,11 @@ async function ingest(req: Request, env: Env): Promise<Response> {
   const m = KEY.exec(token)
   if (!m) return jsonError(401, 'invalid token')
   const max = envNumber(env.MAX_BODY_BYTES, DEFAULT_MAX_BODY)
-  const declared = Number(req.headers.get('content-length') ?? 0)
-  if (declared > max) return jsonError(413, 'body too large')
-  const body = new Uint8Array(await req.arrayBuffer())
-  if (body.length > max) return jsonError(413, 'body too large')
+  // The native endpoint takes the bytes as sent (no gzip decoding), and never reads more than the limit.
+  let body: Uint8Array
+  try { body = await readBounded(req, max, { gunzip: false }) } catch (e) {
+    return e instanceof BodyTooLarge ? jsonError(413, 'body too large') : jsonError(400, 'unreadable body')
+  }
   // Geo comes only from Cloudflare's own request metadata, never from client-supplied headers; the project drops it unless it opted in.
   const geo = normalizeGeo((req as Request & { cf?: any }).cf)
   let res

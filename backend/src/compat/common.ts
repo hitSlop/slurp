@@ -31,12 +31,16 @@ export const preflight = (allowHeaders: string) =>
 
 export class BodyTooLarge extends Error {}
 
-/** Read a request body, gunzipping when the client says it compressed it. The size limit applies to the decoded bytes. */
-export async function readBody(req: Request, max: number): Promise<Uint8Array> {
+/**
+ * Read a request body without ever holding more than `max` bytes: it is read as a stream and cancelled as soon as it is over the limit,
+ * so a request with no Content-Length (chunked) cannot make the Worker buffer all of it first. With `gunzip`, a gzip body is decoded and
+ * the limit applies to the decoded bytes.
+ */
+export async function readBounded(req: Request, max: number, options: { gunzip: boolean }): Promise<Uint8Array> {
   if (Number(req.headers.get('content-length') ?? 0) > max) throw new BodyTooLarge()
   const encoding = (req.headers.get('content-encoding') ?? '').toLowerCase().trim()
   if (!req.body) return new Uint8Array()
-  const source = encoding === 'gzip' || encoding === 'x-gzip' ? req.body.pipeThrough(new DecompressionStream('gzip')) : req.body
+  const source = options.gunzip && (encoding === 'gzip' || encoding === 'x-gzip') ? req.body.pipeThrough(new DecompressionStream('gzip')) : req.body
   const reader = source.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
@@ -52,6 +56,9 @@ export async function readBody(req: Request, max: number): Promise<Uint8Array> {
   for (const c of chunks) { out.set(c, at); at += c.byteLength }
   return out
 }
+
+/** The compatibility endpoints (Segment, Sentry, webhooks) accept gzip bodies, as their SDKs send them. */
+export const readBody = (req: Request, max: number): Promise<Uint8Array> => readBounded(req, max, { gunzip: true })
 
 /** Map an ingest failure to the response an SDK expects: 4xx drops the data, 5xx and 429 retry it. */
 export const ingestFailure = (res: Extract<IngestResult, { ok: false }>) =>

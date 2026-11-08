@@ -143,6 +143,40 @@ test('ingest rules, CORS, dedupe, wide numbers', async () => {
   assert.match(arc.raw.split('\n')[0], /^\{"received_at":"[^"]+","received_seq":"\d+","sender":"default","id":"a"/)
 })
 
+test('a body with no Content-Length is cut off at the limit, not buffered whole first', async () => {
+  const small = await startWorker({ MAX_BODY_BYTES: '4096' })
+  try {
+    const p = await newProject(small.base, name('chunked'))
+    const stream = (chunks: number, size: number, pulled: { bytes: number }) => {
+      let sent = 0
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent++ >= chunks) return controller.close()
+          pulled.bytes += size
+          controller.enqueue(new TextEncoder().encode('x'.repeat(size)))
+        },
+      })
+    }
+    const send = (body: ReadableStream<Uint8Array>) => fetch(`${small.base}/v1/events`, { method: 'POST', headers: { Authorization: `Bearer ${p.pk}` }, body, duplex: 'half' } as RequestInit)
+    // 32 MB in 16 KB chunks, no Content-Length: refused, and the sender is stopped long before the end.
+    const pulled = { bytes: 0 }
+    // The Worker stops reading, so the sender may see the 413 or a closed connection (a broken pipe) first; either way it was refused.
+    const outcome = await send(stream(2048, 16 * 1024, pulled)).then(r => r.status, () => 'connection closed')
+    assert.ok(outcome === 413 || outcome === 'connection closed', `refused, got ${outcome}`)
+    assert.ok(pulled.bytes < 16 * 1024 * 1024, `the Worker kept reading: ${pulled.bytes} of ${32 * 1024 * 1024} bytes were pulled`)
+    // A chunked body that fits is accepted as before (it is one valid record, padded to just under the limit).
+    const record = JSON.parse(evt('fits'))
+    record.data = { pad: '' }
+    record.data.pad = 'p'.repeat(4096 - JSON.stringify(record).length - 64)
+    const fits = JSON.stringify(record)
+    assert.ok(fits.length < 4096)
+    assert.equal((await send(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(fits)); c.close() } }))).status, 200)
+    // The native endpoint takes the bytes as sent: a gzip label does not make it decode them.
+    const labelled = await fetch(`${small.base}/v1/events`, { method: 'POST', headers: { Authorization: `Bearer ${p.pk}`, 'Content-Encoding': 'gzip' }, body: evt('labelled') })
+    assert.equal(labelled.status, 200)
+  } finally { await small.stop() }
+})
+
 test('large records are stored whole: 900 KB survives sealing, 1.1 MB is refused with 413 and nothing is cut', async () => {
   const s = await newProject(w.base, name('big'))
   const pad = (n: number, tail: string) => ({ data: { blob: 'x'.repeat(n) + tail } })

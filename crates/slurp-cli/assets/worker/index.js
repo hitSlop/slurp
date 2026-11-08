@@ -1211,11 +1211,11 @@ var BodyTooLarge = class extends Error {
     __name(this, "BodyTooLarge");
   }
 };
-async function readBody(req, max) {
+async function readBounded(req, max, options) {
   if (Number(req.headers.get("content-length") ?? 0) > max) throw new BodyTooLarge();
   const encoding = (req.headers.get("content-encoding") ?? "").toLowerCase().trim();
   if (!req.body) return new Uint8Array();
-  const source = encoding === "gzip" || encoding === "x-gzip" ? req.body.pipeThrough(new DecompressionStream("gzip")) : req.body;
+  const source = options.gunzip && (encoding === "gzip" || encoding === "x-gzip") ? req.body.pipeThrough(new DecompressionStream("gzip")) : req.body;
   const reader = source.getReader();
   const chunks = [];
   let size = 0;
@@ -1237,7 +1237,8 @@ async function readBody(req, max) {
   }
   return out;
 }
-__name(readBody, "readBody");
+__name(readBounded, "readBounded");
+var readBody = /* @__PURE__ */ __name((req, max) => readBounded(req, max, { gunzip: true }), "readBody");
 var ingestFailure = /* @__PURE__ */ __name((res) => json(res.status, { error: res.reason }, res.retryAfter ? { "Retry-After": String(res.retryAfter) } : {}), "ingestFailure");
 
 // src/compat/segment.ts
@@ -2335,10 +2336,12 @@ async function ingest(req, env) {
   const m = KEY.exec(token);
   if (!m) return jsonError(401, "invalid token");
   const max = envNumber(env.MAX_BODY_BYTES, DEFAULT_MAX_BODY);
-  const declared = Number(req.headers.get("content-length") ?? 0);
-  if (declared > max) return jsonError(413, "body too large");
-  const body = new Uint8Array(await req.arrayBuffer());
-  if (body.length > max) return jsonError(413, "body too large");
+  let body;
+  try {
+    body = await readBounded(req, max, { gunzip: false });
+  } catch (e) {
+    return e instanceof BodyTooLarge ? jsonError(413, "body too large") : jsonError(400, "unreadable body");
+  }
   const geo = normalizeGeo(req.cf);
   let res;
   try {

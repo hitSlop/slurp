@@ -345,6 +345,41 @@ fn a_truncated_archive_fails_before_anything_is_written() {
 }
 
 #[test]
+fn a_retention_gap_is_one_problem_however_often_it_is_read() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let gap = slurp_client::api::Gap { from: 3, to: 4 };
+    w.record_gap(&gap).expect("gap");
+    w.record_gap(&gap).expect("the same gap again");
+    assert_eq!(
+        w.execute(
+            "SELECT kind, archive_seq, line, detail FROM _slurp.problems",
+            true
+        )
+        .expect("problems"),
+        json!([{"kind": "gap", "archive_seq": 3, "line": 0, "detail": "archives 3 to 4 were deleted by retention before they were read"}])
+    );
+}
+
+#[test]
+fn receipts_of_another_project_stop_a_sync_before_any_request() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    w.execute(
+        "INSERT INTO _slurp.deliveries(project, sequence, sha256, bytes) VALUES('prj_ffffffffffffffff', 1, 'x', 1)",
+        false,
+    )
+    .expect("a foreign receipt");
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(w.sync("t"))
+        .expect_err("a different project's archives");
+    assert!(error.to_string().contains("different project"), "{error}");
+}
+
+#[test]
 fn health_reports_what_the_import_set_aside() {
     let Some((_temp, w)) = workspace() else {
         return;

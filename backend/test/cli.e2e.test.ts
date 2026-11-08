@@ -119,17 +119,32 @@ test('one project, many senders: init is idempotent, setup changes nothing, and 
   const web = run(['project', 'key', 'create', project, '--scope', 'publishable', '--source', 'web', '--json']).json.key.key as string
   assert.equal(run(['send', 'from_ios', '--user-id', 'u1', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: ios }).json.accepted, true)
   assert.equal(run(['send', 'from_web', '--user-id', 'u2', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: web }).json.accepted, true)
+  // --source names the source whose key is wanted, so the key in the environment is not used
+  assert.equal(run(['send', 'from_mcp', '--user-id', 'u4', '--to', project, '--source', 'mcp', '--json'], { SLURP_PUBLISHABLE_KEY: ios }).json.accepted, true)
   const fromCli = run(['send', 'from_cli', '--user-id', 'u3', '--project', ws, '--json'])
   assert.equal(fromCli.json?.accepted, true, fromCli.text)
   await publish(w.base, project)
   assert.equal(run(['sync', '--project', ws2, '--json']).status, 0)
   const q = run(['sql', "SELECT sender, count(*) n FROM events WHERE event LIKE 'from_%' GROUP BY sender ORDER BY sender", '--project', ws2, '--json']).json
-  assert.deepEqual(q.rows, [['cli', 1], ['ios', 1], ['web', 1]], 'each event carries the source of the key that sent it; slurp send is the cli source')
+  assert.deepEqual(q.rows, [['cli', 1], ['ios', 1], ['mcp', 1], ['web', 1]], 'each event carries the source of the key that sent it; slurp send is the cli source')
   // revoking one sender's key stops that sender only
   const iosKey = keys().find(k => k.source === 'ios')
   run(['project', 'key', 'revoke', project, iosKey.keyId, '--json'])
   assert.notEqual(run(['send', 'late_ios', '--user-id', 'u1', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: ios }).status, 0)
   assert.equal(run(['send', 'late_web', '--user-id', 'u2', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: web }).json.accepted, true)
+})
+
+test('sync --now publishes what is buffered first; a secret key can sync but is told it needs the admin token to publish', { skip }, async () => {
+  const project = run(['status', '--project', ws, '--json']).json.project as string
+  const secret = (await call(w.base, ADMIN_TOKEN, 'CreateKey', { project, scope: 'secret', name: 'reader' })).key.key!
+  assert.equal(run(['send', 'buffered', '--user-id', 'u5', '--project', ws, '--json']).json.accepted, true)
+  const plain = run(['sync', '--project', ws, '--json'], { SLURP_TOKEN: secret })
+  assert.equal(plain.status, 0, plain.text); assert.equal(plain.json.published_now, false); assert.equal(plain.json.pending, true, 'the buffered event is not readable yet')
+  const refused = run(['sync', '--now', '--project', ws, '--json'], { SLURP_TOKEN: secret })
+  assert.notEqual(refused.status, 0); assert.match(refused.text, /needs the admin token/)
+  const now = run(['sync', '--now', '--project', ws, '--json'])
+  assert.equal(now.status, 0, now.text); assert.equal(now.json.published_now, true); assert.equal(now.json.pending, false)
+  assert.equal(run(['sql', "SELECT count(*) FROM events WHERE event = 'buffered'", '--project', ws, '--json']).json.rows[0][0], 1, 'the published archive was picked up at once')
 })
 
 test('webhooks: slurp project webhook gives the URL and secret, a signed GitHub release arrives, and the releases view has it', { skip }, async () => {

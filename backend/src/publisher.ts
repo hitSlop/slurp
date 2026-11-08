@@ -35,10 +35,16 @@ export function publicationWake(f: Facts, cfg: Config, now: number): number | nu
   return f.oldestChunkAt === null ? null : f.oldestChunkAt + cfg.sealIntervalMs
 }
 
-/** When retention next has an archive to delete (never sooner than a second from now), or null when it is off or nothing is stored. */
+/**
+ * When retention next has an archive to delete (never sooner than a second from now), or null when it is off or nothing is stored. A
+ * deletion that is already overdue while R2 is failing waits for the retry time, so an outage cannot wake the object every second (each
+ * wake writes rows, and the Free plan allows 100,000 a day).
+ */
 export function retentionWake(f: Facts, cfg: Config, now: number): number | null {
   if (cfg.retentionDays <= 0 || f.oldestLiveAt === null) return null
-  return Math.max(f.oldestLiveAt + cfg.retentionDays * DAY_MS, now + 1000)
+  const due = f.oldestLiveAt + cfg.retentionDays * DAY_MS
+  if (due <= now && f.retryAt !== null) return Math.max(f.retryAt, now + 1000)
+  return Math.max(due, now + 1000)
 }
 
 /** The one time the Durable Object's alarm should be set to, or null for none. */

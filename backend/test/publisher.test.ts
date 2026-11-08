@@ -21,6 +21,7 @@ const cases: { name: string; facts: Partial<Facts>; config?: typeof cfg; wake: n
   { name: 'retention is never sooner than a second from now', facts: { oldestLiveAt: NOW - 2 * DAY }, wake: NOW + 1000 },
   { name: 'retention off: archives never wake the object', facts: { oldestLiveAt: NOW - 100 * DAY }, config: noRetention, wake: null },
   { name: 'the earlier of publication and retention', facts: { bufferedBytes: 10, oldestChunkAt: NOW, oldestLiveAt: NOW - DAY + 60_000 }, wake: NOW + 60_000 },
+  { name: 'an overdue deletion while R2 is failing waits for the retry time', facts: { retryAt: NOW + 5000, oldestLiveAt: NOW - 2 * DAY }, wake: NOW + 5000 },
   { name: 'retention keeps its time while publication fails', facts: { retryAt: NOW + DAY * 2, bufferedBytes: 10, oldestChunkAt: NOW - 5, oldestLiveAt: NOW - DAY / 2 }, wake: NOW + DAY / 2 },
 ]
 

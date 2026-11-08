@@ -1,5 +1,5 @@
 import type { Line } from '../record.ts'
-import { isoOrUndefined } from '../util.ts'
+import { isoOrUndefined, sha256Hex } from '../util.ts'
 import { type Adapter, type Host, BodyTooLarge, json, preflight, publishable, readBody, requestGeo, submit } from './common.ts'
 import { isObject } from './providers.ts'
 
@@ -106,10 +106,11 @@ const hasException = (e: Record<string, unknown>) => {
 }
 
 /**
- * One Sentry item as a record, or why it is skipped. `null` means dropped on purpose. Only an error or message event has an id (the
- * protocol's `event_id`); the other items have none of their own (a user report carries the id of the event it is about).
+ * One Sentry item as a record, or why it is skipped. `null` means dropped on purpose. An error or message event's id is the protocol's
+ * `event_id`. The other items have none of their own (a user report carries the id of the event it is about), so the caller passes a hash
+ * of the item's exact bytes: a retried envelope carries the same bytes, so its copy is recognised at import instead of counted twice.
  */
-export function translateItem(item: EnvelopeItem, header: Record<string, unknown>): { line: string } | { reason: string } | null {
+export function translateItem(item: EnvelopeItem, header: Record<string, unknown>, itemHash?: string): { line: string } | { reason: string } | null {
   const kind = item.type
   if (kind !== 'event' && kind !== 'user_report' && kind !== 'feedback' && kind !== 'check_in') return null
   let payload: unknown
@@ -127,6 +128,7 @@ export function translateItem(item: EnvelopeItem, header: Record<string, unknown
     id = text(header.event_id) ?? text(payload.event_id)
   } else {
     event = kind === 'check_in' ? 'check_in' : 'user_feedback'
+    id = itemHash ? `sentry-${itemHash}` : undefined
   }
   const timestamp = timestampOf(payload.timestamp)
   const record: Record<string, unknown> = { ...(id ? { id } : {}), type: 'track', event, ...(timestamp ? { timestamp } : {}) }
@@ -162,7 +164,7 @@ async function ingest(req: Request, route: SentryRoute, host: Host): Promise<Res
   if (!principal) return reply(403, { detail: 'invalid or missing sentry_key (use the DSN Slurp prints for this project)' })
   const lines: Line[] = []
   for (const item of envelope.items) {
-    const t = translateItem(item, envelope.header)
+    const t = translateItem(item, envelope.header, item.type === 'event' ? undefined : await sha256Hex(item.payload))
     if (t && 'line' in t) lines.push({ n: lines.length + 1, text: t.line }) // dropped on purpose, or not storable: the SDK has nothing to retry
   }
   // An item that is not a valid record is skipped, never an error: Sentry SDKs would retry a whole envelope.

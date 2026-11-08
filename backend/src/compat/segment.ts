@@ -105,8 +105,10 @@ async function ingest(req: Request, route: SegmentRoute, host: Host): Promise<Re
   }
   let body: unknown
   try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)) } catch { return json(400, { error: 'body must be JSON' }) }
+  // A bad write key answers 400, not 401: Segment SDKs drop a batch only on 400, and analytics-swift resends every queued batch at
+  // every flush after a 401, for ever, so each installed app with a revoked key would keep sending requests to this Worker.
   const principal = await publishable(host, keyFrom(req, body))
-  if (!principal) return json(401, { error: 'invalid write key (use a Slurp publishable key)' })
+  if (!principal) return json(400, { error: 'invalid write key (use a Slurp publishable key)' })
   let messages: unknown[]
   let type: string | undefined
   if (route.kind === 'batch') {
@@ -122,7 +124,8 @@ async function ingest(req: Request, route: SegmentRoute, host: Host): Promise<Re
   })
   // Judge each event on its own: one bad event must not cost the rest of its batch, because Segment SDKs drop a whole 400.
   const result = await submit(host, principal, lines, { invalid: 'skip', geo: requestGeo(req) })
-  if (result instanceof Response) return result
+  // The key is checked again when the events are enqueued; a key revoked in between is refused the same way (400, see above).
+  if (result instanceof Response) return result.status === 401 || result.status === 403 ? json(400, await result.json()) : result
   if (result.accepted === 0 && messages.length > 0) return json(400, { error: 'no valid events in the request', rejected: messages.length })
   return json(200, { success: true, accepted: result.accepted, rejected: messages.length - result.accepted })
 }

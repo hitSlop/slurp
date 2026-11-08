@@ -67,6 +67,7 @@ These are unchanged in shape and authenticated with a publishable key. They feed
 Rules for adapters:
 - **Never invent a client field.** A timestamp the source did not send is omitted, never set to now or `sentAt`. An id is only ever one the protocol supplies, or a deterministic hash when the protocol defines it.
 - Segment and Sentry skip invalid individual records, because their SDKs drop a whole request on 400. Webhooks are single records.
+- The Segment endpoints answer an unknown, revoked or secret write key with **400**, not 401: Segment SDKs drop a batch only on 400, and analytics-swift resends every queued batch at every flush after a 401, indefinitely.
 - Geo is never added to webhooks, because the caller is the provider's server.
 
 ## Archives

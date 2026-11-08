@@ -998,7 +998,7 @@ async function ingest(req, route, host) {
     return json(400, { error: "body must be JSON" });
   }
   const principal = await publishable(host, keyFrom(req, body));
-  if (!principal) return json(401, { error: "invalid write key (use a Slurp publishable key)" });
+  if (!principal) return json(400, { error: "invalid write key (use a Slurp publishable key)" });
   let messages;
   let type;
   if (route.kind === "batch") {
@@ -1013,7 +1013,7 @@ async function ingest(req, route, host) {
     return "reason" in t ? { n: i + 1, error: t.reason } : { n: i + 1, text: t.line };
   });
   const result = await submit(host, principal, lines, { invalid: "skip", geo: requestGeo(req) });
-  if (result instanceof Response) return result;
+  if (result instanceof Response) return result.status === 401 || result.status === 403 ? json(400, await result.json()) : result;
   if (result.accepted === 0 && messages.length > 0) return json(400, { error: "no valid events in the request", rejected: messages.length });
   return json(200, { success: true, accepted: result.accepted, rejected: messages.length - result.accepted });
 }

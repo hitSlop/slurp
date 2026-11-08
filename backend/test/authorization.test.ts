@@ -59,7 +59,7 @@ test('events are accepted only for a publishable key, whichever way it is presen
   assert.equal((await fetch(`${w.base}/v1/events?key=${k.a.pk}&key=${k.b.pk}`, { method: 'POST', body: evt('q3') })).status, 401, 'two keys are refused, not merged')
   // The compatibility endpoints take the same credential: publishable keys only.
   const segment = (key: string | null) => fetch(`${w.base}/v1/t${key ? `?key=${key}` : ''}`, { method: 'POST', body: JSON.stringify({ event: 'x', userId: 'u' }) })
-  assert.equal((await segment(k.a.pk)).status, 200); assert.equal((await segment(k.a.sk)).status, 401); assert.equal((await segment(null)).status, 401)
+  assert.equal((await segment(k.a.pk)).status, 200); assert.equal((await segment(k.a.sk)).status, 400); assert.equal((await segment(null)).status, 400) // Segment SDKs drop a 400; a 401 is retried
   const sentry = (key: string | null) => fetch(`${w.base}/api/1/envelope/${key ? `?sentry_key=${key}` : ''}`, { method: 'POST', body: '{"event_id":"' + 'a'.repeat(32) + '"}\n' })
   assert.equal((await sentry(k.a.pk)).status, 200); assert.equal((await sentry(k.a.sk)).status, 403); assert.equal((await sentry(null)).status, 403)
 })

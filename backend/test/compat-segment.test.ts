@@ -102,9 +102,10 @@ test('only what the protocol supplies is stored: an event without a messageId ha
 test('auth: only publishable keys, never secret ones; unknown keys are refused; malformed bodies are 400', async () => {
   const s = await newProject(w.base, name('segauth'))
   const ev = { type: 'track', messageId: 'a', event: 'e', userId: 'u' }
-  assert.equal((await send('/v1/t', ev, { authorization: basic('slurp_pk_nope') })).status, 401)
-  assert.equal((await send('/v1/t', ev, { authorization: basic(s.sk) })).status, 401, 'secret keys are never accepted as write keys')
-  assert.equal((await send('/v1/t', ev)).status, 401)
+  // A bad write key is a 400, which Segment SDKs drop, rather than a 401, which analytics-swift retries for ever.
+  assert.equal((await send('/v1/t', ev, { authorization: basic('slurp_pk_nope') })).status, 400)
+  assert.equal((await send('/v1/t', ev, { authorization: basic(s.sk) })).status, 400, 'secret keys are never accepted as write keys')
+  assert.equal((await send('/v1/t', ev)).status, 400)
   assert.equal((await send('/v1/t', null, { authorization: basic(s.pk) }, '{not json')).status, 400)
   assert.equal((await send('/v1/b', { writeKey: s.pk, batch: 'x' })).status, 400)
   assert.equal((await fetch(`${w.base}/v1/t`, { method: 'GET' })).status, 405)

@@ -83,7 +83,7 @@ Slurp has no Swift SDK of its own. Use Segment's `analytics-swift` and point it 
 - `identify`, `track` and `screen` are stored with the key's source as `sender`; a `screen` is a `track` named `screen` with `name`, `category` and the properties in `data`;
 - the SDK reads its settings from `GET /v1/projects/<key>/settings` on the Worker, and with both hosts set it makes no request to `segment.com` or `segment.io` (the program fails if it tries);
 - events captured while the Worker is unreachable stay on disk, and a later launch delivers them once flushed;
-- after a `401` (revoked key) the SDK keeps the batches and sends them again at every flush (below).
+- with a revoked or unknown key the Worker answers `400` (not `401`), so analytics-swift sends each batch once and drops it, instead of resending every queued batch at every flush for ever (below).
 
 It does not run on a device or a simulator, and not on tvOS or watchOS. The SDK builds its URLs with `https://`; the test rewrites them to `http` for a local Worker with the SDK's `requestFactory` hook, which a deployed Worker does not need.
 
@@ -93,7 +93,7 @@ It does not run on a device or a simulator, and not on tvOS or watchOS. The SDK 
 | --- | --- | --- |
 | Queue across restarts | Kept on disk by default. Tested: events captured with the Worker unreachable were delivered by the next launch. It does not send at launch by itself: the queue goes out at the next flush (every 30 s by default, or when 20 events are queued) | Kept in `localStorage` (browser) or AsyncStorage (React Native); in Node only with `fileStorage`. Sent again after a relaunch |
 | Flush when the app goes to the background | Yes on iOS (from the SDK's source and docs; not tested here). | Yes: browser page hide, React Native `background` and `inactive` (tested against fakes) |
-| After a `401` or `403` | Tested with a revoked key: reports the error, keeps every batch and sends it again at every flush, so a dead key keeps retrying. Only a `400` drops a batch (from the SDK's source) | Keeps the queue and pauses for this client instance; the next launch tries once |
+| With a revoked key | The Segment endpoints answer a bad write key with `400`, the only status analytics-swift drops a batch on (after a `401` it would resend every queued batch at every flush, for ever). Tested: each batch is sent once, then dropped | Keeps the queue and pauses for this client instance; the next launch tries once |
 | After the key is rotated | Queued events are lost to the new key. The queue folder is named after the write key, and each batch file carries the key it was closed under. Tested: a launch with the new key starts empty and the old batches stay on disk under the old key | A new key for the same source shares the queue and delivers it |
 | `session_id` | None: Segment SDKs send no session, and Slurp does not derive one | Always set; a new session after 30 minutes of inactivity |
 | Event mapping | `track` and `identify` as themselves; `screen` becomes a `track` named `screen`; ids come from Segment's `messageId`; `context.compat` is `segment` | `track` and `identify` as themselves; the React Native `screen()` is a `track` named `screen` too |

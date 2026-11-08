@@ -118,28 +118,27 @@ test('analytics-swift keeps events captured while the Worker is unreachable on d
   assertThree(records(arcs), envelopes(arcs).map(e => e.sender))
 })
 
-test('analytics-swift after a 401 (revoked key): the batches are kept and sent again at every flush; a new key does not rescue the queued ones', async t => {
+test('analytics-swift with a revoked key: the Worker answers 400, so each batch is sent once and dropped instead of retried for ever', async t => {
   const p = await project(t, 'sw_revoked'); if (!p) return
   const keys = (await call(w.base, ADMIN_TOKEN, 'ListKeys', { project: p.id, scope: 'publishable' })).keys
   await call(w.base, ADMIN_TOKEN, 'RevokeKey', { project: p.id, keyId: keys.find(k => k.key === p.pk)!.keyId })
   const storage = dir()
   const s = run(w.base, p.pk, 'flush3', storage)
-  // Observed with analytics-swift 1.10.4: only a 400 drops a batch (Segment's documented rule), so a 401 keeps it and the next flush
-  // tries again. Nothing pauses; the SDK does not learn the key is dead.
-  assert.ok(s.errors.some(e => /401/.test(e)), `the SDK reported the 401: ${s.errors}`)
-  const queued = s.afterEachFlush![0].pending
-  assert.ok(queued >= 1)
-  assert.deepEqual(s.afterEachFlush!.map(f => f.pending), [queued, queued, queued], 'every batch is still queued after every flush')
-  assert.deepEqual(s.afterEachFlush!.map(f => f.batchPosts), [queued, 2 * queued, 3 * queued], 'and each flush sends each of them again')
+  // analytics-swift (1.10.4) drops a batch only on 400 and resends every queued batch at every flush after a 401, for ever. The
+  // Segment endpoints therefore refuse a bad write key with 400: the first flush sends each batch once, and nothing is sent again.
+  assert.ok(s.errors.some(e => /400/.test(e)), `the SDK reported the 400: ${s.errors}`)
+  const sent = s.afterEachFlush![0].batchPosts
+  assert.ok(sent >= 1)
+  assert.deepEqual(s.afterEachFlush!.map(f => f.pending), [0, 0, 0], 'the refused batches are dropped')
+  assert.deepEqual(s.afterEachFlush!.map(f => f.batchPosts), [sent, sent, sent], 'and later flushes send nothing more')
   assert.equal((await archived(w.base, p)).length, 0, 'nothing was stored')
-  // Rotating the key does not rescue them. analytics-swift keeps its queue in a folder named after the write key (the harness keeps
-  // that layout under its storage directory), so a launch with the new key starts empty and the old batches are never sent again;
-  // and each batch file is stamped with the key that was current when it was closed, so they could not be sent under the new one anyway.
+  // A new key for the same source starts with an empty queue: analytics-swift keeps its queue in a folder named after the write key
+  // (the harness keeps that layout under its storage directory). The refused batches were dropped, so nothing is left behind either.
   const fresh = (await call(w.base, ADMIN_TOKEN, 'CreateKey', { project: p.id, scope: 'publishable', source: 'default' })).key.key!
   const rotated = run(w.base, fresh, 'flush3', storage)
   assert.equal(rotated.pendingAtStart, 0, 'the new key does not see the old queue')
   assert.equal(rotated.pendingAtEnd, 0)
-  assert.deepEqual(readdirSync(join(storage, p.pk)).filter(f => f.endsWith('.temp')).length, queued, 'the old batches are still on disk, under the old key\'s folder')
+  assert.equal(readdirSync(join(storage, p.pk)).filter(f => f.endsWith('.temp')).length, 0, 'the refused batches were dropped, not left on disk')
   const arcs = await archived(w.base, p)
   assertThree(records(arcs), envelopes(arcs).map(e => e.sender)) // exactly the three new events
 })

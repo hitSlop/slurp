@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Feedback widget**: a small "Powered by Slurp" link under the form, opening slurp.run in a new tab without telling it which site it came from. `poweredBy: false` hides it. The Send button also keeps its accent colour in dark mode. (`@hitslop/slurp-sdk` 0.1.2)
+
 ## 0.1.1
 
 Run `slurp cloud upgrade` to put the fixes below on an existing Worker (your data and settings are kept).

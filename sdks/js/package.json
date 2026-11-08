@@ -1,6 +1,6 @@
 {
   "name": "@hitslop/slurp-sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Browser and Node event capture for Slurp: durable queue, byte-identical retries and batching. No runtime dependencies.",
   "keywords": [
     "analytics",

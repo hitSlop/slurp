@@ -1,4 +1,4 @@
-export const version = '0.1.1'
+export const version = '0.1.2'
 
 /** UTF-8 for runtimes without TextEncoder (React Native before Hermes shipped it). */
 function utf8Encode(text: string): Uint8Array {

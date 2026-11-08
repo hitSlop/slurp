@@ -37,6 +37,26 @@ test('the button opens a form and a rated message is sent as one feedback event'
   assert.ok(q('form').hasAttribute('hidden'))
 })
 
+test('a small "Powered by Slurp" link sits under the form, opens elsewhere without a referrer, and can be turned off', () => {
+  const { sent, client } = recorder()
+  mountFeedback({ client })
+  const link = q<HTMLAnchorElement>('.powered a')
+  assert.equal(q('.powered').textContent, 'Powered by Slurp')
+  assert.equal(link.getAttribute('href'), 'https://slurp.run/?utm_source=feedback-widget')
+  assert.equal(link.getAttribute('target'), '_blank')
+  assert.match(link.getAttribute('rel')!, /noopener/); assert.match(link.getAttribute('rel')!, /noreferrer/)
+  assert.ok(!link.href.includes('app.example.test'), 'it does not carry the host page address')
+  click(q('.fab')); click(link)
+  assert.deepEqual(sent, [], 'opening the link sends no event')
+  // After sending, the thank-you is above the credit line, which stays.
+  q<HTMLTextAreaElement>('textarea').value = 'Great'
+  click(q('.send'))
+  const children = [...q('.panel').children].map(c => c.className || c.tagName.toLowerCase())
+  assert.ok(children.indexOf('thanks') < children.indexOf('powered'), children.join(','))
+  mountFeedback({ client, poweredBy: false })
+  assert.equal(shadow().querySelector('.powered'), null, 'poweredBy: false removes it')
+})
+
 test('an empty message is refused with a visible reason and nothing is sent', () => {
   const { sent, client } = recorder()
   mountFeedback({ client })

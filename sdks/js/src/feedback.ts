@@ -29,6 +29,8 @@ export interface FeedbackOptions {
   button?: boolean
   /** Where to attach the widget. Default `document.body`. */
   container?: HTMLElement
+  /** Show the small "Powered by Slurp" link under the form. Default true; set false to hide it. */
+  poweredBy?: boolean
 }
 
 export interface FeedbackHandle {
@@ -40,6 +42,8 @@ export interface FeedbackHandle {
 
 const MAX_MESSAGE = 5000
 const HOST_ATTRIBUTE = 'data-slurp-feedback'
+/** The "Powered by" link opens in a new tab without telling slurp.run which site it came from; the utm tag says only that it was this widget. */
+const POWERED_BY_URL = 'https://slurp.run/?utm_source=feedback-widget'
 
 const STYLE = `
 :host { all: initial; }
@@ -62,17 +66,24 @@ textarea:focus-visible, input:focus-visible, button:focus-visible { outline: 2px
 .row button { border-radius: 8px; padding: 8px 14px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid #c9ced6; background: #fff; color: #17191c; }
 .row .send { background: var(--accent); border-color: var(--accent); color: #fff; }
 .error { margin: 8px 0 0; font-size: 13px; color: #b3001f; }
+.powered { margin: 12px 0 0; text-align: center; font-size: 11px; color: #8a919b; }
+.powered a { color: inherit; text-decoration: none; }
+.powered a:hover, .powered a:focus-visible { color: var(--accent); text-decoration: underline; }
 .thanks { margin: 6px 0 2px; font-size: 15px; }
 @media (prefers-color-scheme: dark) {
   :host([data-theme=auto]) .panel { background: #1f2327; color: #f2f4f6; border-color: #3a4048; }
   :host([data-theme=auto]) textarea, :host([data-theme=auto]) input[type=email] { background: #15181b; border-color: #3a4048; }
   :host([data-theme=auto]) .rating button, :host([data-theme=auto]) .row button { background: #15181b; border-color: #3a4048; color: #f2f4f6; }
   :host([data-theme=auto]) .rating legend { color: #9aa1aa; }
+  :host([data-theme=auto]) .row .send { background: var(--accent); border-color: var(--accent); color: #fff; }
+  :host([data-theme=auto]) .powered { color: #7d858f; }
 }
 :host([data-theme=dark]) .panel { background: #1f2327; color: #f2f4f6; border-color: #3a4048; }
 :host([data-theme=dark]) textarea, :host([data-theme=dark]) input[type=email] { background: #15181b; border-color: #3a4048; }
 :host([data-theme=dark]) .rating button, :host([data-theme=dark]) .row button { background: #15181b; border-color: #3a4048; color: #f2f4f6; }
 :host([data-theme=dark]) .rating legend { color: #9aa1aa; }
+:host([data-theme=dark]) .row .send { background: var(--accent); border-color: var(--accent); color: #fff; }
+:host([data-theme=dark]) .powered { color: #7d858f; }
 `
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, attributes: Record<string, string> = {}, text?: string): HTMLElementTagNameMap[K] {
@@ -91,7 +102,7 @@ export function mountFeedback(options: FeedbackOptions = {}): FeedbackHandle {
   if (typeof document === 'undefined') throw new Error('mountFeedback needs a browser document')
   const {
     label = 'Feedback', title = 'Send feedback', placeholder = 'What is working, and what is not?',
-    ratings = true, askEmail = false, position = 'bottom-right', accent = '#e8002a', event = 'feedback', button = true, theme = 'auto',
+    ratings = true, askEmail = false, position = 'bottom-right', accent = '#e8002a', event = 'feedback', button = true, theme = 'auto', poweredBy = true,
   } = options
   const container = options.container ?? document.body
   for (const old of container.querySelectorAll(`[${HOST_ATTRIBUTE}]`)) old.remove() // mounting twice replaces, never stacks
@@ -130,6 +141,12 @@ export function mountFeedback(options: FeedbackOptions = {}): FeedbackHandle {
   row.append(cancel, send)
   form.append(...[ratingGroup, message, email, error, row].filter((node): node is HTMLElement => node !== undefined))
   panel.append(heading, form)
+  let credit: HTMLElement | undefined
+  if (poweredBy) {
+    credit = element('p', { class: 'powered' })
+    credit.append('Powered by ', element('a', { href: POWERED_BY_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Slurp'))
+    panel.append(credit)
+  }
   root.append(...(button ? [fab, panel] : [panel]))
 
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -190,7 +207,7 @@ export function mountFeedback(options: FeedbackOptions = {}): FeedbackHandle {
     }
     form.setAttribute('hidden', '')
     thanks = element('p', { class: 'thanks', role: 'status' }, 'Thank you! We read every message.')
-    panel.appendChild(thanks)
+    panel.insertBefore(thanks, credit ?? null) // the thank-you sits above the credit line
     timer = setTimeout(() => { show(false); reset() }, 2500)
   })
 

@@ -158,6 +158,54 @@ fn duplicate_events(w: &Workspace) -> Result<Option<Value>> {
     )))
 }
 
+/// What the import set aside (`_slurp.problems`): counts per kind and the latest rows.
+fn problems(w: &Workspace) -> Result<Value> {
+    let counts = w.execute(
+        "SELECT kind, count(*)::BIGINT AS n FROM _slurp.problems GROUP BY kind ORDER BY kind",
+        true,
+    )?;
+    let mut by_kind = serde_json::Map::new();
+    for kind in ["conflict", "invalid", "gap"] {
+        by_kind.insert(kind.into(), json!(0));
+    }
+    for row in counts.as_array().into_iter().flatten() {
+        if let Some(kind) = row["kind"].as_str() {
+            by_kind.insert(kind.into(), json!(count(row, "n")));
+        }
+    }
+    let latest = w.execute(
+        "SELECT kind, sender, id, archive_seq, line, detail, seen_at FROM _slurp.problems ORDER BY seen_at DESC, archive_seq DESC, line DESC LIMIT 10",
+        true,
+    )?;
+    Ok(json!({"counts": by_kind, "latest": latest}))
+}
+
+/// Events, lines or archives the import set aside, so no sync stopped on them but a person should look.
+fn import_problems(summary: &Value) -> Option<Value> {
+    let counts = &summary["counts"];
+    let (conflicts, invalid, gaps) = (
+        count(counts, "conflict"),
+        count(counts, "invalid"),
+        count(counts, "gap"),
+    );
+    if conflicts + invalid + gaps == 0 {
+        return None;
+    }
+    Some(finding(
+        "import_problems",
+        "warning",
+        format!(
+            "{} set aside while importing",
+            plural(conflicts + invalid + gaps, "item was", "items were")
+        ),
+        format!(
+            "{conflicts} events reused an id (per sender) with different content, {invalid} lines had the wrong shape, and {gaps} runs of archives were deleted by retention before they were read. None of them are in `events`; the first copy of a reused id is kept."
+        ),
+        summary.clone(),
+        "Read them with SELECT * FROM _slurp.problems. A conflict means two senders' retries or two different events share one id: fix the sender that reuses ids. Nothing was changed.",
+    ))
+}
+
 /// Run every check. The result lists findings only; an empty list means nothing needs attention.
 ///
 /// # Errors
@@ -176,5 +224,9 @@ pub fn run(w: &Workspace) -> Result<Value> {
     ] {
         findings.extend(check(w)?);
     }
-    Ok(json!({"events": events, "checks": 4, "ok": findings.is_empty(), "findings": findings}))
+    let problems = problems(w)?;
+    findings.extend(import_problems(&problems));
+    Ok(
+        json!({"events": events, "checks": 5, "ok": findings.is_empty(), "findings": findings, "problems": problems}),
+    )
 }

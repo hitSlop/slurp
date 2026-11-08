@@ -68,56 +68,15 @@ fn noun(count: u64, singular: &str, plural: &str) -> String {
     format!("{count} {}", if count == 1 { singular } else { plural })
 }
 
+/// Events are accepted durably first and published to an archive later; say when they can be read.
 fn publication(value: &Value, out: &mut dyn Write) -> io::Result<()> {
-    let Some(status) = value.get("publication").filter(|status| status.is_object()) else {
-        return writeln!(
+    if value["pending"] == true {
+        writeln!(
             out,
-            "Events become available to sync after your Worker next seals an archive (about every 10 minutes by default); exact timing is unavailable."
-        );
-    };
-    match status["state"].as_str() {
-        Some("idle") => writeln!(out, "No pending batch reported by the server."),
-        Some("publishing") => writeln!(
-            out,
-            "The next batch is being prepared. Retry slurp sync shortly."
-        ),
-        Some("blocked") => writeln!(
-            out,
-            "Publication is delayed and needs service attention. Previously downloaded events remain available locally."
-        ),
-        Some(state @ ("pending" | "retrying")) => {
-            let seconds = status["estimatedAt"]
-                .as_str()
-                .zip(status["observedAt"].as_str())
-                .and_then(|(at, observed)| {
-                    Some(
-                        (chrono::DateTime::parse_from_rfc3339(at).ok()?
-                            - chrono::DateTime::parse_from_rfc3339(observed).ok()?)
-                        .num_seconds()
-                        .max(0),
-                    )
-                });
-            let subject = if state == "retrying" {
-                "Publication retry"
-            } else {
-                "Next batch"
-            };
-            match seconds {
-                Some(0..=59) => {
-                    writeln!(out, "{subject} is due shortly; publishing may take longer.")
-                }
-                Some(seconds) => writeln!(
-                    out,
-                    "{subject} expected in about {} min; this is an estimate.",
-                    (seconds + 59) / 60
-                ),
-                None => writeln!(
-                    out,
-                    "The server has a pending batch; its publication time is unavailable."
-                ),
-            }
-        }
-        _ => writeln!(out, "Publication timing is unavailable."),
+            "The Worker has accepted events that are not published yet. They are available to sync after its next archive (about every 10 minutes by default); slurp sync --now publishes immediately (admin token)."
+        )
+    } else {
+        Ok(())
     }
 }
 
@@ -130,7 +89,7 @@ pub fn render(kind: Kind, value: &Value, width: usize, out: &mut dyn Write) -> i
             if findings.is_empty() {
                 return writeln!(
                     out,
-                    "No problems found in {}. Checked event spelling, clocks, repeated events and unusually busy ids.",
+                    "No problems found in {}. Checked event spelling, clocks, repeated events, unusually busy ids and import problems.",
                     noun(events, "event", "events")
                 );
             }
@@ -160,7 +119,10 @@ pub fn render(kind: Kind, value: &Value, width: usize, out: &mut dyn Write) -> i
         Kind::Send => {
             let count = value["events"].as_u64().unwrap_or(1);
             writeln!(out, "Accepted {}.", noun(count, "event", "events"))?;
-            publication(value, out)
+            writeln!(
+                out,
+                "They can be synced after the Worker next publishes an archive (about every 10 minutes by default); slurp sync --now publishes immediately (admin token)."
+            )
         }
         Kind::Sync => {
             let downloaded = value["downloaded"].as_u64().unwrap_or(0);
@@ -177,6 +139,34 @@ pub fn render(kind: Kind, value: &Value, width: usize, out: &mut dyn Write) -> i
                         "Skipped {} already stored locally.",
                         noun(n, "duplicate", "duplicates")
                     )?;
+                }
+                for (key, singular, plural, advice) in [
+                    (
+                        "conflicts",
+                        "conflict",
+                        "conflicts",
+                        "events whose id was already stored with different content were set aside",
+                    ),
+                    (
+                        "invalid",
+                        "invalid line",
+                        "invalid lines",
+                        "lines of the wrong shape were set aside",
+                    ),
+                    (
+                        "gaps",
+                        "gap",
+                        "gaps",
+                        "archives were deleted by retention before they were read",
+                    ),
+                ] {
+                    if let Some(n @ 1..) = value[key].as_u64() {
+                        writeln!(
+                            out,
+                            "{}: {advice}. See slurp health.",
+                            noun(n, singular, plural)
+                        )?;
+                    }
                 }
                 writeln!(
                     out,
@@ -439,50 +429,33 @@ mod tests {
     }
 
     #[test]
-    fn eta_uses_server_clock_and_sync_distinguishes_empty_from_caught_up() {
-        let pending = json!({"state":"pending","observedAt":"2026-11-06T12:00:00Z","estimatedAt":"2026-11-06T12:42:00Z","intervalSeconds":3600});
-        let out = text(
-            Kind::Send,
-            json!({"accepted":true,"events":1,"publication":pending}),
-            80,
-        );
-        assert!(out.contains("Accepted 1 event.") && out.contains("about 42 min"));
-        assert!(!out.contains("published: false"));
+    fn sync_distinguishes_empty_from_caught_up_and_reports_what_was_set_aside() {
+        let out = text(Kind::Send, json!({"accepted":true,"events":1}), 80);
+        assert!(out.contains("Accepted 1 event.") && out.contains("sync --now"));
         let out = text(
             Kind::Sync,
-            json!({"downloaded":0,"has_published_archives":false,"publication":null}),
+            json!({"downloaded":0,"has_published_archives":false,"pending":false}),
             80,
         );
-        assert!(
-            out.contains("No published batches yet") && out.contains("exact timing is unavailable")
-        );
+        assert!(out.contains("No published batches yet"));
         let out = text(
             Kind::Sync,
-            json!({"downloaded":0,"has_published_archives":true,"publication":{"state":"idle"}}),
+            json!({"downloaded":0,"has_published_archives":true,"pending":true}),
             80,
         );
-        assert!(out.contains("Already caught up") && out.contains("No pending batch"));
+        assert!(out.contains("Already caught up") && out.contains("not published yet"));
         let out = text(
             Kind::Sync,
-            json!({"downloaded":1,"imported":6,"duplicates":2,"publication":{"state":"publishing"}}),
+            json!({"downloaded":1,"imported":6,"duplicates":2,"conflicts":1,"invalid":3,"gaps":1,"pending":false}),
             80,
         );
         assert!(
             out.contains("Imported 6 events from 1 batch")
                 && out.contains("2 duplicates")
-                && out.contains("being prepared")
+                && out.contains("1 conflict:")
+                && out.contains("3 invalid lines:")
+                && out.contains("1 gap:")
         );
-        for (state, message) in [
-            ("retrying", "Publication retry"),
-            ("blocked", "service attention"),
-        ] {
-            let out = text(
-                Kind::Send,
-                json!({"publication":{"state":state,"observedAt":"2026-11-06T12:00:00Z","estimatedAt":"2026-11-06T11:59:00Z"}}),
-                80,
-            );
-            assert!(out.contains(message) && !out.contains("-1"));
-        }
     }
 
     #[test]

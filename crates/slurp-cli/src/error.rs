@@ -10,8 +10,6 @@ pub enum ErrorCode {
     QueryTimeout,
     Cancelled,
     DeliveryConflict,
-    ConflictingEventId,
-    RetentionGap,
     Busy,
     WorkspaceUnavailable,
     StorageUnavailable,

@@ -65,15 +65,16 @@ async fn an_archive_is_fetched_with_the_bearer_token_and_verified() {
         .await
         .unwrap();
     assert_eq!(std::fs::read(&dest).unwrap(), body);
-    let seen = seen.lock().unwrap();
-    assert_eq!(
-        seen[0].0,
-        "GET /v1/projects/prj_0123456789abcdef/archives/7 HTTP/1.1"
-    );
-    assert_eq!(seen[0].1, "Bearer secret-token");
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen[0].0,
+            "GET /v1/projects/prj_0123456789abcdef/archives/7 HTTP/1.1"
+        );
+        assert_eq!(seen[0].1, "Bearer secret-token");
+    }
 
     // The same bytes under a different digest, or a different size, are refused.
-    drop(seen);
     let mut wrong = info(7, &body);
     wrong.sha256 = "0".repeat(64);
     let error = download_verified(&remote, &wrong, &dest).await.unwrap_err();

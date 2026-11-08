@@ -1,6 +1,10 @@
 -- Slurp helpers: small macros and views for product analytics, installed into every project database.
 -- Slurp re-applies this file whenever it changes, so do not edit it here; copy what you need into your own SQL.
 
+-- The events table: one row per (sender, id). `sender` is the source of the key that sent it, `geo` (JSON: city, country, region,
+-- when the Worker has GEO on) is its own column, and `raw` is the client's record as sent. Lines the import set aside are in
+-- _slurp.problems.   SELECT geo->>'country' AS country, count(*) FROM events GROUP BY 1
+
 -- Numbers
 CREATE OR REPLACE MACRO safe_num(x) AS try_cast(x AS DOUBLE);
 CREATE OR REPLACE MACRO pct(part, total) AS 100.0 * safe_num(part) / nullif(safe_num(total), 0);

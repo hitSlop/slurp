@@ -143,3 +143,16 @@ The workflow typechecks, builds and tests the SDK first. It refuses to publish a
 ## First supported baseline
 
 0.2.0 is the first supported release. Existing files require explicit format versions; unversioned files and flat credential maps require fresh setup. No legacy conversion or missing-version fallback is supported. At publication, capture these baseline fixtures from the published artifacts: DuckDB data (events, receipts, problems, and a user table), ProjectDO and RegistryDO SQL, two archives, and SDK saved state. Store them under `fixtures/releases/0.2.0/`. Every future migration must test these fixtures.
+
+## CI fast path and SDK visibility
+
+Changes entirely under `apps/site/` run the web checks while retaining the existing
+Rust, backend and Swift check names. Other changes and manual check runs execute the
+full suite. Missing history or uncertain change detection also runs the full suite.
+Run the check workflow manually before tagging a release.
+
+SDK publication runs every unit test, including feedback. The gateway integration
+test remains in full CI. After npm accepts a publication, the workflow waits up to
+five minutes for that exact version to become installable. If the wait fails, check
+npm before taking further action: the version may still become available. Do not
+republish or bump a version merely because registry processing was slow.

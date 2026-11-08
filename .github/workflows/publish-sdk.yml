@@ -41,7 +41,7 @@ jobs:
         run: |
           pnpm --filter @hitslop/slurp-sdk typecheck
           pnpm --filter @hitslop/slurp-sdk build
-          (cd sdks/js && node --test --test-force-exit --test-timeout=150000 test/capture.test.ts test/react-native.test.ts)
+          pnpm --filter @hitslop/slurp-sdk test:unit
           if [ "$PACKAGE" = react-native ]; then
             pnpm --filter @hitslop/slurp-react-native typecheck
             pnpm --filter @hitslop/slurp-react-native build
@@ -70,3 +70,6 @@ jobs:
         run: pnpm publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Wait for the accepted version to become installable
+        working-directory: sdks/${{ inputs.package }}
+        run: node ../../scripts/ci/wait-for-npm.mjs

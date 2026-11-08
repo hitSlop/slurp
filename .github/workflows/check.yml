@@ -14,19 +14,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.classify.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: classify
+        run: node scripts/ci/changes.mjs
+
   rust:
     timeout-minutes: 45
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Site-only change
+        if: needs.changes.outputs.full == 'false'
+        run: echo "Site-only change; web checks validate this diff."
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.full != 'false'
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.full != 'false'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.full != 'false'
       - name: Install test DuckDB
+        if: needs.changes.outputs.full != 'false'
         run: |
           # The same digests `slurp setup` pins (crates/slurp-cli/src/setup.rs).
           if [ "$RUNNER_OS" = macOS ]; then
@@ -41,28 +61,43 @@ jobs:
           echo "SLURP_TEST_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
           echo "SLURP_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
       - run: cargo fmt --all --check
+        if: needs.changes.outputs.full != 'false'
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        if: needs.changes.outputs.full != 'false'
       # Covers every crate, including the check that backend/src/api.gen.ts is the current export of crates/slurp-client/src/api.rs.
       # CI is set here, so a native test that cannot find DuckDB fails instead of skipping.
       - run: cargo test --workspace
+        if: needs.changes.outputs.full != 'false'
       - run: cargo doc --workspace --no-deps
+        if: needs.changes.outputs.full != 'false'
 
   backend:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Site-only change
+        if: needs.changes.outputs.full == 'false'
+        run: echo "Site-only change; web checks validate this diff."
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.full != 'false'
       - uses: actions/setup-node@v4
+        if: needs.changes.outputs.full != 'false'
         with:
           node-version: 24
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.full != 'false'
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.full != 'false'
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.full != 'false'
         with:
           python-version: "3.12"
       - name: Install test DuckDB
+        if: needs.changes.outputs.full != 'false'
         run: |
           curl -fL "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz" -o "$RUNNER_TEMP/duckdb.tar.gz"
           echo "c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc  $RUNNER_TEMP/duckdb.tar.gz" | shasum -a 256 -c -
@@ -70,20 +105,27 @@ jobs:
           tar -xzf "$RUNNER_TEMP/duckdb.tar.gz" -C "$RUNNER_TEMP/duckdb-bin"
           echo "SLURP_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
       - run: npm ci
+        if: needs.changes.outputs.full != 'false'
         working-directory: backend
       - name: Shared tools have one pinned version across the repo
+        if: needs.changes.outputs.full != 'false'
         run: node scripts/ci/pins.mjs
       - name: The Worker embedded in the CLI is current
+        if: needs.changes.outputs.full != 'false'
         run: node scripts/bundle.mjs --check
         working-directory: backend
       - run: cargo build -p slurp-cli
+        if: needs.changes.outputs.full != 'false'
       - name: The Linux binary needs no D-Bus library (release binaries must start on minimal servers and containers)
+        if: needs.changes.outputs.full != 'false'
         run: |
           ldd target/debug/slurp
           ! ldd target/debug/slurp | grep -i dbus
       - run: npm run typecheck
+        if: needs.changes.outputs.full != 'false'
         working-directory: backend
       - name: Worker tests (workerd via Vitest), then the real CLI and Python SDKs against wrangler dev
+        if: needs.changes.outputs.full != 'false'
         run: npm test
         working-directory: backend
         timeout-minutes: 10
@@ -92,12 +134,16 @@ jobs:
           # Here the real Python SDK test must run, not skip.
           SLURP_COMPAT_REQUIRED: "1"
       - uses: pnpm/action-setup@v4
+        if: needs.changes.outputs.full != 'false'
       - run: pnpm install --frozen-lockfile
+        if: needs.changes.outputs.full != 'false'
       - name: SDK tests against the Worker
-        run: node --test --test-force-exit --test-timeout=150000 test/*.test.ts
+        if: needs.changes.outputs.full != 'false'
+        run: pnpm test
         working-directory: sdks/js
         timeout-minutes: 6
       - name: React Native package (needs the built core)
+        if: needs.changes.outputs.full != 'false'
         run: |
           pnpm --filter @hitslop/slurp-sdk build
           pnpm --filter @hitslop/slurp-react-native typecheck
@@ -107,20 +153,30 @@ jobs:
   # Slurp has no Swift SDK: iOS and macOS apps use Segment's analytics-swift pointed at the Worker. This runs the real SDK, pinned in
   # sdks/compat/swift/Package.resolved, against a real Worker. SLURP_COMPAT_SWIFT_REQUIRED makes "cannot build" a failure, not a skip.
   compat-swift:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
+      - name: Site-only change
+        if: needs.changes.outputs.full == 'false'
+        run: echo "Site-only change; web checks validate this diff."
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.full != 'false'
       - uses: actions/setup-node@v4
+        if: needs.changes.outputs.full != 'false'
         with:
           node-version: 24
       - uses: actions/cache@v4
+        if: needs.changes.outputs.full != 'false'
         with:
           path: sdks/compat/swift/.build
           key: swift-build-${{ runner.os }}-${{ hashFiles('sdks/compat/swift/Package.resolved', 'sdks/compat/swift/Package.swift', 'sdks/compat/swift/Sources/**') }}
       - run: npm ci
+        if: needs.changes.outputs.full != 'false'
         working-directory: backend
       - name: analytics-swift against the Worker
+        if: needs.changes.outputs.full != 'false'
         run: node --test --test-concurrency=1 --test-force-exit --test-timeout=600000 --experimental-strip-types test/http/compat-swift.test.ts
         working-directory: backend
         timeout-minutes: 25
@@ -157,4 +213,4 @@ jobs:
       - name: The README badges match the site
         run: node apps/site/scripts/readme-badges.mjs --check
       - name: CI policy scripts
-        run: node --test scripts/ci/attribution.test.mjs
+        run: node --test scripts/ci/*.test.mjs

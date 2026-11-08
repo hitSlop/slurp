@@ -6,6 +6,7 @@ fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
     let exe = common::duckdb()?;
     let temp = tempfile::tempdir().expect("test directory");
     let w = Workspace::init(
+        &(temp.path()).join("private-home"),
         temp.path(),
         "http://localhost:8080".into(),
         "prj_test".into(),
@@ -91,9 +92,10 @@ fn a_replayed_archive_changes_nothing_and_a_changed_one_is_refused() {
         w.import(1, "changed", 1, f.path()).is_err(),
         "a receipt for the same sequence with another digest is an integrity failure"
     );
-    Workspace::load(temp.path()).expect("matching identity");
+    load(temp.path()).expect("matching identity");
     assert!(
         Workspace::init(
+            &(temp.path()).join("private-home"),
             temp.path(),
             "http://localhost:8080".into(),
             "prj_other".into(),
@@ -602,7 +604,7 @@ fn truncation_parameters_and_cancelled_transaction() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     cancel.cancel();
     assert!(worker.join().expect("query thread").is_err());
-    let reopened = Workspace::load(temp.path()).expect("open after killed transaction");
+    let reopened = load(temp.path()).expect("open after killed transaction");
     assert_eq!(
         reopened
             .execute("SELECT count(*) AS n FROM events", true)
@@ -610,7 +612,7 @@ fn truncation_parameters_and_cancelled_transaction() {
         json!([{"n":0}])
     );
     std::fs::remove_file(&reopened.database).expect("remove database");
-    assert!(Workspace::load(temp.path()).is_err());
+    assert!(load(temp.path()).is_err());
     assert!(
         !reopened.database.exists(),
         "loading must not replace missing database"
@@ -664,7 +666,7 @@ fn behavioral_retention_runs_in_queries_and_reports() {
     let report = temp.path().join("r.md");
     std::fs::write(&report, "---\nextensions: [behavioral]\n---\n# R\n\n```sql n\nSELECT behavioral_version() IS NOT NULL AS ok\n```\n\n```metric\nquery: n\nfield: ok\nlabel: Loaded\n```\n").unwrap();
     // The plain workspace does not have the extension loaded; the report loads it itself.
-    let plain = Workspace::load(temp.path()).expect("reload");
+    let plain = load(temp.path()).expect("reload");
     slurp_app::report::build(
         &plain,
         &report,
@@ -976,7 +978,7 @@ fn an_older_database_is_backed_up_and_migrated() {
         V1_ALREADY_APPLIED,
         "CREATE TABLE _slurp.extra(x INTEGER); INSERT INTO _slurp.extra VALUES(7);",
     ];
-    let loaded = Workspace::load_with_migrations(temp.path(), &steps).expect("migrate");
+    let loaded = load_with_migrations(temp.path(), &steps).expect("migrate");
     assert_eq!(schema(&loaded), json!(2));
     assert_eq!(
         loaded
@@ -1031,7 +1033,7 @@ fn an_older_database_is_backed_up_and_migrated() {
         "the backup is from before the migration"
     );
     // Loading again at the latest schema changes nothing.
-    Workspace::load_with_migrations(temp.path(), &steps).expect("load again");
+    load_with_migrations(temp.path(), &steps).expect("load again");
     assert_eq!(backups(&w).len(), 1);
 }
 
@@ -1045,8 +1047,7 @@ fn a_failing_step_leaves_the_database_unchanged_and_a_retry_succeeds() {
         "CREATE TABLE _slurp.extra(x INTEGER)",
         "SELECT error('boom')",
     ];
-    let error =
-        Workspace::load_with_migrations(temp.path(), &failing).expect_err("the third step fails");
+    let error = load_with_migrations(temp.path(), &failing).expect_err("the third step fails");
     assert!(format!("{error:#}").contains("boom"), "{error:#}");
     assert_eq!(schema(&w), json!(1), "the schema is where it was");
     assert!(
@@ -1068,7 +1069,7 @@ fn a_failing_step_leaves_the_database_unchanged_and_a_retry_succeeds() {
         "CREATE TABLE _slurp.extra(x INTEGER)",
         "CREATE TABLE _slurp.more(y INTEGER)",
     ];
-    let loaded = Workspace::load_with_migrations(temp.path(), &fixed).expect("retry");
+    let loaded = load_with_migrations(temp.path(), &fixed).expect("retry");
     assert_eq!(schema(&loaded), json!(3));
     assert!(loaded.execute("SELECT * FROM _slurp.more", true).is_ok());
     assert_eq!(backups(&w).len(), 1, "only the successful backup remains");
@@ -1111,8 +1112,10 @@ sys.exit(p.returncode)
         duckdb: wrapper,
         ..w.clone()
     };
+    slurp_app::system::set_engine(&temp.path().join("private-home"), &wrapped.duckdb)
+        .expect("test engine");
     std::fs::write(
-        temp.path().join(".slurp/project.toml"),
+        temp.path().join("slurp/slurp.toml"),
         toml::to_string(&wrapped).expect("binding"),
     )
     .expect("write");
@@ -1122,7 +1125,7 @@ sys.exit(p.returncode)
     ];
     let outcomes: Vec<_> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..2)
-            .map(|_| scope.spawn(|| Workspace::load_with_migrations(temp.path(), &steps)))
+            .map(|_| scope.spawn(|| load_with_migrations(temp.path(), &steps)))
             .collect();
         handles
             .into_iter()
@@ -1149,7 +1152,7 @@ fn a_database_from_a_newer_slurp_is_refused() {
     };
     w.execute("UPDATE _slurp.meta SET schema = 99", false)
         .expect("pretend");
-    let error = Workspace::load(temp.path()).expect_err("newer");
+    let error = load(temp.path()).expect_err("newer");
     assert!(
         format!("{error:#}").contains("made by a newer Slurp; upgrade the CLI"),
         "{error:#}"
@@ -1168,12 +1171,12 @@ fn a_slurp_0_1_database_is_refused_with_a_message() {
         false,
     )
     .expect("make it look like 0.1");
-    let error = format!("{:#}", Workspace::load(temp.path()).expect_err("0.1"));
+    let error = format!("{:#}", load(temp.path()).expect_err("0.1"));
     assert!(error.contains("not a Slurp database"), "{error}");
     assert!(error.contains("events.duckdb"), "names the file: {error}");
     w.execute("DROP TABLE _slurp.identity", false)
         .expect("drop");
-    let error = format!("{:#}", Workspace::load(temp.path()).expect_err("neither"));
+    let error = format!("{:#}", load(temp.path()).expect_err("neither"));
     assert!(error.contains("not a Slurp database"), "{error}");
 }
 
@@ -1219,12 +1222,14 @@ fn migration_backup_alias_does_not_collide_with_database_name() {
         let dest = w.database.with_file_name(name);
         std::fs::rename(&w.database, &dest).expect("rename");
         w.database = dest;
+        slurp_app::system::register(&temp.path().join("private-home"), temp.path(), &w)
+            .expect("updated registration");
         std::fs::write(
-            temp.path().join(".slurp/project.toml"),
+            temp.path().join("slurp/slurp.toml"),
             toml::to_string(&w).expect("binding"),
         )
         .expect("write");
-        Workspace::load_with_migrations(
+        load_with_migrations(
             temp.path(),
             &[V1_ALREADY_APPLIED, "CREATE TABLE extra(x INTEGER)"],
         )
@@ -1240,12 +1245,11 @@ fn an_error_after_commit_is_not_reported_as_success_and_keeps_the_backup() {
     };
     // The child commits successfully, but reading its oversized output fails.
     let steps = [V1_ALREADY_APPLIED, "SELECT repeat('x', 34000000)"];
-    let error = Workspace::load_with_migrations(temp.path(), &steps).expect_err("output failure");
+    let error = load_with_migrations(temp.path(), &steps).expect_err("output failure");
     assert!(format!("{error:#}").contains("query output exceeds"));
     assert_eq!(schema(&w), json!(2));
     assert_eq!(backups(&w).len(), 1);
-    Workspace::load_with_migrations(temp.path(), &steps)
-        .expect("normal retry verifies target schema");
+    load_with_migrations(temp.path(), &steps).expect("normal retry verifies target schema");
     assert_eq!(backups(&w).len(), 1);
 }
 
@@ -1276,12 +1280,14 @@ sys.exit(p.returncode)
         duckdb: wrapper,
         ..w.clone()
     };
+    slurp_app::system::set_engine(&temp.path().join("private-home"), &wrapped.duckdb)
+        .expect("test engine");
     std::fs::write(
-        temp.path().join(".slurp/project.toml"),
+        temp.path().join("slurp/slurp.toml"),
         toml::to_string(&wrapped).unwrap(),
     )
     .unwrap();
-    let error = Workspace::load_with_migrations(
+    let error = load_with_migrations(
         temp.path(),
         &[
             V1_ALREADY_APPLIED,
@@ -1294,4 +1300,11 @@ sys.exit(p.returncode)
     assert_eq!(backups(&w).len(), 1);
     std::fs::rename(moved, &w.database).unwrap();
     assert_eq!(schema(&w), json!(1));
+}
+
+fn load(root: &std::path::Path) -> anyhow::Result<Workspace> {
+    Workspace::load_at(&root.join("private-home"), root)
+}
+fn load_with_migrations(root: &std::path::Path, steps: &[&str]) -> anyhow::Result<Workspace> {
+    Workspace::load_with_migrations_at(&root.join("private-home"), root, steps)
 }

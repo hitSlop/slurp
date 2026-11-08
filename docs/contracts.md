@@ -122,7 +122,7 @@ ArchiveInfo  { seq: u64, size: u64, sha256, events: u64, createdAt, format: u32 
 | `RevokeKey` | admin | `{ project, keyId }` | `{ key }` |
 | `ConnectWebhook` | admin | `{ project, provider, secret? }` | `Webhook` |
 | `ListArchives` | admin, or that project's secret key | `{ project, after?: u64, limit?: 1..5000 (default 1000) }` | `{ coverage: Coverage, archives: ArchiveInfo[], next?: u64, gap?: { from: u64, to: u64 } }` |
-| `Publish` | admin | `{ project }` | `{ coverage: Coverage }` |
+| `Publish` | admin or project secret | `{ project }` | `{ coverage: Coverage }` |
 
 Method notes:
 - **`ConnectWebhook`** is idempotent.
@@ -213,7 +213,7 @@ _slurp.problems(kind 'conflict'|'invalid'|'gap', sender, id, archive_seq, line, 
 
 Sync output: `{downloaded, imported, duplicates, conflicts, invalid, gaps, checkpoint, …}`. `slurp health` reports the problems.
 
-`slurp sync --now` calls `Publish` (admin only) and then syncs. A secret key gets a clear "needs the admin token" error.
+`slurp sync --now` calls `Publish` with an admin token or that project’s secret key, then syncs.
 
 The CLI and MCP send with source keys from `SourceKey`. `slurp send` and `identify` use `cli`; the MCP send tools use `mcp`. `slurp init` uses `default`.
 
@@ -272,3 +272,5 @@ Rules for changing any of them:
 4. **Keep ingestion compatible.** Cached pages and shipped apps must keep sending after an upgrade. Ingest endpoints, webhook URLs and key formats only gain features.
 5. **Allow mixed code versions.** An object can briefly run old code after deployment. Release N adds support; a later release adopts it. Same-release adoption needs a fallback for an object that lacks support. Removal must also tolerate skipped releases.
 6. **Start clean.** 0.2.0 is the first supported release. Files need explicit versions; unsupported layouts are refused with recovery instructions. Credentials use `{ "version": 1, "entries": { "<account>": "<token>" } }`. Settings and cloud receipts start at version 1; TOML writes `version = 1`.
+
+Project secret keys may publish their own project with `Publish`; other projects and management operations remain forbidden. Saved project credentials are keyed by backend and stable project ID. Resolution is environment token, saved project key, then saved admin token.

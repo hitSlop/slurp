@@ -7,7 +7,9 @@ use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RemoteError {
-    #[error("unauthenticated: a valid read key or admin token is required (slurp connect)")]
+    #[error(
+        "unauthenticated: key rejected or revoked; ask an admin for a new project secret and run slurp init --token-stdin, or reconnect with the admin token (slurp connect)"
+    )]
     Unauthenticated,
     #[error("permission_denied: project read access required")]
     PermissionDenied,
@@ -249,7 +251,7 @@ mod tests {
         let cases = [
             (
                 RemoteError::Unauthenticated,
-                "unauthenticated: a valid read key or admin token is required (slurp connect)",
+                "unauthenticated: key rejected or revoked; ask an admin for a new project secret and run slurp init --token-stdin, or reconnect with the admin token (slurp connect)",
             ),
             (
                 RemoteError::PermissionDenied,

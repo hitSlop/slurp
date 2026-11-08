@@ -18,6 +18,7 @@ fn seeded() -> Option<(tempfile::TempDir, Workspace)> {
     let exe = common::duckdb()?;
     let temp = tempfile::tempdir().expect("test directory");
     let w = Workspace::init(
+        &(temp.path()).join("private-home"),
         temp.path(),
         "http://localhost:8080".into(),
         "prj_test".into(),
@@ -61,7 +62,7 @@ impl Client {
             .arg("--project")
             .arg(root)
             .args(extra)
-            .env_remove("SLURP_HOME")
+            .env("SLURP_HOME", root.join("private-home"))
             .env_remove("SLURP_TOKEN")
             .env("HOME", root)
             .stdin(Stdio::piped())
@@ -317,7 +318,7 @@ fn malformed_requests_get_protocol_errors_and_calls_before_the_handshake_are_ref
         .arg("mcp")
         .arg("--project")
         .arg(temp.path())
-        .env_remove("SLURP_HOME")
+        .env("SLURP_HOME", temp.path().join("private-home"))
         .env("HOME", temp.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

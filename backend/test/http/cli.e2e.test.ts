@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,14 +134,14 @@ test('one project, many senders: init is idempotent, setup changes nothing, and 
   assert.equal(run(['send', 'late_web', '--user-id', 'u2', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: web }).json.accepted, true)
 })
 
-test('sync --now publishes what is buffered first; a secret key can sync but is told it needs the admin token to publish', { skip }, async () => {
+test('sync --now publishes what is buffered first; a secret key can publish and sync its own project', { skip }, async () => {
   const project = run(['status', '--project', ws, '--json']).json.project as string
   const secret = (await call(w.base, ADMIN_TOKEN, 'CreateKey', { project, scope: 'secret', name: 'reader' })).key.key!
   assert.equal(run(['send', 'buffered', '--user-id', 'u5', '--project', ws, '--json']).json.accepted, true)
   const plain = run(['sync', '--project', ws, '--json'], { SLURP_TOKEN: secret })
   assert.equal(plain.status, 0, plain.text); assert.equal(plain.json.published_now, false); assert.equal(plain.json.pending, true, 'the buffered event is not readable yet')
   const refused = run(['sync', '--now', '--project', ws, '--json'], { SLURP_TOKEN: secret })
-  assert.notEqual(refused.status, 0); assert.match(refused.text, /needs the admin token/)
+  assert.equal(refused.status, 0, refused.text); assert.equal(refused.json.published_now, true)
   const now = run(['sync', '--now', '--project', ws, '--json'])
   assert.equal(now.status, 0, now.text); assert.equal(now.json.published_now, true); assert.equal(now.json.pending, false)
   assert.equal(run(['sql', "SELECT count(*) FROM events WHERE event = 'buffered'", '--project', ws, '--json']).json.rows[0][0], 1, 'the published archive was picked up at once')
@@ -204,4 +204,39 @@ test('a pretty-printed webhook payload imports as one event, with no invalid lin
   assert.equal(sync.status, 0, sync.text)
   assert.equal(run(['sql', "SELECT count(*) FROM events WHERE id = 'github:pretty-1'", '--project', ws, '--json']).json.rows[0][0], 1, 'imported')
   assert.equal(run(['sql', "SELECT count(*) FROM _slurp.problems WHERE kind = 'invalid'", '--project', ws, '--json']).json.rows[0][0], 0, 'no invalid line')
+})
+
+test('a teammate initializes a committed clone, syncs with a saved project key, and survives revocation locally', { skip }, async () => {
+  const project = run(['status', '--project', ws, '--json']).json.project as string
+  const key = (await call(w.base, ADMIN_TOKEN, 'CreateKey', { project, scope: 'secret', name: 'teammate' })).key
+  const clone = join(home, 'teammate-app'); mkdirSync(clone)
+  cpSync(join(ws, 'slurp'), join(clone, 'slurp'), { recursive: true })
+  const original = readFileSync(join(clone, 'slurp/slurp.toml'), 'utf8')
+  assert.ok(!original.includes('duckdb') && !original.includes('database'), original)
+  const env = { SLURP_HOME: join(home, 'teammate-home') }
+  const init = run(['init', '--project', clone, '--token-stdin', '--duckdb', duckdb, '--yes', '--no-open', '--json'], env, key.key + '\n', clone)
+  assert.equal(init.status, 0, init.text)
+  assert.equal(readFileSync(join(clone, 'slurp/slurp.toml'), 'utf8'), original)
+  const sync = run(['sync', '--now', '--project', clone, '--json'], env, undefined, clone)
+  assert.equal(sync.status, 0, sync.text)
+  const owner = run(['sql', 'SELECT count(*) FROM events', '--project', ws, '--json'])
+  const teammate = run(['sql', 'SELECT count(*) FROM events', '--project', clone, '--json'], env, undefined, clone)
+  assert.deepEqual(teammate.json.rows, owner.json.rows)
+  assert.equal(run(['status', '--json'], env, undefined, join(clone, 'slurp/reports')).status, 0)
+  assert.equal(run(['whoami', '--project', clone], env, undefined, clone).json.scope, 'secret')
+  const second = join(home, 'second-checkout'); mkdirSync(second)
+  cpSync(join(ws, 'slurp'), join(second, 'slurp'), { recursive: true })
+  const reused = run(['init', '--project', second, '--yes', '--no-open', '--json'], env, undefined, second)
+  assert.equal(reused.status, 0, reused.text)
+  assert.equal(reused.json.database, init.json.database, 'the same home reuses the verified database')
+  const built = run(['report', 'build', 'slurp/reports/overview.md', '--project', clone, '--json'], env, undefined, clone)
+  assert.equal(built.status, 0, built.text)
+  const badHome = { SLURP_HOME: join(home, 'publishable-home') }
+  const rejected = run(['init', '--project', clone, '--token-stdin', '--duckdb', duckdb, '--yes'], badHome, (await call(w.base, ADMIN_TOKEN, 'SourceKey', { project, source: 'default' })).key.key + '\n', clone)
+  assert.notEqual(rejected.status, 0)
+  assert.match(rejected.text, /can only send events/)
+  await call(w.base, ADMIN_TOKEN, 'RevokeKey', { project, keyId: key.keyId })
+  const revoked = run(['sync', '--project', clone, '--json'], env, undefined, clone)
+  assert.notEqual(revoked.status, 0); assert.match(revoked.text, /rejected or revoked/)
+  assert.equal(run(['sql', 'SELECT count(*) FROM events', '--project', clone, '--json'], env, undefined, clone).status, 0)
 })

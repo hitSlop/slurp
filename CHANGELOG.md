@@ -1,8 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.2.0-rc.1
 
-Slurp is not launched yet, so this is one breaking rewrite of the contracts between the Worker, the CLI and the SDKs, with no migration path. They are written down in [docs/contracts.md](docs/contracts.md).
+The first supported release candidate. Start with a fresh Worker and local setup. From this baseline onward, upgrades migrate supported stored data automatically.
+
+- Commit the portable `slurp/slurp.toml` binding and reports; keep databases and credentials machine-local.
+- Teammates initialize a clone with project secret keys, then publish and sync their own project's archives.
+- Database upgrades use isolated backups, version checks, and transactional migrations. Deployment upgrades verify readiness and refuse downgrades.
+- `slurp cloud init --domain HOST` configures a custom domain and preserves it on upgrades.
+- New projects include an overview report; report builds default to `slurp/out/`.
+
+
+
+This release establishes the contracts between the Worker, CLI, and SDKs. They are written down in [docs/contracts.md](docs/contracts.md).
 
 - **Breaking: a record needs only an `event`.** `{"event":"signed_up"}` is a valid body. `id`, `type`, `timestamp` and `data` are optional, a single JSON object is a valid body, and `?key=` works on `/v1/events` as well as the `Authorization` header. The Worker answers `{"ok":true,"accepted":N}`, and a `400` lists every bad line (`{"error":"invalid records","rejected":[{"line":3,"reason":"..."}]}`) and stores nothing. `Slurp-Duplicate` is gone: a record without an `id` is a new event each time, so send an `id` to make a retry safe (the SDKs, `slurp send` and the MCP tools always do).
 - **Breaking: archives hold envelopes.** Each line is `{received_at, sender, geo?, record}` with the client's record byte for byte inside, so the Worker never invents or reserves a client field. The local import fills in the defaults (a missing `id` becomes `slurp:<archive>:<line>`, a missing `timestamp` the `received_at`), and an event is identified by `(sender, id)`. `geo` is its own column instead of `context.geo`.

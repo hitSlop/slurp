@@ -47,8 +47,8 @@ fn machine_setup_ignores_current_project_and_never_embeds_credentials() {
     let library = dir.path().join("library");
     std::fs::create_dir(&home).expect("system home");
     std::fs::write(home.join("config.toml"), "# Keep my preferences\nversion = 1\nbackend = 'https://slurp.example.workers.dev' # Account server\nfuture_setting = true\n").expect("existing settings");
-    std::fs::create_dir(dir.path().join(".slurp")).expect("project metadata");
-    let project = dir.path().join(".slurp/project.toml");
+    std::fs::create_dir(dir.path().join("slurp")).expect("project metadata");
+    let project = dir.path().join("slurp/slurp.toml");
     std::fs::write(&project, "existing project metadata remains untouched")
         .expect("existing metadata");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_slurp"))

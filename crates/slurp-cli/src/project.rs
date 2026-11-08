@@ -17,7 +17,7 @@ pub fn discover(start: &Path) -> Result<Option<PathBuf>> {
     let start = start.canonicalize().context("resolving current folder")?;
     ensure!(start.is_dir(), "project search must start in a folder");
     for root in start.ancestors() {
-        let path = root.join(".slurp/project.toml");
+        let path = root.join("slurp/slurp.toml");
         match fs::symlink_metadata(&path) {
             Ok(_) => {
                 Workspace::read_binding(root)

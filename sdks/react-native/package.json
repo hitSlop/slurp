@@ -1,6 +1,6 @@
 {
   "name": "@hitslop/slurp-react-native",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "React Native and Expo event capture for Slurp: durable queue in AsyncStorage, flush when the app backgrounds, device context. Built on @hitslop/slurp-sdk.",
   "keywords": [
     "analytics",

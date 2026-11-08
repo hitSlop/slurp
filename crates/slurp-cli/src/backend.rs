@@ -4,11 +4,6 @@ use slurp_app::system;
 use slurp_client::config;
 use std::{fs, path::Path};
 
-#[derive(serde::Deserialize)]
-struct Project {
-    backend: String,
-}
-
 /// Like [`resolve`], but `SLURP_BACKEND` stands in for an explicit `--backend`.
 pub fn resolve_with_environment(
     root: &Path,
@@ -23,11 +18,10 @@ pub fn resolve(root: &Path, home: &Path, explicit: Option<&str>) -> Result<Strin
     if let Some(value) = explicit {
         return config::normalize_backend(value);
     }
-    let path = root.join(".slurp/project.toml");
+    let path = root.join("slurp/slurp.toml");
     match fs::read_to_string(&path) {
-        Ok(contents) => {
-            let saved: Project = toml::from_str(&contents)
-                .with_context(|| format!("reading backend from {}", path.display()))?;
+        Ok(_) => {
+            let saved = slurp_app::Workspace::read_binding(root)?;
             return config::normalize_backend(&saved.backend);
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -54,10 +48,10 @@ mod tests {
         )
         .expect("system setting");
         assert_eq!(resolve(None).expect("system"), "http://localhost:8079");
-        fs::create_dir(root.path().join(".slurp")).expect("project directory");
+        fs::create_dir(root.path().join("slurp")).expect("project directory");
         fs::write(
-            root.path().join(".slurp/project.toml"),
-            "backend = 'http://localhost:8082/'\n",
+            root.path().join("slurp/slurp.toml"),
+            "version = 1\nname = 'test'\nproject = 'prj_test'\nbackend = 'http://localhost:8082/'\n",
         )
         .expect("project preference");
         assert_eq!(resolve(None).expect("project"), "http://localhost:8082");
@@ -71,13 +65,13 @@ mod tests {
     fn invalid_project_backend_never_falls_back_to_hosted() {
         let root = tempfile::tempdir().expect("project");
         let home = tempfile::tempdir().expect("preferences");
-        fs::create_dir(root.path().join(".slurp")).expect("project directory");
+        fs::create_dir(root.path().join("slurp")).expect("project directory");
         for contents in [
             "backend = 42",
             "backend = 'file:///tmp/events'",
             "version = 1",
         ] {
-            fs::write(root.path().join(".slurp/project.toml"), contents).expect("invalid config");
+            fs::write(root.path().join("slurp/slurp.toml"), contents).expect("invalid config");
             assert!(
                 resolve(root.path(), home.path(), None).is_err(),
                 "invalid backend: {contents}"

@@ -141,7 +141,7 @@ enum Report {
     Build {
         file: PathBuf,
         #[arg(long)]
-        out: PathBuf,
+        out: Option<PathBuf>,
         /// Shorthand for `--theme pro-dark`.
         #[arg(long)]
         dark: bool,
@@ -234,7 +234,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             let projects = slurp_app::system::projects(&home)?
                 .into_iter()
                 .map(|project| {
-                    let project_available = project.root.join(".slurp/project.toml").is_file();
+                    let project_available = project.root.join("slurp/slurp.toml").is_file();
                     let storage_available = project.database.is_file();
                     let mut value = serde_json::to_value(project)?;
                     value["project_available"] = json!(project_available);
@@ -367,7 +367,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     ctrlc::set_handler(move || cancellation.cancel())?;
     match cli.command {
         Operation::Sync { now } => {
-            let auth = login::token(&w.backend)?;
+            let auth = login::project_token(&w.backend, &w.project)?;
             tokio::runtime::Runtime::new()?.block_on(async {
                 if now {
                     w.sync_now(&auth).await
@@ -433,6 +433,13 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                     serde_json::from_str(v).unwrap_or_else(|_| json!(v)),
                 );
             }
+            let out = out.unwrap_or_else(|| {
+                root.join("slurp/out").join(format!(
+                    "{}-{}",
+                    file.file_stem().unwrap_or_default().to_string_lossy(),
+                    chrono::Utc::now().timestamp_millis()
+                ))
+            });
             slurp_app::report::build_with_params(&w, &file, &out, &look, png, pdf, &values)
         }
         _ => unreachable!(),

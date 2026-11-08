@@ -37,7 +37,7 @@ test('every API method answers each credential exactly as intended', async () =>
     ['ListKeys', async () => ({ project: k.a.id }), adminOnly],
     ['ConnectWebhook', async () => ({ project: k.a.id, provider: 'github' }), adminOnly],
     ['RevokeKey', async () => ({ project: k.a.id, keyId: await spare() }), adminOnly],
-    ['Publish', async () => ({ project: k.a.id }), adminOnly],
+    ['Publish', async () => ({ project: k.a.id }), archiveRead],
   ]
   for (const [method, body, expected] of matrix)
     for (const who of WHO)

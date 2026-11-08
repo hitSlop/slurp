@@ -2,9 +2,10 @@ use slurp_app::{Cancellation, Workspace, project};
 use std::{fs, path::Path};
 
 fn binding(root: &Path, project: &str) {
-    fs::create_dir_all(root.join(".slurp")).expect("metadata folder");
+    fs::create_dir_all(root.join("slurp")).expect("metadata folder");
     let workspace = Workspace {
         version: 1,
+        name: "test".into(),
         backend: "https://slurp.example.workers.dev".into(),
         project: project.into(),
         database: root.join("unavailable/events.duckdb"),
@@ -14,7 +15,7 @@ fn binding(root: &Path, project: &str) {
         sandbox: false,
     };
     fs::write(
-        root.join(".slurp/project.toml"),
+        root.join("slurp/slurp.toml"),
         toml::to_string(&workspace).expect("binding"),
     )
     .expect("write binding");
@@ -50,8 +51,7 @@ fn discovery_uses_nearest_metadata_without_opening_storage() {
         project::resolve(outer.path(), Some(&child)).is_err(),
         "explicit workspace must not search parents"
     );
-    fs::write(inner.join(".slurp/project.toml"), "not valid metadata")
-        .expect("damaged inner binding");
+    fs::write(inner.join("slurp/slurp.toml"), "not valid metadata").expect("damaged inner binding");
     assert!(
         project::discover(&child).is_err(),
         "never fall through to another project"
@@ -69,8 +69,8 @@ fn discovery_does_not_guess_from_the_registry_or_skip_broken_links() {
     assert!(project::resolve(root.path(), None).is_err());
     binding(root.path(), "prj_outer");
     let child = root.path().join("child");
-    fs::create_dir_all(child.join(".slurp")).expect("inner metadata directory");
-    std::os::unix::fs::symlink(child.join("missing"), child.join(".slurp/project.toml"))
+    fs::create_dir_all(child.join("slurp")).expect("inner metadata directory");
+    std::os::unix::fs::symlink(child.join("missing"), child.join("slurp/slurp.toml"))
         .expect("broken metadata link");
     assert!(project::discover(&child).is_err());
 }

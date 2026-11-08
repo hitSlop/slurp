@@ -143,8 +143,9 @@ export const handlers: Handlers<Ctx> = {
     return unwrap(await projectStub(c.env, p.id).archives(optInt(r, 'after', 0, Number.MAX_SAFE_INTEGER), optInt(r, 'limit', 1, 5000) ?? 1000))
   },
   async Publish(c, r) {
-    needAdmin(c)
+    if (!c.auth) throw new ApiFailure('unauthenticated', 'a bearer token is required')
     const p = await resolve(c, text(r, 'project'))
+    needRead(c, p.id)
     let published: Result<Coverage>
     try { published = await projectStub(c.env, p.id).publish() } catch (e) {
       console.error('publish failed', e)

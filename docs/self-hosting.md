@@ -14,7 +14,7 @@ slurp setup
 slurp init --name "My app"
 ```
 
-`slurp cloud init` logs in with `wrangler login` if needed, picks your Cloudflare account (`--account` if you have several), creates the R2 bucket, deploys the Worker that is embedded in the CLI, sets a generated 256-bit `ADMIN_TOKEN` secret (never printed), waits for the Worker, saves the connection and writes a receipt to `~/.slurp/cloud/<worker>.json`. Options: `--worker` and `--bucket` to name things, `--seal-interval SECONDS`, `--retention-days N`, `--yes` for no prompts, `--no-open` to print the login URL instead of opening a browser.
+`slurp cloud init` logs in with `wrangler login` if needed, picks your Cloudflare account (`--account` if you have several), creates the R2 bucket, deploys the Worker that is embedded in the CLI, sets a generated 256-bit `ADMIN_TOKEN` secret (never printed), waits for the Worker, saves the connection and writes a receipt to `~/.slurp/cloud/<worker>.json`. Options: `--worker` and `--bucket` to name things, `--domain events.example.com` for a custom domain in a zone on the same account, `--seal-interval SECONDS`, `--retention-days N`, `--yes` for no prompts, `--no-open` to print the login URL instead of opening a browser.
 
 Day to day:
 
@@ -125,7 +125,7 @@ Measure your own: `SLURP_TOKEN=<admin token> node backend/scripts/load.mjs https
 | `slurp connect`: "could not reach" | Wrong URL, or the Worker is not deployed. Check `/v1/health`. |
 | `slurp connect`: "no ADMIN_TOKEN configured" | Set the secret (see Deploy). |
 | `slurp connect`: "rejected that admin token" | Token differs from the secret. |
-| `slurp sync` imports nothing | No archive published yet. Wait for `SEAL_INTERVAL_MS`, run `slurp sync --now` (admin token), or check `slurp status`. |
+| `slurp sync` imports nothing | No archive published yet. Wait for `SEAL_INTERVAL_MS`, run `slurp sync --now` (admin token or project secret key), or check `slurp status`. |
 | Events return `429` | Buffer cap reached for a project; it clears when the next archive is published. |
 | Events return `400` | At least one line is invalid, so nothing was stored. The response lists every bad line and why. |
 | Events return `401` / `403` | Revoked or wrong key; a secret key cannot send events. |

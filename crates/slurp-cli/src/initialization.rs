@@ -19,6 +19,15 @@ pub struct Options {
     /// Create a cloud project with this friendly name, or join the one that already has it.
     #[arg(long, conflicts_with = "connect")]
     name: Option<String>,
+    /// Read a project secret key or admin token from stdin.
+    #[arg(long)]
+    token_stdin: bool,
+    /// Use defaults without prompting.
+    #[arg(long, short = 'y')]
+    yes: bool,
+    /// Forget this checkout's registration and choose local storage again. Existing data is kept.
+    #[arg(long)]
+    reset_local: bool,
     /// Connect an existing cloud project by its ID or name.
     #[arg(long)]
     connect: Option<String>,
@@ -90,7 +99,14 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
     let root = root.canonicalize()?;
     let home = config::home()?;
     let ui = Terminal::new(machine_output);
-    let existing = root.join(".slurp/project.toml").is_file();
+    let existing = root.join("slurp/slurp.toml").is_file();
+    if existing
+        && (system::registration_for(&home, &root)?.is_none()
+            || options.reset_local
+            || options.token_stdin)
+    {
+        return join_binding(&root, &home, &options, &ui);
+    }
     let mut workspace = if existing {
         Some(Workspace::load(&root)?)
     } else {
@@ -196,19 +212,23 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
             library
                 .join(root.file_name().unwrap_or(std::ffi::OsStr::new("my-app")))
                 .join("events.duckdb")
-        } else if !ui.interactive && options.connect.is_some() {
-            // An explicit existing-project binding remains useful for offline/scripted local work.
-            anchor = None;
-            storage::database_path(&root, None, None)?
         } else {
-            return Err(onboarding::required(
-                "choose an event library with slurp setup, or supply --data-dir",
-            ));
+            anchor = None;
+            let library = home.join("library");
+            std::fs::create_dir_all(&library)?;
+            library
+                .join(root.file_name().context("project name")?)
+                .join("events.duckdb")
         };
         ui.intro()?;
         ui.credentials()?;
         let runtime = tokio::runtime::Runtime::new()?;
         let mut project = options.connect.clone();
+        let mut project_name = root
+            .file_name()
+            .context("project name")?
+            .to_string_lossy()
+            .into_owned();
         let mut title = options.name.clone();
         let mut client = None;
         let offline_binding = project
@@ -224,6 +244,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                         project: reference.clone(),
                     }))
                     .map_err(project_setup::service_error)?;
+                project_name = found.project.name.clone();
                 project = Some(found.project.id.clone());
                 ingest_url = Some(found.ingest_url);
             } else {
@@ -257,6 +278,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                                 project: found.id.clone(),
                             }))
                             .map_err(project_setup::service_error)?;
+                        project_name = found.name.clone();
                         project = Some(found.id);
                         ingest_url = Some(info.ingest_url);
                     }
@@ -354,6 +376,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                     ),
                 )?;
             }
+            project_name = created.project.name.clone();
             project = Some(created.project.id);
             ingest_url = Some(created.ingest_url);
             // The key `CreateProject` returns is for the source `default`.
@@ -370,13 +393,27 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
         if let Some(anchor) = &anchor {
             anchor.verify()?;
         }
-        let saved = Workspace::init(
-            &root,
+        let project = project.context("project")?;
+        if !explicit_storage {
+            let library = settings
+                .library_dir
+                .clone()
+                .unwrap_or_else(|| home.join("library"));
+            database = library
+                .join(format!(
+                    "{}-{}",
+                    project_name,
+                    project.trim_start_matches("prj_")
+                ))
+                .join("events.duckdb");
+        }
+        let binding = slurp_app::Binding {
+            version: 1,
+            name: project_name,
             backend,
-            project.context("project")?,
-            Some(database),
-            engine,
-        )?;
+            project,
+        };
+        let saved = Workspace::init_bound(&home, &root, &binding, Some(database), engine)?;
         if install {
             slurp_app::skills::install(&root.join(".agents/skills/slurp"), false, true)?;
         }
@@ -526,4 +563,111 @@ fn fetch_key(backend: &str, project: &str) -> Result<String> {
         project,
         DEFAULT_SOURCE,
     ))
+}
+
+fn join_binding(root: &Path, home: &Path, options: &Options, ui: &Terminal) -> Result<Value> {
+    let binding = Workspace::read_binding(root)?;
+    if let Some(backend) = &options.backend {
+        ensure!(
+            config::normalize_backend(backend)? == binding.backend,
+            "backend differs from project binding"
+        );
+    }
+    ensure!(
+        options.name.is_none(),
+        "this folder already has a project binding"
+    );
+    if options.reset_local {
+        system::reset_registration(home, root)?;
+    }
+    let saved_token = if options.token_stdin {
+        None
+    } else {
+        match slurp_client::connection::resolve(&binding.backend, Some(&binding.project)) {
+            Ok(token) => Some(token),
+            Err(error)
+                if error
+                    .downcast_ref::<slurp_client::connection::NotConnected>()
+                    .is_some() =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let pasted = saved_token.is_none();
+    let token = if options.token_stdin {
+        let mut input = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+        input.trim().to_string()
+    } else if let Some(token) = saved_token {
+        token
+    } else {
+        ensure!(
+            ui.interactive,
+            "run slurp init --token-stdin or set SLURP_TOKEN to this project's secret key"
+        );
+        ui.secret("Project secret key or admin token")?
+    };
+    let runtime = tokio::runtime::Runtime::new()?;
+    let who = runtime
+        .block_on(login::whoami(&binding.backend, &token))
+        .map_err(project_setup::service_error)?;
+    match who.scope {
+        api::TokenScope::Admin => {
+            if pasted {
+                slurp_client::connection::save(&binding.backend, &token)?;
+            }
+        }
+        api::TokenScope::Secret => {
+            ensure!(
+                who.project.as_deref() == Some(&binding.project),
+                "this secret key belongs to a different project"
+            );
+            if pasted {
+                slurp_client::connection::save_project(&binding.backend, &binding.project, &token)?;
+            }
+        }
+        api::TokenScope::Publishable => anyhow::bail!(
+            "that key can only send events; ask an admin for a secret key with slurp project key create --scope secret"
+        ),
+    }
+    let settings = system::settings(home)?;
+    let engine = setup::find_engine(options.duckdb.as_deref(), settings.duckdb.as_deref())?
+        .context("run slurp setup to install DuckDB")?;
+    let saved = if system::registration_for(home, root)?.is_some() {
+        Workspace::load_at(home, root)?
+    } else {
+        let database = if options.database.is_some() || options.data_dir.is_some() {
+            storage::database_path(
+                root,
+                options.data_dir.as_deref(),
+                options.database.as_deref(),
+            )?
+        } else {
+            let library = settings.library_dir.unwrap_or_else(|| home.join("library"));
+            if library == home.join("library") {
+                std::fs::create_dir_all(&library)?;
+            }
+            ensure!(
+                library.is_dir(),
+                "event library is unavailable; reconnect the drive or choose --data-dir"
+            );
+            library
+                .join(format!(
+                    "{}-{}",
+                    binding.name,
+                    binding.project.trim_start_matches("prj_")
+                ))
+                .join("events.duckdb")
+        };
+        if database.exists() {
+            Workspace::attach(home, root, &binding, database, engine)?
+        } else {
+            Workspace::init_bound(home, root, &binding, Some(database), engine)?
+        }
+    };
+    let mut result = finish(root, &saved, options, ui, Handoff::default())?;
+    result["next_steps"] = json!("slurp sync");
+    Ok(result)
 }

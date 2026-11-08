@@ -8,6 +8,7 @@ fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
     let exe = common::duckdb()?;
     let temp = tempfile::tempdir().expect("test directory");
     let w = Workspace::init(
+        &(temp.path()).join("private-home"),
         temp.path(),
         "http://localhost:8080".into(),
         "prj_fixture".into(),

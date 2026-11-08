@@ -38,6 +38,7 @@ fn init(root: &Path, database: Option<PathBuf>) -> Option<Workspace> {
     let exe = common::duckdb()?;
     Some(
         Workspace::init(
+            &(root).join("private-home"),
             root,
             "http://localhost:8080".into(),
             "prj_test".into(),
@@ -76,13 +77,11 @@ fn init_defaults_to_the_local_worker_and_allows_overrides() {
             ],
         ));
         assert_eq!(result["initialized"], true);
-        let saved = Workspace::load(project.path()).expect("configured workspace");
+        let saved = load(project.path()).expect("configured workspace");
         assert_eq!(saved.backend, "http://127.0.0.1:8787");
         value(cli(project.path(), &["init", "--no-open"]));
         assert_eq!(
-            Workspace::load(project.path())
-                .expect("saved project")
-                .backend,
+            load(project.path()).expect("saved project").backend,
             "http://127.0.0.1:8787"
         );
     }
@@ -106,9 +105,7 @@ fn init_defaults_to_the_local_worker_and_allows_overrides() {
         .expect("environment override");
     assert_eq!(value(output)["initialized"], true);
     assert_eq!(
-        Workspace::load(project.path())
-            .expect("custom backend")
-            .backend,
+        load(project.path()).expect("custom backend").backend,
         "http://localhost:8081"
     );
 }
@@ -142,7 +139,7 @@ fn external_storage_setup_is_saved_and_never_relocated_implicitly() {
         .join("events.duckdb");
     assert_eq!(first["initialized"], true);
     assert_eq!(first["database"], json!(database));
-    assert!(project.path().join(".slurp/project.toml").is_file());
+    assert!(project.path().join("slurp/slurp.toml").is_file());
     assert!(!project.path().join(".slurp/data/events.duckdb").exists());
     assert!(
         !first["next_steps"]
@@ -158,12 +155,12 @@ fn external_storage_setup_is_saved_and_never_relocated_implicitly() {
     );
     let html = fs::read_to_string(first["setup_page"].as_str().expect("page")).expect("HTML");
     assert!(html.contains(database.to_str().expect("database path")));
-    let saved = fs::read(project.path().join(".slurp/project.toml")).expect("config bytes");
+    let saved = fs::read(project.path().join("slurp/slurp.toml")).expect("config bytes");
     let again = value(cli(project.path(), &["init", "--no-open"]));
     assert_eq!(again["database"], first["database"]);
     assert_eq!(
         saved,
-        fs::read(project.path().join(".slurp/project.toml")).expect("unchanged config")
+        fs::read(project.path().join("slurp/slurp.toml")).expect("unchanged config")
     );
     let moved = external.path().join("another");
     let rejected = cli(
@@ -177,7 +174,7 @@ fn external_storage_setup_is_saved_and_never_relocated_implicitly() {
     );
     assert!(!rejected.status.success());
     assert!(!moved.exists());
-    let w = Workspace::load(project.path()).expect("load saved workspace");
+    let w = load(project.path()).expect("load saved workspace");
     let temp = w
         .query("SELECT current_setting('temp_directory') AS scratch")
         .expect("spill location");
@@ -202,7 +199,7 @@ fn missing_drive_or_database_never_creates_replacement_storage() {
     };
     let hidden = external.path().join("disconnected");
     fs::rename(&data, &hidden).expect("simulate disconnect");
-    storage_error(Workspace::load(project.path()).expect_err("missing drive"));
+    storage_error(load(project.path()).expect_err("missing drive"));
     storage_error(
         w.execute("CREATE TABLE accidental(i INT)", false)
             .expect_err("no writable fallback"),
@@ -220,7 +217,7 @@ fn missing_drive_or_database_never_creates_replacement_storage() {
     assert_eq!(error["error"]["code"], "storage_unavailable");
     assert!(!data.exists());
     fs::rename(&hidden, &data).expect("reconnect");
-    Workspace::load(project.path()).expect("restored original database");
+    load(project.path()).expect("restored original database");
     fs::remove_file(&w.database).expect("remove file");
     storage_error(w.execute("SELECT 1", false).expect_err("missing file"));
     assert!(!w.database.exists());
@@ -230,9 +227,9 @@ fn missing_drive_or_database_never_creates_replacement_storage() {
 fn path_selection_is_project_relative_and_external_parent_must_exist() {
     let project = tempfile::tempdir().expect("project");
     let root = project.path().canonicalize().expect("root");
-    assert_eq!(
-        storage::database_path(&root, None, None).expect("default"),
-        root.join(".slurp/data/events.duckdb")
+    assert!(
+        storage::database_path(&root, None, None).is_err(),
+        "no implicit in-repository database"
     );
     assert_eq!(
         storage::database_path(&root, Some(Path::new("some data/../event-data")), None)
@@ -272,6 +269,7 @@ fn init_failure_preserves_existing_data_and_leaves_no_configuration() {
     fs::write(&database, "precious existing data").expect("existing file");
     assert!(
         Workspace::init(
+            &(project.path()).join("private-home"),
             project.path(),
             "http://localhost:8080".into(),
             "prj_test".into(),
@@ -284,16 +282,17 @@ fn init_failure_preserves_existing_data_and_leaves_no_configuration() {
         fs::read_to_string(&database).expect("preserved"),
         "precious existing data"
     );
-    assert!(!project.path().join(".slurp/project.toml").exists());
+    assert!(!project.path().join("slurp/slurp.toml").exists());
     fs::remove_file(&database).expect("remove fixture");
-    fs::create_dir(project.path().join(".slurp")).expect("metadata folder");
+    fs::create_dir(project.path().join("slurp")).expect("metadata folder");
     std::os::unix::fs::symlink(
         project.path().join("not-created"),
-        project.path().join(".slurp/project.toml"),
+        project.path().join("slurp/slurp.toml"),
     )
     .expect("conflicting dangling link");
     assert!(
         Workspace::init(
+            &(project.path()).join("private-home"),
             project.path(),
             "http://localhost:8080".into(),
             "prj_test".into(),
@@ -333,7 +332,7 @@ fn scripted_init_requires_explicit_agent_notes_and_preserves_instruction_files()
     let error: Value = serde_json::from_slice(&output.stderr).expect("structured error");
     assert_eq!(error["error"]["code"], "setup_required");
     assert!(!project.path().join("event data").exists());
-    assert!(!project.path().join(".slurp/project.toml").exists());
+    assert!(!project.path().join("slurp/slurp.toml").exists());
     value(cli(
         project.path(),
         &[
@@ -493,4 +492,8 @@ fn selecting_a_different_project_does_not_embed_environment_keys() {
     assert!(!html.contains("slurp_pk_old_fixture"));
     assert!(!html.contains("slurp_sk_old_fixture"));
     assert!(html.contains("prj_new"));
+}
+
+fn load(root: &std::path::Path) -> anyhow::Result<Workspace> {
+    Workspace::load_at(&root.join("private-home"), root)
 }

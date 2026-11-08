@@ -82,7 +82,7 @@ Each line is an **envelope**:
 - `received_at`: when the Worker accepted the request (ISO 8601, milliseconds, UTC).
 - `sender`: the source of the key that sent it.
 - `geo`: only when `GEO` is on and Cloudflare's `request.cf` gives values. It holds `city`, `country` and `region`, sorted by key. `country` is ISO 3166-1 alpha-2, never `XX` or `T1`.
-- `record`: the trimmed line exactly as sent. Numbers, key order and escapes are untouched. The fields appear in this order, and `record` is always last.
+- `record`: the trimmed line as sent. Numbers, key order and escapes are untouched. The one change: a raw line break (`\r` or `\n`) becomes a space. Valid JSON can only hold a raw line break as whitespace between tokens, so nothing meaningful changes, and an envelope is always exactly one line. (This matters for webhooks, whose providers may send pretty-printed JSON.) The fields appear in this order, and `record` is always last.
 
 ### Control API: `POST /v1/rpc/<Method>`
 
@@ -234,7 +234,7 @@ Every SDK implements this. `sdks/conformance/delivery.json` holds the executable
   | Any other 400, and every 4xx not listed below | Drop the `k` lines and report them |
   | 413 | Halve the split limit. With `k = 1`, drop and report that line |
   | 408, 429, 5xx, network error, timeout | Back off: `Retry-After` on 429 or 503 (digits or an HTTP date), otherwise exponential with jitter, 0.5 s doubling to 60 s. The lines are not removed |
-  | 401 / 403 | Drop and report everything queued; stop this client instance. Nothing is persisted, so the next launch tries once more |
+  | 401 / 403 | Keep everything queued and stop sending from this client instance; new captures are still queued, within the queue limits. Nothing extra is persisted: the next launch tries once more, and a new key for the same source (which shares the storage) delivers the queue |
 
 - **Rules:**
   - The flush timer keeps the earliest deadline; a new capture never postpones it.

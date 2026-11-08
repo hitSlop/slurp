@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.2.0-rc.1
+## 0.2.0
 
-The first supported release candidate. Start with a fresh Worker and local setup. From this baseline onward, upgrades migrate supported stored data automatically.
+The first supported release. Start with a fresh Worker and local setup. From this baseline onward, upgrades migrate supported stored data automatically.
 
 - Commit the portable `slurp/slurp.toml` binding and reports; keep databases and credentials machine-local.
 - Teammates initialize a clone with project secret keys, then publish and sync their own project's archives.

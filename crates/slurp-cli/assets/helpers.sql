@@ -63,6 +63,18 @@ SELECT e.*,
 FROM events e
 LEFT JOIN identity_links l ON l.anonymous_id = e.anonymous_id;
 
+-- Total records remain distinct from activity. People and coverage describe tracked events only.
+CREATE OR REPLACE VIEW slurp_summary AS
+SELECT count(*) AS events,
+       count(*) FILTER (WHERE type = 'track') AS tracked_events,
+       count(DISTINCT person_id) FILTER (WHERE type = 'track') AS people,
+       count(DISTINCT person_id) FILTER (WHERE type = 'track' AND starts_with(person_id, 'u:')) AS identified_people,
+       count(DISTINCT person_id) FILTER (WHERE type = 'track' AND starts_with(person_id, 'a:')) AS anonymous_people,
+       count(*) FILTER (WHERE type = 'track' AND person_id IS NULL) AS events_without_person,
+       count(*) FILTER (WHERE type = 'track' AND nullif(trim(geo->>'country'), '') IS NULL) AS events_without_geo,
+       min(timestamp) AS first_event, max(timestamp) AS last_event
+FROM events_with_person;
+
 -- Errors from Sentry SDKs pointed at your Worker (event = 'error'): the exception, where it was thrown, and a grouping key,
 -- read out of the stored event at query time. The full Sentry event stays in `data` (breadcrumbs, tags, contexts, request).
 -- group_key is a hash of the exception type and the in-app frames' module/file and function (no line numbers), a best-effort

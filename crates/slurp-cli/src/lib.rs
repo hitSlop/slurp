@@ -19,6 +19,7 @@ pub mod storage;
 pub mod system;
 use error::{ErrorCode, Failure};
 pub use import::ImportStats;
+pub mod functions;
 pub mod health;
 pub mod helpers;
 pub mod import;
@@ -318,10 +319,7 @@ impl Workspace {
         system::register(home, &root, &w)?;
         let report = root.join("slurp/reports/overview.md");
         if !report.exists() {
-            fs::write(
-                report,
-                "# Overview\n\n```sql daily\nSELECT date_trunc('day', timestamp) AS day, count(*) AS events FROM events GROUP BY 1 ORDER BY 1\n```\n\n```table\nquery: daily\n```\n\n```sql top_events\nSELECT event, count(*) AS events FROM events GROUP BY event ORDER BY events DESC LIMIT 20\n```\n\n```table\nquery: top_events\n```\n",
-            )?;
+            fs::write(report, include_str!("../assets/overview.md"))?;
         }
         Ok(w)
     }
@@ -648,7 +646,7 @@ impl Workspace {
         let mut cmd = Command::new(&self.duckdb);
         cmd.args(["-no-agent", "-init", "/dev/null", "-bail", "-json"]);
         cmd.arg("-cmd").arg(format!(
-            "SET temp_directory = {};",
+            "SET TimeZone = 'UTC'; SET temp_directory = {};",
             literal(&scratch.path().join("spill").to_string_lossy())
         ));
         for name in &self.extensions {

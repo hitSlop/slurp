@@ -765,6 +765,21 @@ fn helpers_are_installed_and_identities_are_stitched_without_guessing() {
         "a visitor tied to two users is not merged by guesswork"
     );
     assert_eq!(people["e4"], "a:a3");
+    let summary = w.execute("SELECT * FROM slurp_summary", true).unwrap();
+    assert_eq!(summary[0]["events"], 7);
+    assert_eq!(summary[0]["tracked_events"], 4);
+    assert_eq!(summary[0]["people"], 3);
+    assert_eq!(summary[0]["identified_people"], 1);
+    assert_eq!(summary[0]["anonymous_people"], 2);
+    w.execute("INSERT INTO events(sender,id,type,event,user_id,geo) VALUES ('web','no-person','track','viewed',NULL,'{\"country\":\" \"}'), ('web','identify-only','identify',NULL,'inactive',NULL)", false).unwrap();
+    let summary = w.execute("SELECT * FROM slurp_summary", true).unwrap();
+    assert_eq!(
+        summary[0]["people"], 3,
+        "identify-only records are not activity"
+    );
+    assert_eq!(summary[0]["tracked_events"], 5);
+    assert_eq!(summary[0]["events_without_person"], 1);
+    assert_eq!(summary[0]["events_without_geo"], 5);
     // The small macros.
     let macros = w
         .query("SELECT pct(25, 200) AS p, safe_num('x') AS bad, biz_date(TIMESTAMPTZ '2026-10-01 03:00:00+00') AS d, (SELECT count(*) FROM calendar('2026-10-01', '2026-10-04')) AS days, session_start(TIMESTAMP '2026-01-01 10:40', TIMESTAMP '2026-01-01 10:00', 30) AS gap, session_start(TIMESTAMP '2026-01-01 10:10', TIMESTAMP '2026-01-01 10:00', 30) AS same")

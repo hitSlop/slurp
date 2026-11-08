@@ -130,13 +130,18 @@ impl Server {
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!(
-                "Slurp gives you this project's product events in a local DuckDB table named events. Start with describe_schema, then run read-only SQL with sql. Use events_with_person.person_id to count people, not user_id. New events arrive about every 10 minutes: call sync to fetch them. Reports: report_check then report_build.{send}"
+                "Slurp gives you this project's product events in a local DuckDB table named events. Start with describe_schema, then run read-only SQL with sql. Use functions for helper signatures and examples. Use events_with_person.person_id to count people, not user_id. New events arrive about every 10 minutes: call sync to fetch them. Reports: report_check then report_build.{send}"
             ),
         })
     }
 
     fn tools(&self) -> Vec<Value> {
         let mut tools = vec![
+            tool(
+                "functions",
+                "Built-in SQL macros with signatures and runnable examples.",
+                json!({"type":"object","properties":{"name":{"type":"string"}}}),
+            ),
             tool(
                 "status",
                 "Project, database path, event count and the last sync.",
@@ -221,6 +226,11 @@ impl Server {
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value> {
         let w = &self.workspace;
         match name {
+            "functions" => crate::functions::lookup(
+                args.get("name")
+                    .map(|v| v.as_str().context("name must be a string"))
+                    .transpose()?,
+            ),
             "status" => w.status(),
             "describe_schema" => describe_schema(w),
             "sql" => {
@@ -345,13 +355,15 @@ impl Server {
 }
 
 fn describe_schema(w: &Workspace) -> Result<Value> {
+    w.require_helper("slurp_summary")?;
     Ok(json!({
         "columns": w.execute("DESCRIBE events", true)?,
-        "summary": w.execute("SELECT count(*) AS events, count(DISTINCT coalesce(nullif(user_id, ''), anonymous_id)) AS people, min(timestamp) AS first_event, max(timestamp) AS last_event FROM events", true)?,
+        "summary": w.execute("SELECT * FROM slurp_summary", true)?,
         "types": w.execute("SELECT type, count(*) AS count FROM events GROUP BY type ORDER BY count DESC", true)?,
         "events": w.execute("SELECT event, count(*) AS count, min(timestamp) AS first_seen, max(timestamp) AS last_seen FROM events WHERE event IS NOT NULL GROUP BY event ORDER BY count DESC LIMIT 200", true)?,
         "views": w.execute("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'main' AND table_name <> 'events' ORDER BY 1", true)?,
         "notes": [
+            "Slurp-managed sessions default to UTC. Event timestamp date casts and current_date use UTC days. For local calendar dates use timezone('America/Regina', timestamp)::DATE.",
             "data and context are JSON columns: use data->>'plan' or json_extract_string(data, '$.plan').",
             "events_with_person adds person_id: 'u:<user>' when known (directly or through an identify), else 'a:<anonymous id>'. Count people with count(DISTINCT person_id).",
             "errors lists Sentry-style error events with exception, top frame, release and a group_key.",

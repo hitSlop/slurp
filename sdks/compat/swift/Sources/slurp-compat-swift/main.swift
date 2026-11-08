@@ -93,6 +93,8 @@ final class Flag {
     func set() { lock.lock(); on = true; lock.unlock() }
 }
 
+// Explicit flushes must own their uploads in the repeated-flush scenario.
+if scenario == "flush3" { configuration.flushPolicies([]) }
 let analytics = Analytics(configuration: configuration)
 analytics.add(plugin: Counter())
 
@@ -137,8 +139,7 @@ case "flush3":
     capture()
     var steps: [[String: Int]] = []
     for _ in 1...3 {
-        _ = flushOnce()
-        _ = spin(for: 0.5) { false }
+        if !flushOnce() { notes.append("an explicit flush did not complete"); break }
         let posts = log.snapshot().requests.filter { $0["method"] == "POST" }.count
         steps.append(["batchPosts": posts, "pending": pending()])
     }

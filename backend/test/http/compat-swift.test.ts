@@ -3,7 +3,10 @@
 // and prints what the SDK itself saw. Skips, saying why, when `swift` or the network is unavailable; CI sets
 // SLURP_COMPAT_SWIFT_REQUIRED=1, which makes that a failure.
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { promisify } from 'node:util'
+import { createServer as createHttpServer } from 'node:http'
+import { setTimeout as delay } from 'node:timers/promises'
+import { execFile, spawnSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -50,9 +53,8 @@ const closedPort = () => new Promise<number>((resolve, reject) => {
 const dir = () => mkdtempSync(join(scratch, 'storage-'))
 interface Summary { scenario: string; pendingAtStart: number; pendingAtEnd: number; settingsApiKey: string | null; requests: { method: string; host: string; path: string }[]; errors: string[]; forbidden: string[]; notes: string[]; library: string; afterEachFlush?: { batchPosts: number; pending: number }[] }
 /** One process of the harness: it starts the SDK, runs the scenario, flushes, prints a summary and exits (the app being closed). */
-function run(url: string, key: string, scenario: string, storage: string): Summary {
-  const r = spawnSync(binary!, [url, key, scenario, storage], { encoding: 'utf8', timeout: 180_000, env: { PATH: process.env.PATH!, HOME: process.env.HOME! } })
-  assert.equal(r.status, 0, `exit ${r.status}${r.signal ? ` (${r.signal})` : ''}: ${r.stderr}\n${r.stdout}`)
+async function run(url: string, key: string, scenario: string, storage: string): Promise<Summary> {
+  const r = await promisify(execFile)(binary!, [url, key, scenario, storage], { encoding: 'utf8', timeout: 180_000, env: { PATH: process.env.PATH!, HOME: process.env.HOME! } })
   const summary = JSON.parse(r.stdout.trim().split('\n').pop()!) as Summary
   assert.deepEqual(summary.forbidden, [], 'the SDK never tried to reach Segment')
   assert.deepEqual(summary.notes, [], 'the harness waited for everything it needed')
@@ -82,7 +84,7 @@ function assertThree(lines: any[], senders: string[]) {
 
 test('analytics-swift: identify, track and screen are delivered and archived as the key\'s source, a screen as a track named screen', async t => {
   const p = await project(t, 'sw_deliver'); if (!p) return
-  const s = run(w.base, p.pk, 'deliver', dir())
+  const s = await run(w.base, p.pk, 'deliver', dir())
   assert.equal(s.pendingAtEnd, 0)
   assert.deepEqual(s.errors, [])
   const arcs = await archived(w.base, p)
@@ -92,7 +94,7 @@ test('analytics-swift: identify, track and screen are delivered and archived as 
 
 test('analytics-swift reads its settings from the Worker and never contacts Segment', async t => {
   const p = await project(t, 'sw_settings'); if (!p) return
-  const s = run(w.base, p.pk, 'deliver', dir())
+  const s = await run(w.base, p.pk, 'deliver', dir())
   const host = new URL(w.base).host
   assert.ok(s.requests.length >= 2)
   assert.ok(s.requests.every(r => r.host === new URL(w.base).hostname), `every request went to the Worker: ${JSON.stringify(s.requests)}`)
@@ -106,14 +108,14 @@ test('analytics-swift keeps events captured while the Worker is unreachable on d
   const p = await project(t, 'sw_offline'); if (!p) return
   const storage = dir()
   const dead = `http://127.0.0.1:${await closedPort()}`
-  const first = run(dead, p.pk, 'queue-offline', storage)
+  const first = await run(dead, p.pk, 'queue-offline', storage)
   // The SDK writes batch files as it flushes, so how many files hold the three events is up to timing; at least one must remain.
   assert.ok(first.pendingAtEnd >= 1, 'a batch is still on disk when the first launch ends')
   assert.ok(first.errors.some(e => /Could not connect/.test(e)), `the SDK reported connection failures: ${first.errors}`)
   assert.equal((await archived(w.base, p)).length, 0, 'nothing reached the Worker')
   // The next launch does not flush by itself (the interval is 30 s by default and the count policy waits for a new event):
   // the harness flushes, as an app does on its first foreground or interval.
-  const second = run(w.base, p.pk, 'deliver-queued', storage)
+  const second = await run(w.base, p.pk, 'deliver-queued', storage)
   assert.equal(second.pendingAtStart, first.pendingAtEnd, 'the queue survived the restart')
   assert.equal(second.pendingAtEnd, 0)
   assert.equal(posts(second).length, first.pendingAtEnd, 'one request per queued batch')
@@ -126,7 +128,21 @@ test('analytics-swift with a revoked key: the Worker answers 400, so each batch 
   const keys = (await call(w.base, ADMIN_TOKEN, 'ListKeys', { project: p.id, scope: 'publishable' })).keys
   await call(w.base, ADMIN_TOKEN, 'RevokeKey', { project: p.id, keyId: keys.find(k => k.key === p.pk)!.keyId })
   const storage = dir()
-  const s = run(w.base, p.pk, 'flush3', storage)
+  let delayed = 0
+  const proxy = createHttpServer(async (req, res) => {
+    try {
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(Buffer.from(chunk))
+      const upstream = await fetch(w.base + req.url, { method: req.method, headers: { authorization: req.headers.authorization ?? '', 'content-type': req.headers['content-type'] ?? 'application/json', ...(req.headers['content-encoding'] ? { 'content-encoding': req.headers['content-encoding'] } : {}) }, ...(req.method === 'POST' ? { body: Buffer.concat(chunks) } : {}) })
+      const body = Buffer.from(await upstream.arrayBuffer())
+      if (req.method === 'POST' && upstream.status === 400 && delayed === 0) { delayed++; await delay(1000) }
+      res.writeHead(upstream.status, { 'content-type': 'application/json' }); res.end(body)
+    } catch (error) { res.destroy(error as Error) }
+  })
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  t.after(() => { proxy.closeAllConnections(); proxy.close() })
+  const s = await run('http://127.0.0.1:' + (proxy.address() as any).port, p.pk, 'flush3', storage)
+  assert.equal(delayed, 1, 'exercise a slow rejection without relying on a sleep in the Swift harness')
   // analytics-swift (1.10.4) drops a batch only on 400 and resends every queued batch at every flush after a 401, for ever. The
   // Segment endpoints therefore refuse a bad write key with 400: the first flush sends each batch once, and nothing is sent again.
   assert.ok(s.errors.some(e => /400/.test(e)), `the SDK reported the 400: ${s.errors}`)
@@ -138,7 +154,7 @@ test('analytics-swift with a revoked key: the Worker answers 400, so each batch 
   // A new key for the same source starts with an empty queue: analytics-swift keeps its queue in a folder named after the write key
   // (the harness keeps that layout under its storage directory). The refused batches were dropped, so nothing is left behind either.
   const fresh = (await call(w.base, ADMIN_TOKEN, 'CreateKey', { project: p.id, scope: 'publishable', source: 'default' })).key.key!
-  const rotated = run(w.base, fresh, 'flush3', storage)
+  const rotated = await run(w.base, fresh, 'flush3', storage)
   assert.equal(rotated.pendingAtStart, 0, 'the new key does not see the old queue')
   assert.equal(rotated.pendingAtEnd, 0)
   assert.equal(readdirSync(join(storage, p.pk)).filter(f => f.endsWith('.temp')).length, 0, 'the refused batches were dropped, not left on disk')

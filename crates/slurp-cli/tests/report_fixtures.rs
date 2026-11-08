@@ -371,3 +371,62 @@ fn png_and_pdf_both_render_unsupported_glyphs_with_the_existing_warning() {
     );
     assert_eq!(png_size(&out.join("report.png")).0, 840 * SCALE);
 }
+
+#[test]
+fn starter_overview_builds_empty_and_on_the_shipped_database() {
+    let Some((temp, w)) = workspace() else { return };
+    let file = temp.path().join("slurp/reports/overview.md");
+    let original = std::fs::read_to_string(&file).unwrap();
+    report::build(
+        &w,
+        &file,
+        &temp.path().join("empty-overview"),
+        false,
+        true,
+        false,
+    )
+    .unwrap();
+    let baseline =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/releases/0.2.0/database.duckdb");
+    std::fs::copy(baseline, &w.database).unwrap();
+    // Bind only this temporary copy to the test workspace; the release fixture stays immutable.
+    w.execute(
+        "UPDATE _slurp.meta SET backend = 'http://localhost:8080', project = 'prj_fixture'",
+        false,
+    )
+    .unwrap();
+    let w = Workspace::load_at(&temp.path().join("private-home"), temp.path()).unwrap();
+    assert_eq!(
+        w.execute("SELECT slurp_helpers_version() AS v", true)
+            .unwrap()[0]["v"],
+        slurp_app::helpers::VERSION
+    );
+    let summary = w.execute("SELECT * FROM slurp_summary", true).unwrap();
+    assert_eq!(summary[0]["events"], 2);
+    assert_eq!(
+        w.execute("SELECT count(*) AS n FROM fixture_labels", true)
+            .unwrap()[0]["n"],
+        1
+    );
+    assert_eq!(
+        w.execute("SELECT count(*) AS n FROM _slurp.deliveries", true)
+            .unwrap()[0]["n"],
+        2
+    );
+    report::build(
+        &w,
+        &file,
+        &temp.path().join("fixture-overview"),
+        false,
+        true,
+        false,
+    )
+    .unwrap();
+    std::fs::write(&file, "# My edited overview").unwrap();
+    Workspace::load_at(&temp.path().join("private-home"), temp.path()).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "# My edited overview"
+    );
+    assert!(original.contains("slurp_summary"));
+}

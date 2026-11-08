@@ -30,8 +30,8 @@ importers:
   apps/site:
     dependencies:
       '@hitslop/slurp-sdk':
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: 0.2.1
+        version: 0.2.1
       astro:
         specifier: 7.4.5
         version: 7.4.5(esbuild@0.28.2)(yaml@2.9.1)
@@ -682,8 +682,8 @@ packages:
       '@noble/hashes':
         optional: true
 
-  '@hitslop/slurp-sdk@0.2.0':
-    resolution: {integrity: sha512-RPoTqOA7cCQbyjNwlgc9P+oIal6zBVUViLA1FC4WGlYpvlLNhJkvGgknbskJMMtAjreYQFgv678fVQ7/bWTmfw==}
+  '@hitslop/slurp-sdk@0.2.1':
+    resolution: {integrity: sha512-6t3UuZyjFQwus5d6DzNATVR2CzsQQY0Kam9jJ/MXD2TtAhtG5jvTFOBLWaF7gnSMO/dZG5/tZwUvXH6dQZAMVg==}
     engines: {node: '>=20'}
 
   '@img/colour@1.1.0':
@@ -3220,7 +3220,7 @@ snapshots:
 
   '@exodus/bytes@1.16.0': {}
 
-  '@hitslop/slurp-sdk@0.2.0': {}
+  '@hitslop/slurp-sdk@0.2.1': {}
 
   '@img/colour@1.1.0': {}
 

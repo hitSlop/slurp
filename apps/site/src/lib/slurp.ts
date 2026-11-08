@@ -28,6 +28,7 @@ if (slurpKey) {
       theme: 'light', // the site is always light, whatever the visitor's system setting
       title: 'Send feedback about Slurp',
       placeholder: 'What is confusing, missing or broken?',
+      thankYou: 'Thank you. Our agent reads every message.',
       data: () => ({ path: location.pathname }),
       client: { track: record },
       button: !compact.matches,

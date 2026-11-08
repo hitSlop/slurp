@@ -9,6 +9,8 @@
 !.env.*.example
 .dev.vars
 *.duckdb
+# Immutable databases used to verify future migrations.
+!/fixtures/releases/*/*.duckdb
 *.duckdb.wal
 .DS_Store
 **/.slurp-home/

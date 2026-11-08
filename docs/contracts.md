@@ -175,7 +175,7 @@ Also: `ADMIN_TOKEN` (a secret) and `SLURP_BUILD`.
 
 ## Local import (CLI)
 
-The schema below is version 1. Later versions are reached by migration steps (see "Versions and upgrades"). A database made by Slurp 0.1 has `_slurp.identity` and no `_slurp.meta`. It is refused with a message, not migrated.
+The schema below is version 1. Later versions are reached by migration steps (see "Versions and upgrades"). A database without the baseline `_slurp.meta` metadata is unsupported.
 
 ```
 events(sender, id, type, event, timestamp, user_id, anonymous_id, session_id, data JSON, context JSON, geo JSON,
@@ -249,10 +249,7 @@ Every SDK implements this. `sdks/conformance/delivery.json` holds the executable
 
 ## Versions and upgrades
 
-From 0.2 on, upgrading Slurp never loses data and never needs a hand migration.
-- **Every store has a version.**
-- **A newer reader upgrades an older store** by itself.
-- **An older reader refuses a newer store**, with a message saying what to upgrade. It never reads or writes data it doesn't understand.
+0.2.0 is the first supported baseline. Newer releases migrate supported stored data automatically. Existing files must carry explicit versions; unsupported or unversioned state requires fresh setup. Older readers refuse newer formats before interpreting or writing them.
 
 The release steps that check these rules are in [releasing.md](releasing.md).
 
@@ -260,8 +257,8 @@ The release steps that check these rules are in [releasing.md](releasing.md).
 |---|---|---|---|
 | A project's Durable Object (SQLite) | `_schema(version)` | An object that already has storage applies the missing steps when it starts, each in one transaction with its version bump. An empty object stays empty (no tables) until the authorized create, so a forged key never creates storage | The object answers 503: "this Worker's data is newer than its code; deploy the newer Worker". It writes nothing |
 | The registry Durable Object (SQLite) | `_schema(version)` | The same | The same |
-| The local database (DuckDB) | `_slurp.meta.schema` | One DuckDB process, holding DuckDB's write lock throughout, copies the database to `<database>.schema<N>-<utc time>.bak`, then applies the missing steps in one transaction. A failed step leaves the database as it was, and the next command tries again | "this database was made by a newer Slurp; upgrade the CLI" |
-| The Worker's code | `/v1/health` `release` | `slurp cloud upgrade` deploys the newer bundle, then waits for the new `build` and calls `ListProjects` to check storage | `slurp cloud upgrade` refuses (no downgrades). An unreachable Worker is also refused unless `--force` is passed |
+| The local database (DuckDB) | `_slurp.meta.schema` | One DuckDB process, holding DuckDB's write lock throughout, copies the database to `<database>.schema<N>-<random>.bak/<database filename>`, then applies the missing steps in one transaction. Each attempt reserves its own directory. Successful backups are kept. After a failure, the CLI checks the binding and schema again: if unchanged, it removes its own attempt folder. If changed or unreadable, it keeps the folder and returns the original error; the copy may be incomplete | "this database was made by a newer Slurp; upgrade the CLI" |
+| The Worker's code | `/v1/health` `release` | `slurp cloud upgrade` deploys the newer bundle, then waits for the new `build` and calls `ListProjects` to check storage | `slurp cloud upgrade` refuses (no downgrades). Missing release metadata is refused. Unavailable health is refused unless forced. `--force` bypasses unavailable or unrecognizable health only; recognized incompatible deployments and newer releases are still refused |
 | The control API | `/v1/health` `apiVersion` | The CLI works with any Worker in its supported range and says when `slurp cloud upgrade` would help | "upgrade the CLI" |
 | Archives (envelopes) | `format` on each `ListArchives` entry | Readers ignore fields they don't know; a format only ever gains fields | The CLI refuses that archive before downloading it: "upgrade slurp" |
 | SDK saved state | the namespace in the storage key (`@hitslop/slurp-sdk:v1:…`) | A format only ever gains fields | An incompatible format uses a new namespace (`:v2:`), so an older SDK never reads or overwrites it |
@@ -269,9 +266,9 @@ The release steps that check these rules are in [releasing.md](releasing.md).
 
 Rules for changing any of them:
 
-1. **Version numbers move only for incompatible changes.** A new optional field doesn't bump anything. `apiVersion`, the schema versions, `format` and the SDK namespace are independent of each other and of package versions.
-2. **Migration steps are append-only.** Step `i` takes version `i` to `i + 1`. A shipped step is never edited, and each new step comes with a test that loads data at the previous version and checks that it survives.
-3. **Forward only.** There are no down migrations. A failed step rolls back by itself. A step that succeeded but exposed broken code is fixed by a corrective release. The local backup is there for a manual restore.
-4. **The ingest contract stays stable.** Cached web pages and shipped apps keep sending to upgraded Workers. So `POST /v1/events`, the compatibility endpoints, the webhook URLs and the key formats only gain features.
-5. **Mixed versions during a deploy.** Cloudflare can keep a Durable Object on the old code for a short while after the Worker's code changes. Calls from the Worker to an object therefore change additively across one release: add a method or optional field, and remove the old one in a later release.
-6. **0.1 is not upgraded.** Slurp 0.1's Workers, folders (`.slurp/`) and databases are refused with a message saying to start fresh. There is no migration from 0.1.
+1. **Versions are independent.** Every database migration advances its schema version, including a new column or index. API, archive, SDK-storage and file-format versions change when their formats become incompatible. Package versions are separate.
+2. **Steps are append-only.** Step `i` takes schema `i` to `i + 1`. Never edit a shipped step. Test each new step with data from the previous version.
+3. **Fix forward.** There are no down migrations. SQL failures roll back the transaction. After a process failure, check the database before deciding whether to remove the attempt files. A changed or unreadable schema is not proof of success.
+4. **Keep ingestion compatible.** Cached pages and shipped apps must keep sending after an upgrade. Ingest endpoints, webhook URLs and key formats only gain features.
+5. **Allow mixed code versions.** An object can briefly run old code after deployment. Release N adds support; a later release adopts it. Same-release adoption needs a fallback for an object that lacks support. Removal must also tolerate skipped releases.
+6. **Start clean.** 0.2.0 is the first supported release. Files need explicit versions; unsupported layouts are refused with recovery instructions. Credentials use `{ "version": 1, "entries": { "<account>": "<token>" } }`. Settings and cloud receipts start at version 1; TOML writes `version = 1`.

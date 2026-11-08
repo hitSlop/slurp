@@ -933,3 +933,365 @@ fn health_reports_only_what_needs_attention() {
     );
     assert_eq!(found["findings"][2]["evidence"]["extra_events"], json!(1));
 }
+
+/// A database at schema 1 holding imported events, a receipt and a table the user made.
+fn old_database() -> Option<(tempfile::TempDir, Workspace)> {
+    let (temp, w) = workspace()?;
+    w.import(
+        1,
+        "h1",
+        1,
+        archive(&text(&[signup("e1", "signup"), signup("e2", "signup")])).path(),
+    )
+    .expect("import");
+    w.execute("CREATE TABLE mine AS SELECT 5 AS x", false)
+        .expect("user table");
+    Some((temp, w))
+}
+/// Step 0 is today's schema (the database already has it); steps after it are the injected migrations.
+const V1_ALREADY_APPLIED: &str = "SELECT 1";
+fn backups(w: &Workspace) -> Vec<std::path::PathBuf> {
+    let dir = w.database.parent().expect("database directory");
+    let mut found: Vec<_> = std::fs::read_dir(dir)
+        .expect("directory")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.to_string_lossy().contains(".schema"))
+        .collect();
+    found.sort();
+    found
+}
+fn schema(w: &Workspace) -> Value {
+    w.execute("SELECT schema FROM _slurp.meta", true)
+        .expect("schema")[0]["schema"]
+        .clone()
+}
+
+#[test]
+fn an_older_database_is_backed_up_and_migrated() {
+    let Some((temp, w)) = old_database() else {
+        return;
+    };
+    assert_eq!(schema(&w), json!(1));
+    let steps = [
+        V1_ALREADY_APPLIED,
+        "CREATE TABLE _slurp.extra(x INTEGER); INSERT INTO _slurp.extra VALUES(7);",
+    ];
+    let loaded = Workspace::load_with_migrations(temp.path(), &steps).expect("migrate");
+    assert_eq!(schema(&loaded), json!(2));
+    assert_eq!(
+        loaded
+            .execute("SELECT x FROM _slurp.extra", true)
+            .expect("new table"),
+        json!([{"x": 7}])
+    );
+    assert_eq!(
+        loaded
+            .execute("SELECT count(*) AS n FROM events", true)
+            .expect("events"),
+        json!([{"n": 2}]),
+        "the data survives"
+    );
+    let found = backups(&w);
+    assert_eq!(
+        found.len(),
+        1,
+        "one backup and nothing beside it: {found:?}"
+    );
+    let name = found[0].file_name().expect("name").to_string_lossy();
+    assert!(
+        name.starts_with("events.duckdb.schema1-") && name.ends_with(".bak"),
+        "{name}"
+    );
+    // The backup is a database as it was before the migration.
+    let backup = Workspace {
+        database: found[0].join(w.database.file_name().expect("filename")),
+        ..w.clone()
+    };
+    assert_eq!(schema(&backup), json!(1));
+    assert_eq!(
+        backup
+            .execute("SELECT count(*) AS n FROM events", true)
+            .expect("backup events"),
+        json!([{"n": 2}])
+    );
+    assert_eq!(
+        backup
+            .execute("SELECT sequence FROM _slurp.deliveries", true)
+            .expect("backup receipts"),
+        json!([{"sequence": 1}])
+    );
+    assert_eq!(
+        backup
+            .execute("SELECT x FROM mine", true)
+            .expect("backup user table"),
+        json!([{"x": 5}])
+    );
+    assert!(
+        backup.execute("SELECT * FROM _slurp.extra", true).is_err(),
+        "the backup is from before the migration"
+    );
+    // Loading again at the latest schema changes nothing.
+    Workspace::load_with_migrations(temp.path(), &steps).expect("load again");
+    assert_eq!(backups(&w).len(), 1);
+}
+
+#[test]
+fn a_failing_step_leaves_the_database_unchanged_and_a_retry_succeeds() {
+    let Some((temp, w)) = old_database() else {
+        return;
+    };
+    let failing = [
+        V1_ALREADY_APPLIED,
+        "CREATE TABLE _slurp.extra(x INTEGER)",
+        "SELECT error('boom')",
+    ];
+    let error =
+        Workspace::load_with_migrations(temp.path(), &failing).expect_err("the third step fails");
+    assert!(format!("{error:#}").contains("boom"), "{error:#}");
+    assert_eq!(schema(&w), json!(1), "the schema is where it was");
+    assert!(
+        w.execute("SELECT * FROM _slurp.extra", true).is_err(),
+        "the first step was rolled back"
+    );
+    assert_eq!(
+        w.execute("SELECT count(*) AS n FROM events", true)
+            .expect("events"),
+        json!([{"n": 2}])
+    );
+    assert_eq!(
+        backups(&w).len(),
+        0,
+        "confirmed unchanged attempt is removed"
+    );
+    let fixed = [
+        V1_ALREADY_APPLIED,
+        "CREATE TABLE _slurp.extra(x INTEGER)",
+        "CREATE TABLE _slurp.more(y INTEGER)",
+    ];
+    let loaded = Workspace::load_with_migrations(temp.path(), &fixed).expect("retry");
+    assert_eq!(schema(&loaded), json!(3));
+    assert!(loaded.execute("SELECT * FROM _slurp.more", true).is_ok());
+    assert_eq!(backups(&w).len(), 1, "only the successful backup remains");
+}
+
+#[test]
+fn two_concurrent_loads_migrate_once_and_leave_no_partial_backup() {
+    let Some((temp, w)) = old_database() else {
+        return;
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let wrapper = temp.path().join("engine.py");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+from pathlib import Path
+import subprocess,sys,time,os
+root=Path(__file__).parent
+sql=sys.stdin.read() if '--version' not in sys.argv else ''
+if 'CREATE TEMP TABLE _slurp_guard' in sql:
+    try:
+        fd=os.open(root/'leader',os.O_CREAT|os.O_EXCL|os.O_WRONLY)
+        os.close(fd)
+        leader=True
+    except FileExistsError: leader=False
+    deadline=time.time()+15
+    if leader:
+        while not (root/'follower').exists() and time.time()<deadline: time.sleep(.001)
+    else:
+        (root/'follower').touch()
+        while not list(root.glob('**/*.bak/events.duckdb')) and time.time()<deadline: time.sleep(.001)
+p=subprocess.run([{engine:?},*sys.argv[1:]],input=sql,text=True)
+sys.exit(p.returncode)
+"#,
+        engine = w.duckdb.to_string_lossy()
+    );
+    std::fs::write(&wrapper, script).expect("wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+        .expect("permissions");
+    let wrapped = Workspace {
+        duckdb: wrapper,
+        ..w.clone()
+    };
+    std::fs::write(
+        temp.path().join(".slurp/project.toml"),
+        toml::to_string(&wrapped).expect("binding"),
+    )
+    .expect("write");
+    let steps = [
+        V1_ALREADY_APPLIED,
+        "CREATE TABLE _slurp.extra AS SELECT sum(sin(i::DOUBLE)) AS x FROM range(100000000) t(i)",
+    ];
+    let outcomes: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| scope.spawn(|| Workspace::load_with_migrations(temp.path(), &steps)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect()
+    });
+    for outcome in &outcomes {
+        assert!(outcome.is_ok(), "{:?}", outcome.as_ref().err());
+    }
+    assert_eq!(schema(&w), json!(2));
+    let found = backups(&w);
+    assert_eq!(found.len(), 1, "one migration, one backup: {found:?}");
+    let backup = Workspace {
+        database: found[0].join(w.database.file_name().expect("filename")),
+        ..w.clone()
+    };
+    assert_eq!(schema(&backup), json!(1), "the backup is complete");
+}
+
+#[test]
+fn a_database_from_a_newer_slurp_is_refused() {
+    let Some((temp, w)) = old_database() else {
+        return;
+    };
+    w.execute("UPDATE _slurp.meta SET schema = 99", false)
+        .expect("pretend");
+    let error = Workspace::load(temp.path()).expect_err("newer");
+    assert!(
+        format!("{error:#}").contains("made by a newer Slurp; upgrade the CLI"),
+        "{error:#}"
+    );
+    assert!(backups(&w).is_empty(), "nothing was copied or changed");
+    assert_eq!(schema(&w), json!(99));
+}
+
+#[test]
+fn a_slurp_0_1_database_is_refused_with_a_message() {
+    let Some((temp, w)) = old_database() else {
+        return;
+    };
+    w.execute(
+        "ALTER TABLE _slurp.meta RENAME TO identity; ALTER TABLE _slurp.identity RENAME COLUMN schema TO version",
+        false,
+    )
+    .expect("make it look like 0.1");
+    let error = format!("{:#}", Workspace::load(temp.path()).expect_err("0.1"));
+    assert!(error.contains("not a Slurp database"), "{error}");
+    assert!(error.contains("events.duckdb"), "names the file: {error}");
+    w.execute("DROP TABLE _slurp.identity", false)
+        .expect("drop");
+    let error = format!("{:#}", Workspace::load(temp.path()).expect_err("neither"));
+    assert!(error.contains("not a Slurp database"), "{error}");
+}
+
+#[test]
+fn a_busy_database_is_waited_for() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    // Hold DuckDB's write lock from another process for about two seconds.
+    let mut holder = std::process::Command::new(&w.duckdb)
+        .args(["-no-agent", "-init", "/dev/null"])
+        .arg(&w.database)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("holder");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let stdin = holder.stdin.take();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        drop(stdin);
+    });
+    let started = std::time::Instant::now();
+    let rows = w
+        .execute("SELECT count(*) AS n FROM events", true)
+        .expect("waits for the lock instead of failing");
+    assert_eq!(rows, json!([{"n": 0}]));
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+    release.join().expect("release");
+    holder.wait().expect("holder exit");
+}
+
+#[test]
+fn migration_backup_alias_does_not_collide_with_database_name() {
+    for name in [
+        "backup.duckdb",
+        "slurp_backup.duckdb",
+        "SLURP_BACKUP.duckdb",
+    ] {
+        let Some((temp, mut w)) = old_database() else {
+            return;
+        };
+        let dest = w.database.with_file_name(name);
+        std::fs::rename(&w.database, &dest).expect("rename");
+        w.database = dest;
+        std::fs::write(
+            temp.path().join(".slurp/project.toml"),
+            toml::to_string(&w).expect("binding"),
+        )
+        .expect("write");
+        Workspace::load_with_migrations(
+            temp.path(),
+            &[V1_ALREADY_APPLIED, "CREATE TABLE extra(x INTEGER)"],
+        )
+        .expect("migration");
+        assert_eq!(schema(&w), json!(2));
+    }
+}
+
+#[test]
+fn an_error_after_commit_is_not_reported_as_success_and_keeps_the_backup() {
+    let Some((temp, w)) = old_database() else {
+        return;
+    };
+    // The child commits successfully, but reading its oversized output fails.
+    let steps = [V1_ALREADY_APPLIED, "SELECT repeat('x', 34000000)"];
+    let error = Workspace::load_with_migrations(temp.path(), &steps).expect_err("output failure");
+    assert!(format!("{error:#}").contains("query output exceeds"));
+    assert_eq!(schema(&w), json!(2));
+    assert_eq!(backups(&w).len(), 1);
+    Workspace::load_with_migrations(temp.path(), &steps)
+        .expect("normal retry verifies target schema");
+    assert_eq!(backups(&w).len(), 1);
+}
+
+#[test]
+fn unreadable_migration_outcome_keeps_attempt_and_original_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some((temp, w)) = old_database() else {
+        return;
+    };
+    let wrapper = temp.path().join("unreadable-engine.py");
+    let moved = w.database.with_extension("unavailable");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+import subprocess,sys,os
+sql=sys.stdin.read() if '--version' not in sys.argv else ''
+p=subprocess.run([{engine:?},*sys.argv[1:]],input=sql,text=True)
+if 'CREATE TEMP TABLE _slurp_guard' in sql:
+    os.rename({source:?},{moved:?})
+sys.exit(p.returncode)
+"#,
+        engine = w.duckdb.to_string_lossy(),
+        source = w.database.to_string_lossy(),
+        moved = moved.to_string_lossy()
+    );
+    std::fs::write(&wrapper, script).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let wrapped = Workspace {
+        duckdb: wrapper,
+        ..w.clone()
+    };
+    std::fs::write(
+        temp.path().join(".slurp/project.toml"),
+        toml::to_string(&wrapped).unwrap(),
+    )
+    .unwrap();
+    let error = Workspace::load_with_migrations(
+        temp.path(),
+        &[
+            V1_ALREADY_APPLIED,
+            "SELECT error('original migration failure')",
+        ],
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("original migration failure"));
+    assert!(format!("{error:#}").contains("attempt files retained"));
+    assert_eq!(backups(&w).len(), 1);
+    std::fs::rename(moved, &w.database).unwrap();
+    assert_eq!(schema(&w), json!(1));
+}

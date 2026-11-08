@@ -9,13 +9,53 @@ use std::{
     thread,
 };
 
+/// What the fake Worker says and does; tests change it between commands.
+struct State {
+    /// The body of `/v1/health`.
+    health: String,
+    /// Answer `/v1/health` with a 503 that is not JSON, as an unreachable Worker would.
+    down: bool,
+    /// Answer `ListProjects` with a 500.
+    list_projects_fails: bool,
+}
+type Shared = Arc<Mutex<State>>;
+
+/// The build id of the Worker bundled in this CLI, which a deployed Worker reports once the deploy has landed.
+fn bundle_build() -> String {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/worker/build.json"),
+    )
+    .expect("build.json");
+    serde_json::from_str::<Value>(&text).expect("json")["build"]
+        .as_str()
+        .expect("build")
+        .to_owned()
+}
+fn health_body(release: Option<&str>, api_version: Value, build: &str) -> String {
+    let mut body = serde_json::json!({"ok": true, "apiVersion": api_version, "configured": true, "build": build});
+    if let Some(release) = release {
+        body["release"] = release.into();
+    }
+    body.to_string()
+}
+fn current_health() -> String {
+    health_body(Some(env!("CARGO_PKG_VERSION")), 2.into(), &bundle_build())
+}
+
 struct Fake {
     dir: tempfile::TempDir,
     purges: Arc<Mutex<Vec<String>>>,
+    state: Shared,
 }
 impl Fake {
     fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
+    }
+    fn deploys(&self) -> usize {
+        self.calls()
+            .iter()
+            .filter(|c| c.starts_with("deploy --config"))
+            .count()
     }
     fn calls(&self) -> Vec<String> {
         std::fs::read_to_string(self.path("calls.log"))
@@ -27,7 +67,7 @@ impl Fake {
 }
 
 /// A fake Worker: health, the admin-token check, and purge.
-fn fake_worker(purges: Arc<Mutex<Vec<String>>>) -> u16 {
+fn fake_worker(purges: Arc<Mutex<Vec<String>>>, state: Shared) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     thread::spawn(move || {
@@ -60,21 +100,33 @@ fn fake_worker(purges: Arc<Mutex<Vec<String>>>) -> u16 {
             }
             let text = String::from_utf8_lossy(&buffer).into_owned();
             let request_line = text.lines().next().unwrap_or_default().to_owned();
+            let mut status = "200 OK";
             let body = if request_line.contains("/v1/health") {
-                r#"{"ok":true,"apiVersion":2,"configured":true,"build":"fakebuild"}"#
+                let state = state.lock().expect("lock");
+                if state.down {
+                    status = "503 Service Unavailable";
+                    "down".to_owned()
+                } else {
+                    state.health.clone()
+                }
             } else if request_line.contains("/v1/rpc/Whoami") {
-                r#"{"scope":"admin"}"#
+                r#"{"scope":"admin"}"#.to_owned()
             } else if request_line.contains("/v1/admin/purge") {
                 purges.lock().expect("lock").push(text.clone());
-                r#"{"ok":true,"projects":0,"archives":0,"strays":0}"#
+                r#"{"ok":true,"projects":0,"archives":0,"strays":0}"#.to_owned()
             } else if request_line.contains("/v1/rpc/ListProjects") {
-                r#"{"projects":[]}"#
+                if state.lock().expect("lock").list_projects_fails {
+                    status = "500 Internal Server Error";
+                    r#"{"error":{"code":"internal","message":"storage is broken"}}"#.to_owned()
+                } else {
+                    r#"{"projects":[]}"#.to_owned()
+                }
             } else {
-                r#"{}"#
+                r#"{}"#.to_owned()
             };
             let _ = write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -114,9 +166,14 @@ esac
 fn setup() -> Fake {
     let dir = tempfile::tempdir().expect("dir");
     let purges = Arc::new(Mutex::new(Vec::new()));
-    let port = fake_worker(purges.clone());
+    let state = Arc::new(Mutex::new(State {
+        health: current_health(),
+        down: false,
+        list_projects_fails: false,
+    }));
+    let port = fake_worker(purges.clone(), state.clone());
     fake_wrangler(dir.path(), port);
-    Fake { dir, purges }
+    Fake { dir, purges, state }
 }
 
 fn slurp(fake: &Fake, args: &[&str]) -> Output {
@@ -124,6 +181,7 @@ fn slurp(fake: &Fake, args: &[&str]) -> Output {
         .args(args)
         .env("SLURP_HOME", fake.path("home"))
         .env("SLURP_WRANGLER", fake.path("wrangler"))
+        .env("SLURP_CLOUD_WAIT_SECS", "2")
         .env_remove("SLURP_TOKEN")
         .env_remove("SLURP_BACKEND")
         .stdin(std::process::Stdio::null())
@@ -242,9 +300,23 @@ fn init_applies_settings_and_status_reads_the_receipt() {
     assert_eq!(status["worker"], "mine");
     assert_eq!(status["reachable"], true);
     assert_eq!(status["configured"], true);
-    assert_eq!(
-        status["up_to_date"], false,
-        "the fake Worker reports a different build"
+    assert_eq!(status["up_to_date"], true);
+    assert_eq!(status["release"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(status["api_version"], 2);
+    // A Worker still on an older build is reported as not up to date.
+    fake.state.lock().expect("lock").health =
+        health_body(Some(env!("CARGO_PKG_VERSION")), 2.into(), "oldbuild");
+    let status = slurp(&fake, &["cloud", "status", "--json"]);
+    let status: Value =
+        serde_json::from_str(String::from_utf8_lossy(&status.stdout).trim()).expect("json");
+    assert_eq!(status["up_to_date"], false);
+    let human = slurp(&fake, &["cloud", "status"]);
+    let human = text(&human);
+    assert!(
+        human.contains("Release")
+            && human.contains(env!("CARGO_PKG_VERSION"))
+            && human.contains("API"),
+        "{human}"
     );
 }
 
@@ -349,4 +421,237 @@ fn destroy_purges_then_deletes_the_worker_and_bucket_and_forgets_the_connection(
     );
     let who = slurp(&fake, &["whoami"]);
     assert!(!who.status.success(), "the saved connection was forgotten");
+}
+
+fn deployed_fake() -> Fake {
+    let fake = setup();
+    let out = slurp(&fake, &["cloud", "init", "--yes", "--json"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(fake.deploys(), 1);
+    fake
+}
+fn set_health(fake: &Fake, body: String) {
+    fake.state.lock().expect("lock").health = body;
+}
+/// An upgrade that was refused before it deployed anything.
+fn refused(fake: &Fake, args: &[&str]) -> String {
+    let before = fake.deploys();
+    let out = slurp(fake, args);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert_eq!(
+        fake.deploys(),
+        before,
+        "wrangler deploy must not run: {:?}",
+        fake.calls()
+    );
+    text(&out)
+}
+
+#[test]
+fn upgrade_refuses_a_slurp_0_1_worker_without_deploying() {
+    let fake = deployed_fake();
+    set_health(&fake, health_body(None, 2.into(), "oldbuild"));
+    let message = refused(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(
+        message.contains("has unsupported deployment metadata, which this version cannot upgrade")
+            && message.contains("slurp cloud init --worker NEW")
+            && message.contains("slurp cloud destroy"),
+        "{message}"
+    );
+    // A non-numeric apiVersion is the same Worker.
+    set_health(&fake, health_body(Some("0.1.2"), "two".into(), "oldbuild"));
+    assert!(
+        refused(&fake, &["cloud", "upgrade", "--json"]).contains("unsupported deployment metadata")
+    );
+}
+
+#[test]
+fn upgrade_refuses_a_downgrade_without_deploying() {
+    let fake = deployed_fake();
+    set_health(&fake, health_body(Some("99.0.0"), 2.into(), "newerbuild"));
+    let message = refused(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(
+        message.contains(&format!(
+            "the deployed Worker (99.0.0) is newer than this CLI's ({}); upgrade the CLI",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{message}"
+    );
+}
+
+#[test]
+fn upgrade_refuses_a_worker_it_cannot_reach_unless_forced() {
+    let fake = deployed_fake();
+    fake.state.lock().expect("lock").down = true;
+    let message = refused(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(message.contains("can't tell what is deployed"), "{message}");
+    assert!(message.contains("--force"), "{message}");
+    // --force deploys anyway; the Worker comes back once the deploy lands.
+    let state = fake.state.clone();
+    let log = fake.path("calls.log");
+    let waiter = thread::spawn(move || {
+        for _ in 0..200 {
+            let deploys = std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|c| c.starts_with("deploy --config"))
+                .count();
+            if deploys >= 2 {
+                state.lock().expect("lock").down = false;
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(25));
+        }
+    });
+    let out = slurp(&fake, &["cloud", "upgrade", "--force", "--json"]);
+    waiter.join().expect("waiter");
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(fake.deploys(), 2);
+}
+
+#[test]
+fn upgrade_deploys_waits_for_the_new_build_and_records_it() {
+    let fake = deployed_fake();
+    // The Worker is on an older build of this release; the receipt agrees.
+    let receipt_path = fake.path("home/cloud/slurp.json");
+    let mut receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("receipt")).expect("json");
+    receipt["build"] = "oldbuild".into();
+    std::fs::write(&receipt_path, serde_json::to_vec(&receipt).expect("json")).expect("write");
+    set_health(&fake, current_health());
+    let out = slurp(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(fake.deploys(), 1);
+    let receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("receipt")).expect("json");
+    assert_eq!(receipt["build"], bundle_build());
+}
+
+#[test]
+fn a_deploy_whose_new_build_never_appears_fails_and_keeps_the_old_receipt() {
+    let fake = deployed_fake();
+    set_health(
+        &fake,
+        health_body(Some(env!("CARGO_PKG_VERSION")), 2.into(), "stalebuild"),
+    );
+    let out = slurp(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    let message = text(&out);
+    assert!(
+        message.contains("did not become ready") && message.contains("stalebuild"),
+        "{message}"
+    );
+    assert_eq!(fake.deploys(), 2, "it did deploy");
+    let receipt: Value = serde_json::from_slice(
+        &std::fs::read(fake.path("home/cloud/slurp.json")).expect("receipt"),
+    )
+    .expect("json");
+    assert_eq!(
+        receipt["build"],
+        bundle_build(),
+        "init recorded the bundled build and the failed upgrade did not change it"
+    );
+}
+
+#[test]
+fn a_deploy_whose_list_projects_fails_is_reported() {
+    let fake = deployed_fake();
+    let receipt_path = fake.path("home/cloud/slurp.json");
+    let mut receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("receipt")).expect("json");
+    receipt["build"] = "oldbuild".into();
+    std::fs::write(&receipt_path, serde_json::to_vec(&receipt).expect("json")).expect("write");
+    fake.state.lock().expect("lock").list_projects_fails = true;
+    let out = slurp(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    let message = text(&out);
+    assert!(
+        message.contains("could not list its projects") && message.contains("storage is broken"),
+        "{message}"
+    );
+    let receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("receipt")).expect("json");
+    assert_eq!(receipt["build"], "oldbuild", "the receipt was not advanced");
+}
+
+#[test]
+fn init_fails_when_the_new_worker_cannot_list_its_projects() {
+    let fake = setup();
+    fake.state.lock().expect("lock").list_projects_fails = true;
+    let out = slurp(&fake, &["cloud", "init", "--yes", "--json"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("admin token is saved"),
+        "{}",
+        text(&out)
+    );
+    assert!(fake.path("home/cloud/slurp.json").exists());
+    assert!(fake.path("home/credentials.json").exists());
+    assert!(!fake.path("home/config.toml").exists());
+    let out = slurp(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(!out.status.success(), "storage must still be checked");
+    fake.state.lock().expect("lock").list_projects_fails = false;
+    let out = slurp(&fake, &["cloud", "upgrade", "--json"]);
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+#[test]
+fn connect_checks_the_api_range() {
+    let fake = deployed_fake();
+    let url = std::fs::read_to_string(fake.path("url.txt")).expect("url");
+    let connect = |fake: &Fake| {
+        text(
+            &Command::new(env!("CARGO_BIN_EXE_slurp"))
+                .args(["connect", &url])
+                .env("SLURP_HOME", fake.path("home2"))
+                .env("SLURP_TOKEN", "t".repeat(64))
+                .env_remove("SLURP_BACKEND")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("run slurp"),
+        )
+    };
+    set_health(&fake, health_body(Some("0.1.2"), 1.into(), "b"));
+    let message = connect(&fake);
+    assert!(
+        message.contains("older Worker") && message.contains("slurp cloud upgrade"),
+        "{message}"
+    );
+    set_health(&fake, health_body(Some("9.0.0"), 3.into(), "b"));
+    let message = connect(&fake);
+    assert!(
+        message.contains("newer Worker") && message.contains("upgrade the CLI"),
+        "{message}"
+    );
+}
+
+#[test]
+fn force_cannot_override_a_known_downgrade() {
+    let fake = deployed_fake();
+    set_health(&fake, health_body(Some("99.0.0"), 2.into(), "future"));
+    assert!(refused(&fake, &["cloud", "upgrade", "--force", "--json"]).contains("newer"));
+}
+#[test]
+fn future_receipt_is_refused_before_deploy() {
+    let fake = deployed_fake();
+    let path = fake.path("home/cloud/slurp.json");
+    let mut receipt: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    receipt["version"] = 2.into();
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(refused(&fake, &["cloud", "upgrade", "--json"]).contains("newer Slurp"));
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn force_cannot_override_an_incompatible_api() {
+    let fake = deployed_fake();
+    set_health(
+        &fake,
+        health_body(Some(env!("CARGO_PKG_VERSION")), 99.into(), "other"),
+    );
+    assert!(
+        refused(&fake, &["cloud", "upgrade", "--force", "--json"])
+            .contains("incompatible Worker API")
+    );
 }

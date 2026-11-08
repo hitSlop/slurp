@@ -10,6 +10,10 @@ use crate::{Remote, api, download_verified};
 use anyhow::{Result, bail};
 use std::{collections::VecDeque, path::PathBuf};
 
+/// The archive envelope format this version reads (`ArchiveInfo.format`). A format only ever gains fields, so a different
+/// number means an incompatible change, and the archive is refused before it is downloaded.
+const ARCHIVE_FORMAT: u32 = 1;
+
 /// One archive, downloaded and verified, in a directory that is removed when this value is dropped.
 pub struct Downloaded {
     pub sequence: u64,
@@ -101,6 +105,13 @@ impl<'a> Walk<'a> {
                     archive.seq
                 );
             }
+            if archive.format != ARCHIVE_FORMAT {
+                bail!(
+                    "archive {} uses format {}, which this version of Slurp can't read; upgrade slurp",
+                    archive.seq,
+                    archive.format
+                );
+            }
             let directory = scratch()?;
             let path = directory.path().join("events.jsonl.gz");
             download_verified(self.remote, &archive, &path).await?;
@@ -154,6 +165,7 @@ mod tests {
         archives: Vec<(api::ArchiveInfo, Vec<u8>)>,
         corrupt: bool,
         missing_on_download: Option<u64>,
+        downloads: std::sync::atomic::AtomicUsize,
     }
     fn archive(seq: u64) -> (api::ArchiveInfo, Vec<u8>) {
         let body = format!("body {seq}").into_bytes();
@@ -164,6 +176,7 @@ mod tests {
                 sha256: hex::encode(Sha256::digest(&body)),
                 events: 1,
                 created_at: "2026-11-07T12:00:00.000Z".into(),
+                format: 1,
             },
             body,
         )
@@ -175,6 +188,7 @@ mod tests {
             archives: (first..=last).map(archive).collect(),
             corrupt: false,
             missing_on_download: None,
+            downloads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
     #[async_trait::async_trait]
@@ -223,6 +237,8 @@ mod tests {
             archive: &api::ArchiveInfo,
             dest: &Path,
         ) -> Result<(String, u64), RemoteError> {
+            self.downloads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.missing_on_download == Some(archive.seq) {
                 return Err(RemoteError::ArchiveMissing(archive.seq));
             }
@@ -353,5 +369,24 @@ mod tests {
             ["archive 1", "archive 2", "archive 3"]
         );
         assert_eq!(walk.position(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn an_archive_in_an_unknown_format_is_refused_before_any_download() {
+        let mut remote = fake(1, 1);
+        remote.archives[0].0.format = 2;
+        let mut walk = Walk::new(&remote, None, 10);
+        let error = message(drain(&mut walk).await);
+        assert!(
+            error.contains("archive 1 uses format 2")
+                && error.contains("can't read")
+                && error.contains("upgrade slurp"),
+            "{error}"
+        );
+        assert_eq!(
+            remote.downloads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing was downloaded"
+        );
     }
 }

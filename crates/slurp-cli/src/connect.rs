@@ -3,6 +3,10 @@ use anyhow::{Result, anyhow, bail};
 use serde_json::Value;
 use slurp_client::api::TokenScope;
 
+/// The oldest and newest Worker API (`/v1/health` `apiVersion`) this CLI speaks. They move only for incompatible API changes.
+pub const MIN_API: u64 = 2;
+pub const MAX_API: u64 = 2;
+
 /// A verified connection that has been saved.
 pub struct Connected {
     pub backend: String,
@@ -34,10 +38,17 @@ pub async fn verify_and_save(url: &str, token: String) -> Result<Connected> {
     if health["ok"] != true {
         bail!("{backend} is not a Slurp Worker");
     }
-    if health["apiVersion"] != 2 {
-        bail!(
-            "{backend} runs a different version of the Slurp Worker API than this CLI expects; deploy a matching Worker with slurp cloud upgrade (or install the matching CLI)"
-        );
+    match health["apiVersion"].as_u64() {
+        Some(api) if api < MIN_API => bail!(
+            "{backend} runs an older Worker (API {api}; this CLI needs {MIN_API} to {MAX_API}); run `slurp cloud upgrade`"
+        ),
+        Some(api) if api > MAX_API => bail!(
+            "{backend} runs a newer Worker (API {api}; this CLI speaks {MIN_API} to {MAX_API}); upgrade the CLI"
+        ),
+        Some(_) => {}
+        None => bail!(
+            "{backend} does not report a Worker API version this CLI understands; deploy a fresh Worker with `slurp cloud init`"
+        ),
     }
     if health["configured"] != true {
         bail!("the Worker has no ADMIN_TOKEN configured; set the ADMIN_TOKEN secret on it first");

@@ -257,12 +257,12 @@ export class Publisher {
     // With every archive deleted there is no oldest kept one: the first that could ever be listed is after the last.
     const from = coverage.first ?? (coverage.last ?? 0) + 1
     const gap = after !== undefined && after + 1 < from ? { from: after + 1, to: from - 1 } : undefined
-    const rows = this.db.rows<{ seq: number; size: number; sha256: string; events: number; created_at: number }>(
-      'SELECT seq, size, sha256, events, created_at FROM manifest WHERE seq>? AND deleted_at IS NULL ORDER BY seq LIMIT ?', Math.max(after ?? 0, from - 1), limit + 1)
+    const rows = this.db.rows<{ seq: number; size: number; sha256: string; events: number; created_at: number; format: number }>(
+      'SELECT seq, size, sha256, events, created_at, format FROM manifest WHERE seq>? AND deleted_at IS NULL ORDER BY seq LIMIT ?', Math.max(after ?? 0, from - 1), limit + 1)
     const page = rows.slice(0, limit)
     return {
       coverage,
-      archives: page.map(r => ({ seq: r.seq, size: r.size, sha256: r.sha256, events: r.events, createdAt: new Date(r.created_at).toISOString() })),
+      archives: page.map(r => ({ seq: r.seq, size: r.size, sha256: r.sha256, events: r.events, createdAt: new Date(r.created_at).toISOString(), format: r.format })),
       ...(rows.length > limit ? { next: page[page.length - 1].seq } : {}),
       ...(gap ? { gap } : {}),
     }

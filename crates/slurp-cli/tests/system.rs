@@ -48,7 +48,7 @@ fn system_defaults_and_registry_survive_disconnected_storage() {
     assert_eq!(initial["settings"]["backend"], "http://127.0.0.1:8787");
     assert!(!home.exists(), "reading config does not create state");
     fs::create_dir(&home).expect("system home");
-    let settings = "# My self-hosted server\nbackend = 'http://localhost:8080'\n";
+    let settings = "# My self-hosted server\nversion = 1\nbackend = 'http://localhost:8080'\n";
     fs::write(home.join("config.toml"), settings).expect("system settings");
     value(cli(
         project.path(),

@@ -1,5 +1,5 @@
 import { type Ctx, download, projectStub, rpc } from './api.ts'
-import { adminConfigured, authenticate, bearer } from './auth.ts'
+import { type Auth, Unavailable, adminConfigured, authenticate, bearer } from './auth.ts'
 import { type Adapter, type Host, json } from './compat/common.ts'
 import { hooks } from './compat/hooks.ts'
 import { segment } from './compat/segment.ts'
@@ -8,6 +8,7 @@ import { configOf } from './config.ts'
 import { setupPage } from './landing.ts'
 import { native } from './native.ts'
 import type { Env } from './util.ts'
+import { RELEASE } from './version.ts'
 export { RegistryDO } from './registry.ts'
 export { ProjectDO } from './project.ts'
 
@@ -18,7 +19,11 @@ const makeHost = (env: Env): Host => ({
   cfg: configOf(env),
   authenticate: token => authenticate(env, token),
   ingest: (sender, lines, geo) => projectStub(env, sender.project).ingest(sender.token, lines, geo),
-  webhookSecret: (project, provider) => Promise.resolve(projectStub(env, project).webhookSecret(provider)),
+  webhookSecret: async (project, provider) => {
+    const secret = await projectStub(env, project).webhookSecret(provider)
+    if (!secret.ok) throw new Unavailable(secret.message)
+    return secret.value
+  },
 })
 
 /** Admin only. Deletes all data so the Worker and bucket can be removed: every project's archives and storage, any stray R2 objects, and the registry. */
@@ -60,9 +65,15 @@ export default {
     if (path === '/' && (req.method === 'GET' || req.method === 'HEAD'))
       return new Response(req.method === 'HEAD' ? null : setupPage(url.origin, adminConfigured(env)), {
         headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } })
-    if (path === '/v1/health') return Response.json({ ok: true, apiVersion: 2, configured: adminConfigured(env), build: env.SLURP_BUILD ?? null, geo: host.cfg.geo })
+    if (path === '/v1/health') return Response.json({ ok: true, apiVersion: 2, release: RELEASE, configured: adminConfigured(env), build: env.SLURP_BUILD ?? null, geo: host.cfg.geo })
 
-    const ctx: Ctx = { env, cfg: host.cfg, auth: await authenticate(env, bearer(req)), origin: url.origin }
+    // A project key is checked by its object, which refuses (`Unavailable`) when its stored data is newer than this code.
+    let auth: Auth | null
+    try { auth = await authenticate(env, bearer(req)) } catch (e) {
+      console.error('authentication failed', e)
+      return Response.json({ error: { code: 'unavailable', message: 'storage is unavailable' } }, { status: 503, headers: { 'Retry-After': '5' } })
+    }
+    const ctx: Ctx = { env, cfg: host.cfg, auth, origin: url.origin }
     const method = /^\/v1\/rpc\/([A-Za-z]+)$/.exec(path)?.[1]
     if (method) return rpc(req, ctx, method)
     const archive = /^\/v1\/projects\/(prj_[0-9a-f]{16})\/archives\/([^/]+)$/.exec(path)

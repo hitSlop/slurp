@@ -7,7 +7,12 @@ export type ApiErrorBody = { error: ApiError, };
 
 export type ApiKey = { keyId: string, project: string, scope: KeyScope, source?: string, name?: string, createdAt: string, revokedAt?: string, key?: string, };
 
-export type ArchiveInfo = { seq: number, size: number, sha256: string, events: number, createdAt: string, };
+export type ArchiveInfo = { seq: number, size: number, sha256: string, events: number, createdAt: string, 
+/**
+ * The envelope format of this archive (`docs/contracts.md`, "Versions and upgrades"). Every archive is format 1 today; a
+ * reader refuses a format it does not know before downloading it.
+ */
+format: number, };
 
 export type ConnectWebhookRequest = { project: string, provider: string, secret?: string, };
 

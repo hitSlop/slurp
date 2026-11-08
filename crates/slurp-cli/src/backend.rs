@@ -50,7 +50,7 @@ mod tests {
         assert_eq!(resolve(None).expect("default"), config::DEFAULT_BACKEND);
         fs::write(
             home.path().join("config.toml"),
-            "backend = 'http://localhost:8079'\n",
+            "version = 1\nbackend = 'http://localhost:8079'\n",
         )
         .expect("system setting");
         assert_eq!(resolve(None).expect("system"), "http://localhost:8079");

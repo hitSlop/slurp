@@ -41,6 +41,11 @@ __name(retry, "retry");
 var MIN_ADMIN_TOKEN = 20;
 var PUBLISHABLE_KEY = /^slurp_pk_([0-9a-f]{16})_([a-z][a-z0-9_]{0,31})_([0-9a-f]{48})$/;
 var SECRET_KEY = /^slurp_sk_([0-9a-f]{16})_([0-9a-f]{48})$/;
+var Unavailable = class extends Error {
+  static {
+    __name(this, "Unavailable");
+  }
+};
 var adminConfigured = /* @__PURE__ */ __name((env) => !!env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN, "adminConfigured");
 var isAdmin = /* @__PURE__ */ __name((token, env) => adminConfigured(env) && timingSafeEqual(token, env.ADMIN_TOKEN), "isAdmin");
 var bearer = /* @__PURE__ */ __name((req) => /^Bearer (.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1] ?? null, "bearer");
@@ -65,8 +70,9 @@ async function authenticate(env, token) {
   if (isAdmin(token, env)) return { kind: "admin" };
   const project = projectOfKey(token);
   if (!project) return null;
-  const principal = await env.PROJECT.get(env.PROJECT.idFromName(project)).authorize(token);
-  return principal ? { kind: "key", project, ...principal } : null;
+  const authorized = await env.PROJECT.get(env.PROJECT.idFromName(project)).authorize(token);
+  if (!authorized.ok) throw new Unavailable(authorized.message);
+  return authorized.value ? { kind: "key", project, ...authorized.value } : null;
 }
 __name(authenticate, "authenticate");
 
@@ -440,14 +446,14 @@ var Publisher = class {
     const from = coverage.first ?? (coverage.last ?? 0) + 1;
     const gap = after !== void 0 && after + 1 < from ? { from: after + 1, to: from - 1 } : void 0;
     const rows = this.db.rows(
-      "SELECT seq, size, sha256, events, created_at FROM manifest WHERE seq>? AND deleted_at IS NULL ORDER BY seq LIMIT ?",
+      "SELECT seq, size, sha256, events, created_at, format FROM manifest WHERE seq>? AND deleted_at IS NULL ORDER BY seq LIMIT ?",
       Math.max(after ?? 0, from - 1),
       limit + 1
     );
     const page = rows.slice(0, limit);
     return {
       coverage,
-      archives: page.map((r) => ({ seq: r.seq, size: r.size, sha256: r.sha256, events: r.events, createdAt: new Date(r.created_at).toISOString() })),
+      archives: page.map((r) => ({ seq: r.seq, size: r.size, sha256: r.sha256, events: r.events, createdAt: new Date(r.created_at).toISOString(), format: r.format })),
       ...rows.length > limit ? { next: page[page.length - 1].seq } : {},
       ...gap ? { gap } : {}
     };
@@ -515,7 +521,7 @@ var registry = /* @__PURE__ */ __name((env) => env.REGISTRY.get(env.REGISTRY.idF
 var projectStub = /* @__PURE__ */ __name((env, id) => env.PROJECT.get(env.PROJECT.idFromName(id)), "projectStub");
 var unwrap = /* @__PURE__ */ __name((r) => {
   if (r.ok) return r.value;
-  throw new ApiFailure(r.code === "notfound" ? "not_found" : r.code === "exists" ? "already_exists" : "invalid_argument", r.message);
+  throw new ApiFailure(r.code === "notfound" ? "not_found" : r.code === "exists" ? "already_exists" : r.code === "unavailable" ? "unavailable" : "invalid_argument", r.message);
 }, "unwrap");
 async function resolve(c, ref) {
   const row = await registry(c.env).get(ref);
@@ -546,7 +552,7 @@ var handlers = {
   async CreateProject(c, r) {
     needAdmin(c);
     const claimed = unwrap(await registry(c.env).claim({ name: text(r, "name", 63), title: optText(r, "title") }));
-    const key = await projectStub(c.env, claimed.project.id).init();
+    const key = unwrap(await projectStub(c.env, claimed.project.id).init());
     return { project: info(claimed.project), created: claimed.created, publishableKey: key.plain, ingestUrl: ingestUrl(c) };
   },
   async GetProject(c, r) {
@@ -572,7 +578,7 @@ var handlers = {
   async ListKeys(c, r) {
     needAdmin(c);
     const p = await resolve(c, text(r, "project"));
-    return { keys: (await projectStub(c.env, p.id).listKeys(optOneOf(r, "scope", ["publishable", "secret"]))).map((k) => keyInfo(p.id, k)) };
+    return { keys: unwrap(await projectStub(c.env, p.id).listKeys(optOneOf(r, "scope", ["publishable", "secret"]))).map((k) => keyInfo(p.id, k)) };
   },
   async RevokeKey(c, r) {
     needAdmin(c);
@@ -596,17 +602,19 @@ var handlers = {
     if (!c.auth) throw new ApiFailure("unauthenticated", "a bearer token is required");
     const p = await resolve(c, text(r, "project"));
     needRead(c, p.id);
-    return await projectStub(c.env, p.id).archives(optInt(r, "after", 0, Number.MAX_SAFE_INTEGER), optInt(r, "limit", 1, 5e3) ?? 1e3);
+    return unwrap(await projectStub(c.env, p.id).archives(optInt(r, "after", 0, Number.MAX_SAFE_INTEGER), optInt(r, "limit", 1, 5e3) ?? 1e3));
   },
   async Publish(c, r) {
     needAdmin(c);
     const p = await resolve(c, text(r, "project"));
+    let published;
     try {
-      return { coverage: await projectStub(c.env, p.id).publish() };
+      published = await projectStub(c.env, p.id).publish();
     } catch (e) {
       console.error("publish failed", e);
       throw new ApiFailure("unavailable", "archive storage is unavailable; the events are kept and will be published later");
     }
+    return { coverage: unwrap(published) };
   }
 };
 async function rpc(req, c, method) {
@@ -638,7 +646,9 @@ async function download(req, c, project, seq) {
     return plain(STATUS[e.code], e.message);
   }
   const n = /^\d{1,15}$/.test(seq) ? Number(seq) : 0;
-  if (n < 1 || !await projectStub(c.env, project).hasArchive(n)) return plain(404, "no such archive");
+  const found = n >= 1 ? await projectStub(c.env, project).hasArchive(n) : { ok: true, value: false };
+  if (!found.ok) return plain(STATUS.unavailable, found.message);
+  if (!found.value) return plain(404, "no such archive");
   const key = archiveKey(project, n);
   const obj = req.method === "HEAD" ? await c.env.ARCHIVE.head(key) : await c.env.ARCHIVE.get(key);
   if (!obj) return plain(404, "no such archive");
@@ -1272,8 +1282,42 @@ var native = {
   }
 };
 
+// src/version.ts
+var RELEASE = "0.1.2";
+
 // src/registry.ts
 import { DurableObject } from "cloudflare:workers";
+
+// src/migrate.ts
+var SchemaTooNew = class extends Error {
+  static {
+    __name(this, "SchemaTooNew");
+  }
+  stored;
+  supported;
+  constructor(stored, supported) {
+    super(`stored schema version ${stored} is newer than the ${supported} this code understands`);
+    this.name = "SchemaTooNew";
+    this.stored = stored;
+    this.supported = supported;
+  }
+};
+function migrate(storage, steps) {
+  const sql = storage.sql;
+  sql.exec("CREATE TABLE IF NOT EXISTS _schema(version INTEGER NOT NULL)");
+  const stored = sql.exec("SELECT version FROM _schema").toArray()[0]?.version ?? 0;
+  if (stored > steps.length) throw new SchemaTooNew(stored, steps.length);
+  for (let i = stored; i < steps.length; i++) {
+    storage.transactionSync(() => {
+      sql.exec(steps[i]);
+      sql.exec("DELETE FROM _schema");
+      sql.exec("INSERT INTO _schema(version) VALUES(?)", i + 1);
+    });
+  }
+}
+__name(migrate, "migrate");
+
+// src/registry.ts
 var RESERVED_PREFIXES = ["session_", "prj_", "mdl_"];
 var RESERVED_WORDS = new Set("_slurp add all analyse analyze and any array as asc asymmetric both case cast check collate column constraint create default deferrable desc describe distinct do else end except false fetch for foreign from group having in information_schema initially intersect into lake lambda lateral leading limit main memory not null offset on only or order pg_catalog pivot pivot_longer pivot_wider placing primary qualify raw references returning select show some summarize symmetric system table temp then to trailing true union unique unpivot using variadic when where window with".split(" "));
 function validProjectName(name) {
@@ -1284,6 +1328,9 @@ function validTitle(title) {
   return title === void 0 || new TextEncoder().encode(title).length <= 200;
 }
 __name(validTitle, "validTitle");
+var REGISTRY_STEPS = [
+  "CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)"
+];
 var RegistryDO = class extends DurableObject {
   static {
     __name(this, "RegistryDO");
@@ -1291,7 +1338,7 @@ var RegistryDO = class extends DurableObject {
   sql = this.ctx.storage.sql;
   constructor(ctx, env) {
     super(ctx, env);
-    this.sql.exec("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)");
+    migrate(ctx.storage, REGISTRY_STEPS);
   }
   /** The project with this name, creating it first if there is none. Repeating a call returns the same project. */
   claim(a) {
@@ -1311,7 +1358,7 @@ var RegistryDO = class extends DurableObject {
   /** Forget every project (used by `slurp cloud destroy`). */
   async purge() {
     await this.ctx.storage.deleteAll();
-    this.sql.exec("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)");
+    migrate(this.ctx.storage, REGISTRY_STEPS);
   }
 };
 
@@ -1341,19 +1388,21 @@ var Db = class {
     return this.rows(query, ...bindings)[0];
   }
 };
-var SCHEMA = `
-CREATE TABLE IF NOT EXISTS keys(key_id TEXT PRIMARY KEY, scope TEXT NOT NULL, source TEXT, name TEXT, plain TEXT UNIQUE, hash TEXT UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);
-CREATE TABLE IF NOT EXISTS webhooks(provider TEXT PRIMARY KEY, source TEXT NOT NULL, secret TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, events INTEGER NOT NULL, bytes INTEGER NOT NULL, at_ms INTEGER NOT NULL, data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS intent(seq INTEGER PRIMARY KEY, through_chunk INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS manifest(seq INTEGER PRIMARY KEY, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL, deleted_at INTEGER);
-CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+var V1 = `
+CREATE TABLE keys(key_id TEXT PRIMARY KEY, scope TEXT NOT NULL, source TEXT, name TEXT, plain TEXT UNIQUE, hash TEXT UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);
+CREATE TABLE webhooks(provider TEXT PRIMARY KEY, source TEXT NOT NULL, secret TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE chunks(id INTEGER PRIMARY KEY, events INTEGER NOT NULL, bytes INTEGER NOT NULL, at_ms INTEGER NOT NULL, data TEXT NOT NULL);
+CREATE TABLE intent(seq INTEGER PRIMARY KEY, through_chunk INTEGER NOT NULL);
+CREATE TABLE manifest(seq INTEGER PRIMARY KEY, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL, deleted_at INTEGER, format INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE settings(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `;
+var PROJECT_STEPS = [V1];
 
 // src/project.ts
 var SOURCE = /^[a-z][a-z0-9_]{0,31}$/;
 var CHUNK_MAX_BYTES = 6 * 1024 * 1024;
 var encoder5 = new TextEncoder();
+var TOO_NEW = "this Worker's data is newer than its code; deploy the newer Worker";
 var ProjectDO = class extends DurableObject2 {
   static {
     __name(this, "ProjectDO");
@@ -1362,19 +1411,35 @@ var ProjectDO = class extends DurableObject2 {
   cfg = configOf(this.env);
   publisher = new Publisher(this.ctx, this.env.ARCHIVE, this.db, this.cfg, this.ctx.id.name ?? "");
   ready = false;
+  blocked = null;
   queue = [];
   queuedBytes = 0;
   timer = null;
   constructor(ctx, env) {
     super(ctx, env);
-    this.ready = this.db.rows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='keys'").length > 0;
-    if (!this.ready) return;
-    this.db.rows(SCHEMA);
+    if (this.db.rows("SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('_schema','keys')").length === 0) return;
+    if (!this.upgrade()) return;
+    this.ready = true;
     this.publisher.load();
     ctx.blockConcurrencyWhile(async () => {
       await this.publisher.syncAlarm();
       await this.publisher.rearm();
     });
+  }
+  /** Apply any missing migration steps. False (with `blocked` set) when the stored data is newer than this code. */
+  upgrade() {
+    try {
+      migrate(this.ctx.storage, PROJECT_STEPS);
+    } catch (e) {
+      if (!(e instanceof SchemaTooNew)) throw e;
+      console.error(`project ${this.project}: ${e.message}`);
+      this.blocked = TOO_NEW;
+      return false;
+    }
+    return true;
+  }
+  unavailable() {
+    return this.blocked === null ? null : { ok: false, code: "unavailable", message: this.blocked };
   }
   get project() {
     return this.ctx.id.name ?? "";
@@ -1382,11 +1447,12 @@ var ProjectDO = class extends DurableObject2 {
   now = /* @__PURE__ */ __name(() => (/* @__PURE__ */ new Date()).toISOString(), "now");
   /** Create this project's storage and its `default` source key, or return the existing one. Safe to repeat. */
   init() {
+    if (this.blocked !== null) return this.unavailable();
     if (!this.ready) {
-      this.db.rows(SCHEMA);
+      if (!this.upgrade()) return this.unavailable();
       this.ready = true;
     }
-    return this.sourceKey("default").value;
+    return this.sourceKey("default");
   }
   // ---- keys ----
   mint(scope, source, name, hash, key) {
@@ -1399,14 +1465,16 @@ var ProjectDO = class extends DurableObject2 {
   }
   /** The key's scope and the source or label it carries; null when it is unknown or revoked (at once: nothing is cached). */
   async authorize(token) {
-    if (!this.ready) return null;
+    if (this.blocked !== null) return this.unavailable();
+    if (!this.ready) return { ok: true, value: null };
     const secret = token.startsWith("slurp_sk_");
     const row = this.db.one(`SELECT * FROM keys WHERE ${secret ? "hash" : "plain"}=? AND revoked_at IS NULL`, secret ? await sha256Hex(token) : token);
-    if (!row) return null;
-    return row.scope === "secret" ? { scope: "secret", keyId: row.key_id, name: row.name ?? "default" } : { scope: "publishable", keyId: row.key_id, source: row.source };
+    if (!row) return { ok: true, value: null };
+    return { ok: true, value: row.scope === "secret" ? { scope: "secret", keyId: row.key_id, name: row.name ?? "default" } : { scope: "publishable", keyId: row.key_id, source: row.source } };
   }
   /** The oldest live publishable key for `source`, made if there is none (so asking again never makes a second one). */
   sourceKey(source) {
+    if (this.blocked !== null) return this.unavailable();
     if (!this.ready) return { ok: false, code: "notfound", message: "project" };
     if (!SOURCE.test(source)) return { ok: false, code: "invalid", message: "source must be a lowercase name of up to 32 letters, digits and underscores, starting with a letter" };
     const live = this.db.one("SELECT * FROM keys WHERE scope='publishable' AND source=? AND revoked_at IS NULL ORDER BY rowid LIMIT 1", source);
@@ -1415,6 +1483,7 @@ var ProjectDO = class extends DurableObject2 {
     return { ok: true, value: this.mint("publishable", source, null, null, key) };
   }
   async createKey(scope, source, name) {
+    if (this.blocked !== null) return this.unavailable();
     if (!this.ready) return { ok: false, code: "notfound", message: "project" };
     if (scope === "publishable") {
       if (source === void 0 || !SOURCE.test(source)) return { ok: false, code: "invalid", message: "a publishable key needs a source: lowercase letters, digits and underscores, starting with a letter, up to 32" };
@@ -1427,10 +1496,12 @@ var ProjectDO = class extends DurableObject2 {
     return { ok: true, value: { ...row, plain: key } };
   }
   listKeys(scope) {
-    if (!this.ready) return [];
-    return this.db.rows("SELECT * FROM keys ORDER BY rowid").filter((k) => !scope || k.scope === scope);
+    if (this.blocked !== null) return this.unavailable();
+    if (!this.ready) return { ok: true, value: [] };
+    return { ok: true, value: this.db.rows("SELECT * FROM keys ORDER BY rowid").filter((k) => !scope || k.scope === scope) };
   }
   revokeKey(keyId) {
+    if (this.blocked !== null) return this.unavailable();
     if (!this.ready) return { ok: false, code: "notfound", message: "project" };
     if (!this.db.one("SELECT 1 FROM keys WHERE key_id=?", keyId)) return { ok: false, code: "notfound", message: "key" };
     this.db.rows("UPDATE keys SET revoked_at=? WHERE key_id=? AND revoked_at IS NULL", this.now(), keyId);
@@ -1443,17 +1514,19 @@ var ProjectDO = class extends DurableObject2 {
    * `fresh` is the secret to use then ('' for a provider that issues its own); `given` is one the user supplied (always stored).
    */
   connectWebhook(provider, fresh, given) {
+    if (this.blocked !== null) return this.unavailable();
     if (!this.ready) return { ok: false, code: "notfound", message: "project" };
     const existed = this.db.one("SELECT 1 FROM keys WHERE scope='publishable' AND source=? AND revoked_at IS NULL", provider) !== void 0;
     const key = this.sourceKey(provider);
     if (!key.ok) return key;
     const replace = !existed || given !== null;
     this.db.rows("INSERT INTO webhooks VALUES(?,?,?,?) ON CONFLICT(provider) DO UPDATE SET secret=excluded.secret WHERE ?", provider, provider, given ?? fresh, this.now(), replace ? 1 : 0);
-    return { ok: true, value: { secret: this.webhookSecret(provider), key: key.value.plain } };
+    return { ok: true, value: { secret: this.webhookSecret(provider).value, key: key.value.plain } };
   }
   /** The provider's signing secret ('' until Stripe's has been given), or null when it has not been connected. */
   webhookSecret(provider) {
-    return this.ready ? this.db.one("SELECT secret FROM webhooks WHERE provider=?", provider)?.secret ?? null : null;
+    if (this.blocked !== null) return this.unavailable();
+    return { ok: true, value: this.ready ? this.db.one("SELECT secret FROM webhooks WHERE provider=?", provider)?.secret ?? null : null };
   }
   // ---- ingest ----
   /**
@@ -1461,7 +1534,10 @@ var ProjectDO = class extends DurableObject2 {
    * stored), take the source from the stored key, wrap each line in an envelope, commit them, and answer once they are durable.
    */
   async ingest(token, lines, geo) {
-    const principal = await this.authorize(token);
+    if (this.blocked !== null) return { ok: false, status: 503, reason: this.blocked, retryAfter: 60 };
+    const authorized = await this.authorize(token);
+    if (!authorized.ok) return { ok: false, status: 503, reason: authorized.message, retryAfter: 60 };
+    const principal = authorized.value;
     if (!principal) return { ok: false, status: 401, reason: "invalid key", retryAfter: 0 };
     if (principal.scope !== "publishable") return { ok: false, status: 403, reason: "publishable key required", retryAfter: 0 };
     const source = principal.source;
@@ -1523,11 +1599,13 @@ var ProjectDO = class extends DurableObject2 {
   }
   // ---- archives ----
   async alarm() {
+    if (this.blocked !== null) return;
     await this.flush();
     await this.publisher.alarm();
   }
   /** Publish everything buffered now, then report where archives stand. Throws if R2 fails. */
   async publish() {
+    if (this.blocked !== null) return this.unavailable();
     await this.flush();
     try {
       await this.publisher.publishAll();
@@ -1541,19 +1619,23 @@ var ProjectDO = class extends DurableObject2 {
       throw e;
     }
     await this.publisher.rearm();
-    return this.coverage();
+    return { ok: true, value: this.coverage() };
   }
   coverage() {
     return this.ready ? this.publisher.coverage(this.queue.length > 0) : { pending: false };
   }
   archives(after, limit) {
-    return this.ready ? this.publisher.list(after, limit, this.queue.length > 0) : { coverage: { pending: false }, archives: [] };
+    if (this.blocked !== null) return this.unavailable();
+    return { ok: true, value: this.ready ? this.publisher.list(after, limit, this.queue.length > 0) : { coverage: { pending: false }, archives: [] } };
   }
   /** Whether archive `seq` exists (published, not deleted by retention). */
   hasArchive(seq) {
-    return this.ready && this.publisher.has(seq);
+    return this.blocked !== null ? this.unavailable() : { ok: true, value: this.ready && this.publisher.has(seq) };
   }
-  /** Delete this project's archives from R2 and all of its storage (used by `slurp cloud destroy`). */
+  /**
+   * Delete this project's archives from R2 and all of its storage (used by `slurp cloud destroy`). It works on an object whose data is
+   * newer than this code too, since it only deletes; the archives of such an object are left to the caller's sweep of the bucket.
+   */
   async purge() {
     const archives = this.ready ? await this.publisher.deleteArchives() : 0;
     if (this.timer) {
@@ -1565,6 +1647,7 @@ var ProjectDO = class extends DurableObject2 {
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     this.ready = false;
+    this.blocked = null;
     this.publisher.armed = null;
     this.publisher.bufferedBytes = 0;
     return { archives };
@@ -1577,7 +1660,11 @@ var makeHost = /* @__PURE__ */ __name((env) => ({
   cfg: configOf(env),
   authenticate: /* @__PURE__ */ __name((token) => authenticate(env, token), "authenticate"),
   ingest: /* @__PURE__ */ __name((sender, lines, geo) => projectStub(env, sender.project).ingest(sender.token, lines, geo), "ingest"),
-  webhookSecret: /* @__PURE__ */ __name((project, provider) => Promise.resolve(projectStub(env, project).webhookSecret(provider)), "webhookSecret")
+  webhookSecret: /* @__PURE__ */ __name(async (project, provider) => {
+    const secret = await projectStub(env, project).webhookSecret(provider);
+    if (!secret.ok) throw new Unavailable(secret.message);
+    return secret.value;
+  }, "webhookSecret")
 }), "makeHost");
 async function purge(req, env, ctx) {
   if (req.method !== "POST") return Response.json({ error: "method not allowed" }, { status: 405, headers: { Allow: "POST" } });
@@ -1619,8 +1706,15 @@ var index_default = {
       return new Response(req.method === "HEAD" ? null : setupPage(url.origin, adminConfigured(env)), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", "x-content-type-options": "nosniff" }
       });
-    if (path === "/v1/health") return Response.json({ ok: true, apiVersion: 2, configured: adminConfigured(env), build: env.SLURP_BUILD ?? null, geo: host.cfg.geo });
-    const ctx = { env, cfg: host.cfg, auth: await authenticate(env, bearer(req)), origin: url.origin };
+    if (path === "/v1/health") return Response.json({ ok: true, apiVersion: 2, release: RELEASE, configured: adminConfigured(env), build: env.SLURP_BUILD ?? null, geo: host.cfg.geo });
+    let auth;
+    try {
+      auth = await authenticate(env, bearer(req));
+    } catch (e) {
+      console.error("authentication failed", e);
+      return Response.json({ error: { code: "unavailable", message: "storage is unavailable" } }, { status: 503, headers: { "Retry-After": "5" } });
+    }
+    const ctx = { env, cfg: host.cfg, auth, origin: url.origin };
     const method = /^\/v1\/rpc\/([A-Za-z]+)$/.exec(path)?.[1];
     if (method) return rpc(req, ctx, method);
     const archive = /^\/v1\/projects\/(prj_[0-9a-f]{16})\/archives\/([^/]+)$/.exec(path);

@@ -50,6 +50,7 @@ fn info(seq: u64, body: &[u8]) -> api::ArchiveInfo {
         sha256: hex::encode(Sha256::digest(body)),
         events: 1,
         created_at: "2026-11-07T12:00:00.000Z".into(),
+        format: 1,
     }
 }
 

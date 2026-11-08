@@ -24,16 +24,16 @@ The rules for how stored data and versions may change are in [contracts.md, "Ver
   - "Breaking" means something a user must act on: a removed command or flag, a changed output field, or a contract change with no upgrade path.
   - A data migration that runs by itself is **not** breaking.
 - **The SDKs version on their own** and are bumped only when their code changes. The React Native package depends on the JavaScript SDK as `workspace:^`, which pnpm publishes as `^<js version>`. Bump React Native whenever its required JavaScript SDK version changes.
-- **The contract numbers are separate from all of these:** `apiVersion`, the Durable Object and DuckDB schema versions, the archive `format` and the SDK storage namespace. Each changes only when what it describes changes incompatibly (see [contracts.md](contracts.md#versions-and-upgrades)).
+- **The contract numbers are separate from all of these:** `apiVersion`, the Durable Object and DuckDB schema versions, the archive `format` and the SDK storage namespace. Schema versions advance with every migration; the other format versions change for incompatible changes (see [contracts.md](contracts.md#versions-and-upgrades)).
 
 ## 1. Prepare the release PR
 
 On a branch named `release-X.Y.Z`:
 
 1. **Check what changed in stored data.** For every store that this release changes (Durable Object tables, the local DuckDB tables, archive envelopes, config files, SDK saved state), confirm:
-   - a new migration step was **appended**, and no shipped step was edited;
+   - database changes append a migration step without editing shipped steps; other format changes have a compatible reader or explicit format refusal;
    - a test loads data at the previous version and checks it survives the step;
-   - calls from the Worker to Durable Objects only gained methods or optional fields this release, because objects can briefly run the old code during a deploy;
+   - new Worker-to-object calls use staged adoption or a tested fallback, because objects can briefly run old code during deployment;
    - `docs/contracts.md` describes the new version.
 2. **Changelog.** In `CHANGELOG.md`, rename `## Unreleased` to `## X.Y.Z`. cargo-dist uses this section as the GitHub Release notes. If users must do anything, open the section with an **Upgrade** paragraph saying what, such as "run `slurp cloud upgrade`".
 3. **Bump the versions:**
@@ -60,13 +60,17 @@ On a branch named `release-X.Y.Z`:
 
 Use this for a release with a migration, a new Worker feature, or anything you want to try on a real Cloudflare account before npm has it:
 
-```sh
-git tag -a vX.Y.Z-rc.1 -m vX.Y.Z-rc.1 && git push origin vX.Y.Z-rc.1
-```
+1. Prepare and merge an RC PR. Set Cargo.toml and the Worker RELEASE to `X.Y.Z-rc.1`, update Cargo.lock, regenerate the bundle, and run verification. SDKs keep their independent versions.
+2. Tag that commit:
 
-cargo-dist builds every artifact and makes a GitHub **prerelease**. It does not publish to npm (`publish-prereleases` is off), and `slurp.run/install` keeps pointing at the last real release. Install the candidate from its Release page (`slurp-cli-installer.sh`). Then try it:
-- `slurp cloud upgrade` on a scratch Worker;
-- `slurp sync` on a copy of a real database.
+   ```sh
+   git tag -a vX.Y.Z-rc.1 -m vX.Y.Z-rc.1
+   git push origin vX.Y.Z-rc.1
+   ```
+
+3. cargo-dist creates a GitHub prerelease without publishing to npm or changing `slurp.run/install`. Install the candidate from its Release page.
+4. Upgrade a scratch Worker and sync a copy of a real database.
+5. Prepare the stable release PR with Cargo and Worker versions `X.Y.Z`, and regenerate the bundle again.
 
 ## 3. Tag the release
 
@@ -132,6 +136,10 @@ The workflow typechecks, builds and tests the SDK first. It refuses to publish a
   Clear the mark later with `npm deprecate @hitslop/slurp@X.Y.Z ""`.
 - **The GitHub Release** can be edited, or marked as a prerelease to take it off `slurp.run/install`. Leave the tag in place.
 - **Migrations are forward-only.** If a step succeeded but the code after it is broken, ship a corrective release; there are no down migrations.
-  - **Locally:** the CLI kept a backup next to the database (`<database>.schema<N>-<time>.bak`), which restores by copying it back.
-  - **On the Worker:** `slurp cloud upgrade` won't install an older bundle. If the bad release ran **no** Durable Object migration, Cloudflare's own rollback is safe: `npx wrangler rollback` in a folder with the Worker's config, or Deployments in the dashboard. If it did migrate, older code refuses newer data with a 503, by design, so fix forward.
+  - **Locally:** the CLI kept a backup next to the database (`<database>.schema<N>-<random>.bak/<database filename>`), which restores by stopping all DuckDB processes and copying the enclosed database file back. Failed attempts are removed only when the binding verifies and the schema is unchanged. Otherwise their files stay for inspection and may be incomplete.
+  - **On the Worker:** `slurp cloud upgrade` won't install an older bundle. Use application rollback only if the release ran no schema migrations and wrote no incompatible persistent formats: `npx wrangler rollback` in a folder with the Worker's config, or Deployments in the dashboard. If it did migrate, older code refuses newer data with a 503, by design, so fix forward.
 - **The Deploy to Cloudflare button** builds `master`. A bad commit there reaches new button deploys until it is fixed, so keep `master` releasable.
+
+## First supported baseline
+
+0.2.0 is the first supported release. Existing files require explicit format versions; unversioned files and flat credential maps require fresh setup. No legacy conversion or missing-version fallback is supported. At publication, capture these baseline fixtures from the published artifacts: DuckDB data (events, receipts, problems, and a user table), ProjectDO and RegistryDO SQL, two archives, and SDK saved state. Store them under `fixtures/releases/0.2.0/`. Every future migration must test these fixtures.

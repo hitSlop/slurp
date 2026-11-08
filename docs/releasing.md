@@ -116,7 +116,7 @@ The workflow typechecks, builds and tests the SDK first. It refuses to publish a
 
    ```sh
    dir=$(mktemp -d)
-   curl -LsSf https://slurp.run/install | SLURP_CLI_INSTALL_DIR=$dir SLURP_CLI_NO_MODIFY_PATH=1 sh
+   curl -LsSf https://slurp.run/install | SLURP_CLI_INSTALL_DIR="$dir" XDG_CONFIG_HOME="$dir/config" SLURP_CLI_NO_MODIFY_PATH=1 sh
    "$dir"/bin/slurp --version
    ```
 4. **Upgrade the maintainers' Worker** with the released CLI:

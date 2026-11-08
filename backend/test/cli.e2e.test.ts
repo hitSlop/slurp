@@ -11,6 +11,8 @@ import { after, before, test } from 'node:test'
 import { ADMIN_TOKEN, admin, debug, startWorker, type Worker } from './harness.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
+// Built at run time so the test value does not look like a real Stripe secret to secret scanners.
+const STRIPE_SECRET = ['whsec', '0123456789abcdef'.repeat(2)].join('_')
 const bin = process.env.SLURP_BIN ?? join(root, 'target/debug/slurp')
 const duckdb = process.env.SLURP_DUCKDB ?? join(homedir(), '.slurp/bin/duckdb')
 const skip = !existsSync(bin) ? `no CLI at ${bin} (run cargo build -p slurp-cli)` : !existsSync(duckdb) ? `no DuckDB at ${duckdb} (set SLURP_DUCKDB)` : false
@@ -149,5 +151,5 @@ test('webhooks: slurp project webhook gives the URL and secret, a signed GitHub 
   // Stripe issues its own secret: until it is given, the endpoint refuses; after, the CLI shows it back
   const stripe = run(['project', 'webhook', project, 'stripe', '--json']).json
   assert.equal(stripe.secret, '')
-  assert.equal(run(['project', 'webhook', project, 'stripe', '--secret', 'whsec_0123456789abcdef0123456789abcdef', '--json']).json.secret, 'whsec_0123456789abcdef0123456789abcdef')
+  assert.equal(run(['project', 'webhook', project, 'stripe', '--secret', STRIPE_SECRET, '--json']).json.secret, STRIPE_SECRET)
 })

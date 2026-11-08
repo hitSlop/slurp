@@ -1,0 +1,4 @@
+# False positives: a made-up Stripe webhook secret used as a test value (introduced in a546fff, now built at run time).
+# The scan reads every commit, so the old commit is allowlisted here rather than rewriting published history.
+a546fffed2ed6272e2c059d8c7b79c676959b45c:backend/test/cli.e2e.test.ts:generic-api-key:152
+a546fffed2ed6272e2c059d8c7b79c676959b45c:backend/test/hooks.test.ts:generic-api-key:41

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
-import { githubSignatureOk, stripeSignatureOk } from '../src/compat/hooks.ts'
+import { authorizationOk, githubSignatureOk, stripeSignatureOk } from '../src/compat/hooks.ts'
 import { admin, debug, newProject, readArchives, rpc, startWorker, type Worker } from './harness.ts'
 
 let w: Worker
@@ -133,6 +133,40 @@ test('a signed Stripe event is stored as stripe.<type> with its own id and time;
   assert.equal(line.event, 'stripe.invoice.paid'); assert.equal(line.id, 'evt_1QdXyz2eZvKYlo2C0AbCdEfG'); assert.equal(line.sender, 'stripe')
   assert.equal(line.timestamp, new Date(1793987531 * 1000).toISOString())
   assert.equal(line.data.data.object.amount_paid, 4900)
+})
+
+test('RevenueCat sends the pasted Authorization value; an event is stored as revenuecat.<type> once, however often it is retried', async () => {
+  assert.equal(authorizationOk('s3cret', 's3cret'), true)
+  assert.equal(authorizationOk('Bearer s3cret', 's3cret'), true, 'a Bearer prefix is tolerated')
+  assert.equal(authorizationOk('s3cret!', 's3cret'), false); assert.equal(authorizationOk('', 's3cret'), false); assert.equal(authorizationOk(null, 's3cret'), false)
+
+  const { p, hook, url } = await setup('revenuecat')
+  assert.equal(hook.keyName, 'revenuecat')
+  const body = fixture('revenuecat-initial-purchase.json')
+  const post = (payload: string, authorization?: string, target = url) => fetch(target, { method: 'POST', headers: { 'content-type': 'application/json', ...(authorization === undefined ? {} : { authorization }) }, body: payload })
+  assert.equal((await post(body)).status, 401, 'no Authorization header')
+  assert.equal((await post(body, 'wrong')).status, 401)
+  assert.equal((await post(body, hook.secret)).status, 200)
+  assert.equal((await post(body, hook.secret)).status, 200, 'RevenueCat retries a delivery with the same event id')
+  assert.equal((await post('{"api_version":"1.0","event":{"type":"RENEWAL"}}', hook.secret)).status, 400, 'no event id')
+  assert.equal((await post('[]', hook.secret)).status, 400, 'not an object')
+  assert.equal((await post(fixture('revenuecat-test.json'), hook.secret)).status, 200, 'the dashboard test event')
+  // Another project's secret is not valid here, and an unknown key is refused.
+  const other = await setup('revenuecat')
+  assert.equal((await post(body, other.hook.secret)).status, 401)
+  assert.equal((await post(body, hook.secret, url.replace(/key=[^&]+/, 'key=slurp_pk_0000000000000000_' + '0'.repeat(48)))).status, 401)
+
+  const lines = await stored(p)
+  assert.deepEqual(lines.map(l => l.event).sort(), ['revenuecat.initial_purchase', 'revenuecat.test'], 'the retry is one row')
+  const purchase = lines.find(l => l.event === 'revenuecat.initial_purchase')!
+  assert.equal(purchase.id, 'revenuecat:7a1f0d2e-5b3c-4c8a-9e61-2f4d8b0c1a37'); assert.equal(purchase.sender, 'revenuecat')
+  assert.equal(purchase.timestamp, new Date(1793987531000).toISOString())
+  assert.equal(purchase.data.event.price, 9.99); assert.equal(purchase.data.event.product_id, 'pro_monthly')
+
+  // Rotating changes the secret the provider must send; the URL stays.
+  const rotated = await rpc(w.base, 'Project', 'GetWebhook', { project: p.id, provider: 'revenuecat', rotate: true }) as { url: string; secret: string }
+  assert.equal(rotated.url, url); assert.notEqual(rotated.secret, hook.secret)
+  assert.equal((await post(body, hook.secret)).status, 401); assert.equal((await post(body, rotated.secret)).status, 200)
 })
 
 test('the generic receiver: unsigned by default, optionally signed, with the event named by the caller or the body', async () => {

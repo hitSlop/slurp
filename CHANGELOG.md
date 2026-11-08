@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **RevenueCat webhooks (Preview)**: `slurp project webhook PROJECT revenuecat` gives the URL and the Authorization header value to paste into RevenueCat. Purchases, renewals, cancellations and refunds arrive as `revenuecat.<type>` events (retries are one row), and a `revenue` view in SQL lists them. RevenueCat's optional HMAC signing is not supported yet.
+
 ## 0.1.0
 
 The first release.

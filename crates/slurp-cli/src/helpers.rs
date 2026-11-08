@@ -2,7 +2,7 @@
 use crate::Workspace;
 
 /// Bump when `assets/helpers.sql` changes so existing databases pick the new version up.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 const SQL: &str = include_str!("../assets/helpers.sql");
 
 /// The script that installs the helpers and records their version, as one transaction.

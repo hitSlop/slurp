@@ -86,9 +86,9 @@ pub(crate) enum Project {
     /// The URL and signing secret to give a provider so it can send webhooks into this project. Safe to repeat.
     Webhook {
         project: String,
-        #[arg(value_parser = ["github", "stripe", "generic"])]
+        #[arg(value_parser = ["github", "stripe", "revenuecat", "generic"])]
         provider: String,
-        /// Change this project's derived webhook secrets (github and generic). The URL stays the same.
+        /// Change this project's derived webhook secrets (github, revenuecat and generic). The URL stays the same.
         #[arg(long)]
         rotate: bool,
         /// The signing secret the provider issued (Stripe's whsec_...). Stripe chooses its own, so it is given to Slurp.
@@ -357,6 +357,13 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
                     "Select the events to send (invoice.paid, customer.subscription.*, checkout.session.completed).",
                     "Stripe chooses the signing secret. Reveal it on the endpoint (whsec_...) and give it to Slurp: slurp project webhook PROJECT stripe --secret whsec_...",
                     "Until then the endpoint refuses deliveries.",
+                ],
+                "revenuecat" => &[
+                    "In RevenueCat: Project settings > Integrations > Webhooks > New.",
+                    "Webhook URL: the url above.",
+                    "Authorization header value: the secret above, pasted exactly. RevenueCat sends it on every delivery.",
+                    "Choose the environment (send both Sandbox and Production if you want test purchases too) and the apps, then use Send test event.",
+                    "Query the revenue view: SELECT * FROM revenue WHERE environment = 'PRODUCTION'.",
                 ],
                 _ => &[
                     "POST any body to the url above. Name the event with ?event=NAME (or a `type` or `event` field in a JSON body).",

@@ -5,14 +5,16 @@ import { type CompatHost, BodyTooLarge, ingestFailure, json, readBody } from './
 /**
  * Webhooks: a provider (GitHub, Stripe, or anything) posts to `/hooks/<provider>?key=<publishable key>`. The key says which project
  * and names the sender (the key is called `github`, so every event from GitHub carries `sender = 'github'`). The provider proves it is
- * the provider with its own signature. For GitHub and generic the secret is derived from the admin token (so nothing is stored); Stripe
- * chooses its own secret per endpoint, so that one is given to Slurp and kept (see `webhookSecret` in index.ts).
+ * the provider with its own signature. For GitHub, RevenueCat and generic the secret is derived from the admin token (so nothing is
+ * stored); Stripe chooses its own secret per endpoint, so that one is given to Slurp and kept (see `webhookSecret` in index.ts).
+ * RevenueCat has no signature unless you turn on its optional HMAC mode (not supported yet): it sends the value you typed as the
+ * `Authorization` header, so the derived secret is that value.
  *
  * The payload is stored exactly as it arrived, as the `data` of one `track` record: its text is spliced into the record, never parsed
  * and re-serialized, so numbers and key order are untouched. Only the event name, the id and the timestamp are read from it.
  */
 
-export const PROVIDERS = ['github', 'stripe', 'generic'] as const
+export const PROVIDERS = ['github', 'stripe', 'revenuecat', 'generic'] as const
 export type Provider = (typeof PROVIDERS)[number]
 export const isProvider = (value: string): value is Provider => (PROVIDERS as readonly string[]).includes(value)
 
@@ -31,6 +33,13 @@ const sameHex = (a: string, b: string) => timingSafeEqual(a.toLowerCase(), b.toL
 export async function githubSignatureOk(body: Uint8Array, header: string | null, secret: string): Promise<boolean> {
   if (!header?.startsWith('sha256=')) return false
   return sameHex(header.slice('sha256='.length), await hmacBytesHex(secret, body))
+}
+
+/** RevenueCat: the `Authorization` header holds the secret exactly as it was pasted into RevenueCat (a `Bearer ` prefix is tolerated). */
+export function authorizationOk(header: string | null, secret: string): boolean {
+  if (!header) return false
+  const value = header.trim()
+  return timingSafeEqual(value.startsWith('Bearer ') ? value.slice('Bearer '.length).trim() : value, secret)
 }
 
 /** Stripe: `Stripe-Signature: t=<unix seconds>,v1=<hex>[,v1=<hex>...]`, the HMAC covering `<t>.<raw body>`, within five minutes of now. */
@@ -71,7 +80,7 @@ interface Described { event: string; id: string; delivery: string; at: string }
 
 export async function hookIngest(req: Request, route: { provider: string }, host: CompatHost): Promise<Response> {
   const provider = route.provider
-  if (!isProvider(provider)) return fail(404, 'unknown webhook provider (github, stripe or generic)')
+  if (!isProvider(provider)) return fail(404, 'unknown webhook provider (github, stripe, revenuecat or generic)')
   if (req.method !== 'POST') return json(405, { error: 'method not allowed' }, { Allow: 'POST' })
   const keys = new URL(req.url).searchParams.getAll('key')
   const principal = keys.length === 1 ? await host.publishable(keys[0]) : null
@@ -86,6 +95,7 @@ export async function hookIngest(req: Request, route: { provider: string }, host
   const header = (name: string) => req.headers.get(name)
   if (provider === 'github' && !(await githubSignatureOk(bytes, header('x-hub-signature-256'), secret))) return fail(401, 'bad or missing X-Hub-Signature-256')
   if (provider === 'stripe' && !(await stripeSignatureOk(bytes, header('stripe-signature'), secret))) return fail(401, 'bad, missing or stale Stripe-Signature')
+  if (provider === 'revenuecat' && !authorizationOk(header('authorization'), secret)) return fail(401, 'bad or missing Authorization header (paste the secret from slurp project webhook PROJECT revenuecat into RevenueCat)')
   const claimed = header('x-slurp-signature')
   if (provider === 'generic' && claimed !== null && !(await githubSignatureOk(bytes, claimed, secret))) return fail(401, 'bad X-Slurp-Signature')
 
@@ -115,6 +125,12 @@ export async function hookIngest(req: Request, route: { provider: string }, host
     if (!id || !type) return fail(400, 'not a Stripe event (no id or type)')
     const created = at(payload, 'created')
     described = { event: `stripe.${type}`, id, delivery: id, at: (typeof created === 'number' ? iso(created * 1000) : undefined) ?? new Date(now).toISOString() }
+  } else if (provider === 'revenuecat') {
+    const id = str(at(payload, 'event', 'id')), type = str(at(payload, 'event', 'type'))
+    if (!id || !type) return fail(400, 'not a RevenueCat event (no event.id or event.type)')
+    const ms = at(payload, 'event', 'event_timestamp_ms')
+    // Retries reuse event.id, so a redelivery is the same event and is stored once.
+    described = { event: `revenuecat.${type.toLowerCase()}`, id: `revenuecat:${id}`, delivery: id, at: (typeof ms === 'number' ? iso(ms) : undefined) ?? new Date(now).toISOString() }
   } else {
     const query = new URL(req.url).searchParams.get('event')
     const named = query || str(at(payload, 'type')) || str(at(payload, 'event')) || 'webhook'

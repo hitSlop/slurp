@@ -112,11 +112,11 @@ const projectService: w.ProjectServer<Ctx> = {
   },
   async getWebhook(c, r) {
     needAdmin(c)
-    if (!isProvider(r.provider)) throw new w.InvalidArgumentError({ cause: 'provider must be github, stripe or generic' })
+    if (!isProvider(r.provider)) throw new w.InvalidArgumentError({ cause: 'provider must be github, stripe, revenuecat or generic' })
     const s = await resolveOrThrow(c, r.project)
     const stub = projectDO(c.env, s.id)
-    // Stripe chooses its own signing secret for each endpoint, so for Stripe the secret is given to us and stored; GitHub lets you choose
-    // one and generic has none to match, so those are derived and nothing is stored.
+    // Stripe chooses its own signing secret for each endpoint, so for Stripe the secret is given to us and stored; GitHub and RevenueCat let you
+    // choose one and generic has none to match, so those are derived and nothing is stored.
     const issued = r.provider === 'stripe'
     if (r.secret !== undefined && !(issued && /^whsec_\S{16,200}$/.test(r.secret))) throw new w.InvalidArgumentError({ cause: 'only Stripe issues its own secret, and it looks like whsec_...' })
     if (r.rotate && issued) throw new w.InvalidArgumentError({ cause: 'rotate the secret in Stripe, then pass the new one as secret' })

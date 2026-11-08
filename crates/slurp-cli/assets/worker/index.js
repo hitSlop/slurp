@@ -1563,7 +1563,7 @@ async function sentryIngest(req, route, host) {
 __name(sentryIngest, "sentryIngest");
 
 // src/compat/hooks.ts
-var PROVIDERS = ["github", "stripe", "generic"];
+var PROVIDERS = ["github", "stripe", "revenuecat", "generic"];
 var isProvider = /* @__PURE__ */ __name((value) => PROVIDERS.includes(value), "isProvider");
 var STRIPE_TOLERANCE_S = 300;
 var encoder = new TextEncoder();
@@ -1578,6 +1578,12 @@ async function githubSignatureOk(body, header, secret) {
   return sameHex(header.slice("sha256=".length), await hmacBytesHex(secret, body));
 }
 __name(githubSignatureOk, "githubSignatureOk");
+function authorizationOk(header, secret) {
+  if (!header) return false;
+  const value = header.trim();
+  return timingSafeEqual(value.startsWith("Bearer ") ? value.slice("Bearer ".length).trim() : value, secret);
+}
+__name(authorizationOk, "authorizationOk");
 async function stripeSignatureOk(body, header, secret, nowMs = Date.now()) {
   if (!header) return false;
   const parts = header.split(",").map((p) => p.trim().split("="));
@@ -1611,7 +1617,7 @@ var GITHUB_TIME = {
 };
 async function hookIngest(req, route, host) {
   const provider = route.provider;
-  if (!isProvider(provider)) return fail(404, "unknown webhook provider (github, stripe or generic)");
+  if (!isProvider(provider)) return fail(404, "unknown webhook provider (github, stripe, revenuecat or generic)");
   if (req.method !== "POST") return json(405, { error: "method not allowed" }, { Allow: "POST" });
   const keys = new URL(req.url).searchParams.getAll("key");
   const principal = keys.length === 1 ? await host.publishable(keys[0]) : null;
@@ -1627,6 +1633,7 @@ async function hookIngest(req, route, host) {
   const header = /* @__PURE__ */ __name((name) => req.headers.get(name), "header");
   if (provider === "github" && !await githubSignatureOk(bytes, header("x-hub-signature-256"), secret)) return fail(401, "bad or missing X-Hub-Signature-256");
   if (provider === "stripe" && !await stripeSignatureOk(bytes, header("stripe-signature"), secret)) return fail(401, "bad, missing or stale Stripe-Signature");
+  if (provider === "revenuecat" && !authorizationOk(header("authorization"), secret)) return fail(401, "bad or missing Authorization header (paste the secret from slurp project webhook PROJECT revenuecat into RevenueCat)");
   const claimed = header("x-slurp-signature");
   if (provider === "generic" && claimed !== null && !await githubSignatureOk(bytes, claimed, secret)) return fail(401, "bad X-Slurp-Signature");
   let text3;
@@ -1660,6 +1667,11 @@ async function hookIngest(req, route, host) {
     if (!id || !type) return fail(400, "not a Stripe event (no id or type)");
     const created = at(payload, "created");
     described = { event: `stripe.${type}`, id, delivery: id, at: (typeof created === "number" ? iso(created * 1e3) : void 0) ?? new Date(now).toISOString() };
+  } else if (provider === "revenuecat") {
+    const id = str(at(payload, "event", "id")), type = str(at(payload, "event", "type"));
+    if (!id || !type) return fail(400, "not a RevenueCat event (no event.id or event.type)");
+    const ms = at(payload, "event", "event_timestamp_ms");
+    described = { event: `revenuecat.${type.toLowerCase()}`, id: `revenuecat:${id}`, delivery: id, at: (typeof ms === "number" ? iso(ms) : void 0) ?? new Date(now).toISOString() };
   } else {
     const query = new URL(req.url).searchParams.get("event");
     const named = query || str(at(payload, "type")) || str(at(payload, "event")) || "webhook";
@@ -2217,7 +2229,7 @@ var projectService = {
   },
   async getWebhook(c, r) {
     needAdmin(c);
-    if (!isProvider(r.provider)) throw new InvalidArgumentError({ cause: "provider must be github, stripe or generic" });
+    if (!isProvider(r.provider)) throw new InvalidArgumentError({ cause: "provider must be github, stripe, revenuecat or generic" });
     const s = await resolveOrThrow(c, r.project);
     const stub = projectDO(c.env, s.id);
     const issued = r.provider === "stripe";

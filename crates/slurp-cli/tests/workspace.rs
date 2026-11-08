@@ -125,6 +125,37 @@ fn the_releases_view_lists_github_releases_and_deployments_from_webhooks() {
     );
 }
 
+/// RevenueCat purchases, received as webhooks, are one query away: the `revenue` view.
+#[test]
+fn the_revenue_view_lists_revenuecat_purchases_and_leaves_out_the_test_event() {
+    let Some((_temp, w)) = workspace() else {
+        eprintln!("set SLURP_TEST_DUCKDB for native integration tests");
+        return;
+    };
+    let line = |seq: u32, id: &str, event: &str, at: &str, data: &str| {
+        format!(
+            r#"{{"received_at":"2026-11-06T19:00:0{seq}Z","received_seq":"{seq}","sender":"revenuecat","id":"{id}","type":"track","event":"{event}","timestamp":"{at}","data":{data},"context":{{"webhook":{{"provider":"revenuecat","delivery":"{id}"}}}}}}"#
+        )
+    };
+    let lines = [
+        line(1, "revenuecat:1", "revenuecat.initial_purchase", "2026-11-06T18:02:11Z", r#"{"api_version":"1.0","event":{"type":"INITIAL_PURCHASE","app_user_id":"u1","product_id":"pro_monthly","period_type":"NORMAL","renewal_number":1,"price":9.99,"price_in_purchased_currency":8.99,"currency":"EUR","store":"APP_STORE","environment":"PRODUCTION","country_code":"DE"}}"#),
+        line(2, "revenuecat:2", "revenuecat.cancellation", "2026-11-06T18:10:00Z", r#"{"event":{"type":"CANCELLATION","app_user_id":"u1","product_id":"pro_monthly","environment":"PRODUCTION"}}"#),
+        line(3, "revenuecat:3", "revenuecat.test", "2026-11-06T18:20:00Z", r#"{"event":{"type":"TEST","environment":"SANDBOX"}}"#),
+        line(4, "other:4", "signed_up", "2026-11-06T18:40:00Z", "{}"),
+    ]
+    .join("\n");
+    w.import("a", 1, "hash", 1, archive(&lines).path())
+        .expect("import");
+    assert_eq!(
+        w.execute("SELECT type, app_user_id, product_id, period_type, renewal_number, price, price_in_purchased_currency, currency, store, environment, country_code, sender FROM revenue ORDER BY happened_at", true).expect("revenue"),
+        json!([
+            {"type":"INITIAL_PURCHASE","app_user_id":"u1","product_id":"pro_monthly","period_type":"NORMAL","renewal_number":1,"price":9.99,"price_in_purchased_currency":8.99,"currency":"EUR","store":"APP_STORE","environment":"PRODUCTION","country_code":"DE","sender":"revenuecat"},
+            {"type":"CANCELLATION","app_user_id":"u1","product_id":"pro_monthly","period_type":null,"renewal_number":null,"price":null,"price_in_purchased_currency":null,"currency":null,"store":null,"environment":"PRODUCTION","country_code":null,"sender":"revenuecat"}
+        ]),
+        "the dashboard test event and other events are not revenue"
+    );
+}
+
 #[test]
 fn report_outputs() {
     let Some((temp, w)) = workspace() else { return };

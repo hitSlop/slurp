@@ -189,12 +189,12 @@ struct RevokeKeyRequest
   # The key's 16 lowercase hex public id.
   - keyId: string
 
-# Where a provider (github, stripe, generic) should send webhooks for a project, and the secret it signs them with.
+# Where a provider (github, stripe, revenuecat, generic) should send webhooks for a project, and the secret it signs them with.
 struct GetWebhookRequest
   - project: string
-  # github, stripe or generic.
+  # github, stripe, revenuecat or generic.
   - provider: string
-  # Change this project's derived webhook secrets (github and generic). The URL does not change.
+  # Change this project's derived webhook secrets (github, revenuecat and generic). The URL does not change.
   - rotate?: bool
   # The signing secret the provider issued, for providers that choose their own (Stripe's `whsec_...`). It is stored for this project.
   - secret?: string
@@ -203,7 +203,8 @@ struct GetWebhookResponse
   - provider: string
   # The finished URL, including the project's publishable key named for the provider (created on first use).
   - url: string
-  # For github and generic: paste this into the provider as the signing secret (derived, so asking again returns the same value).
+  # For github and generic: paste this into the provider as the signing secret; for revenuecat: paste it as the Authorization header value
+  # (derived, so asking again returns the same value).
   # For stripe: the secret you gave, or empty until you do (Stripe issues its own).
   - secret: string
   # The name of the key, which is what every event from this provider carries as `sender`.

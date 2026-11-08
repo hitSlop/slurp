@@ -116,3 +116,26 @@ SELECT id, timestamp AS happened_at,
        sender, data, received_at
 FROM events
 WHERE event IN ('github.release.published', 'github.deployment_status.created');
+
+-- Purchases and subscription changes from RevenueCat webhooks (`slurp project webhook PROJECT revenuecat`): one row per event
+-- (INITIAL_PURCHASE, RENEWAL, CANCELLATION, EXPIRATION, BILLING_ISSUE, ...). RevenueCat sends test-store activity as
+-- environment = 'SANDBOX', so filter on PRODUCTION for real revenue. `price` is in USD and negative for refunds;
+-- `price_in_purchased_currency` is in `currency`. Retries of a delivery are already one row (the event id is the identity).
+--   SELECT date_trunc('month', happened_at) AS month, sum(price) AS usd FROM revenue WHERE environment = 'PRODUCTION' AND type IN ('INITIAL_PURCHASE', 'RENEWAL', 'NON_RENEWING_PURCHASE') GROUP BY 1 ORDER BY 1
+CREATE OR REPLACE VIEW revenue AS
+SELECT id,
+       timestamp AS happened_at,
+       json_extract_string(data, '$.event.type') AS type,
+       json_extract_string(data, '$.event.app_user_id') AS app_user_id,
+       json_extract_string(data, '$.event.product_id') AS product_id,
+       json_extract_string(data, '$.event.period_type') AS period_type,
+       try_cast(json_extract_string(data, '$.event.renewal_number') AS INTEGER) AS renewal_number,
+       try_cast(json_extract_string(data, '$.event.price') AS DOUBLE) AS price,
+       try_cast(json_extract_string(data, '$.event.price_in_purchased_currency') AS DOUBLE) AS price_in_purchased_currency,
+       json_extract_string(data, '$.event.currency') AS currency,
+       json_extract_string(data, '$.event.store') AS store,
+       json_extract_string(data, '$.event.environment') AS environment,
+       json_extract_string(data, '$.event.country_code') AS country_code,
+       sender, data, received_at
+FROM events
+WHERE event LIKE 'revenuecat.%' AND event <> 'revenuecat.test';

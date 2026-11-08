@@ -145,7 +145,7 @@ SlurpClient.shared.screen("Home")
 SlurpClient.shared.track("purchase_completed", ["total": 49])
 ```
 
-**GitHub, Stripe or any webhook?** `slurp project webhook PROJECT github` prints a URL and a secret to paste into the provider. Releases, deployments and payments then arrive as events (named for the sender, stored whole), and a `releases` view lists GitHub releases and deployments so a metric change can be lined up with the release behind it. Preview: [docs/webhooks.md](docs/webhooks.md).
+**GitHub, Stripe, RevenueCat or any webhook?** `slurp project webhook PROJECT github` prints a URL and a secret to paste into the provider. Releases, deployments, payments and app purchases then arrive as events (named for the sender, stored whole), a `releases` view lists GitHub releases and deployments so a metric change can be lined up with the release behind it, and a `revenue` view lists RevenueCat purchases and renewals. Preview: [docs/webhooks.md](docs/webhooks.md).
 
 **Already using Segment?** Keep the SDK and point it at your Worker. Your publishable key is the write key; `page`, `screen`, `group` and `alias` are stored as `track` events with those names:
 

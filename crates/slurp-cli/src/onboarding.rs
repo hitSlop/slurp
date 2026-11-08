@@ -331,8 +331,9 @@ fn settings_menu(
         )?;
         match choice.as_str() {
             "done" => {
-                ui.success("Run slurp init inside your app to connect a project.")?;
-                return configured_status(home, &saved, connected);
+                let result = configured_status(home, &saved, connected)?;
+                ui.success(result["next_steps"].as_str().context("setup next steps")?)?;
+                return Ok(result);
             }
             "guide" => {
                 guide(ui, no_open)?;

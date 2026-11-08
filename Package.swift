@@ -5,7 +5,8 @@ import PackageDescription
 // Add https://github.com/hitSlop/slurp in Xcode (or as a package dependency) and `import Slurp`.
 let package = Package(
     name: "Slurp",
-    platforms: [.iOS(.v13), .macOS(.v10_15), .tvOS(.v13), .watchOS(.v6)],
+    // FileHandle.seekToEnd() and write(contentsOf:), which the queue uses so a full disk is an error and not a crash, arrived in these OS versions.
+    platforms: [.iOS("13.4"), .macOS("10.15.4"), .tvOS("13.4"), .watchOS("6.2")],
     products: [.library(name: "Slurp", targets: ["Slurp"])],
     targets: [
         .target(name: "Slurp", path: "sdks/swift/Sources/Slurp"),

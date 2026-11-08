@@ -400,3 +400,25 @@ fn the_send_tools_use_the_mcp_source_and_sync_can_publish_first() {
         "the record carries no source marker: {log}"
     );
 }
+
+#[test]
+fn summary_and_health_share_conservative_person_identity() {
+    let Some((temp, w)) = seeded() else { return };
+    w.execute("DELETE FROM events; INSERT INTO events(sender,id,type,event,anonymous_id,user_id,timestamp,received_at) VALUES ('web','a','track','view','anon',NULL,'2026-11-02 12:00:00Z','2026-11-02 10:00:00Z'), ('web','b','identify',NULL,'anon','user','2026-11-02 12:01:00Z','2026-11-02 10:00:00Z')", false).unwrap();
+    let mut client = Client::start(temp.path(), &[]);
+    let (failed, schema) = client.tool("describe_schema", json!({}));
+    assert!(!failed, "{schema}");
+    assert_eq!(schema["summary"][0]["people"], 1);
+    assert_eq!(schema["summary"][0]["tracked_events"], 1);
+    assert_eq!(schema["summary"][0]["events"], 2);
+    let (failed, health) = client.tool("health", json!({}));
+    assert!(!failed, "{health}");
+    let finding = health["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["check"] == "future_timestamps")
+        .unwrap();
+    assert_eq!(finding["evidence"]["people"], 1);
+    assert_eq!(finding["evidence"]["events"], 2);
+}

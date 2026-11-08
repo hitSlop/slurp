@@ -85,6 +85,8 @@ Sync verifies each archive's size and SHA-256, reads its lines in Rust and loads
 
 Your Worker publishes buffered events as an archive about 10 minutes after the oldest was committed by default (`SEAL_INTERVAL_MS`), or sooner when 8 MB are buffered. Accepted events may not yet be available to sync: sync prints a note when the Worker still holds unpublished events, and `slurp sync --now` first asks the Worker to publish them (admin token; a secret key gets a clear error). Local sync is independent of cloud retention: committed local rows remain. A project reset (a different project in the receipts) requires a new workspace; existing data is preserved. Sync and external database readers must take turns. Close open DuckDB sessions before syncing.
 
+Slurp-managed sessions default to UTC, including `slurp sql`, reports, MCP queries, and `slurp duckdb`. Event timestamp date casts and `current_date` use UTC days. For local calendar dates use `timezone('America/Regina', timestamp)::DATE`. Independently launched DuckDB sessions do not inherit this default.
+
 Queries return columns, exact JSON values, up to 1,000 rows, and an explicit truncation flag. DuckDB subprocesses have a 60-second timeout and a 32 MiB output bound. Arbitrary local SQL is trusted code, not a filesystem sandbox.
 
 ## Helpers and health checks

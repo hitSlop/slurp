@@ -400,6 +400,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         }
         Operation::Duckdb => {
             let status = std::process::Command::new(&w.duckdb)
+                .args(["-cmd", "SET TimeZone = 'UTC';"])
                 .arg("-readonly")
                 .arg(&w.database)
                 .status()?;

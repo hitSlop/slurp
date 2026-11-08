@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed person counts in the MCP summary and health after anonymous visitors identify.
+- Added the `slurp_summary` view for tracked activity, active people, and identity/location coverage.
+- DuckDB sessions default to UTC across SQL, reports, and the interactive shell.
+- New projects get a richer overview with separate daily activity and people charts.
+- Helper refresh failures warn without preventing ordinary reads.
+
 ## 0.2.0
 
 The first supported release. Start with a fresh Worker and local setup. From this baseline onward, upgrades migrate supported stored data automatically.

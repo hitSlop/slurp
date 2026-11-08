@@ -72,10 +72,10 @@ fn casing_variants(w: &Workspace) -> Result<Option<Value>> {
 /// Events stamped later than the time the Worker received them: a client clock that is ahead.
 fn future_timestamps(w: &Workspace) -> Result<Option<Value>> {
     let rows = w.execute(
-        "SELECT count(*)::BIGINT AS n, count(DISTINCT coalesce(user_id, anonymous_id))::BIGINT AS people, \
+        "SELECT count(*)::BIGINT AS n, count(DISTINCT person_id)::BIGINT AS people, \
                 round(max(epoch(timestamp - received_at)))::BIGINT AS max_ahead_seconds, \
                 any_value(event) AS example_event \
-         FROM events WHERE received_at IS NOT NULL AND timestamp > received_at + INTERVAL 5 MINUTE",
+         FROM events_with_person WHERE received_at IS NOT NULL AND timestamp > received_at + INTERVAL 5 MINUTE",
         true,
     )?;
     let row = &rows[0];
@@ -211,6 +211,7 @@ fn import_problems(summary: &Value) -> Option<Value> {
 /// # Errors
 /// Returns an error if a query fails or the database cannot be read.
 pub fn run(w: &Workspace) -> Result<Value> {
+    w.require_helper("events_with_person")?;
     let events = count(
         &w.execute("SELECT count(*) AS n FROM events", true)?[0],
         "n",

@@ -345,13 +345,15 @@ impl Server {
 }
 
 fn describe_schema(w: &Workspace) -> Result<Value> {
+    w.require_helper("slurp_summary")?;
     Ok(json!({
         "columns": w.execute("DESCRIBE events", true)?,
-        "summary": w.execute("SELECT count(*) AS events, count(DISTINCT coalesce(nullif(user_id, ''), anonymous_id)) AS people, min(timestamp) AS first_event, max(timestamp) AS last_event FROM events", true)?,
+        "summary": w.execute("SELECT * FROM slurp_summary", true)?,
         "types": w.execute("SELECT type, count(*) AS count FROM events GROUP BY type ORDER BY count DESC", true)?,
         "events": w.execute("SELECT event, count(*) AS count, min(timestamp) AS first_seen, max(timestamp) AS last_seen FROM events WHERE event IS NOT NULL GROUP BY event ORDER BY count DESC LIMIT 200", true)?,
         "views": w.execute("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'main' AND table_name <> 'events' ORDER BY 1", true)?,
         "notes": [
+            "Slurp-managed sessions default to UTC. Event timestamp date casts and current_date use UTC days. For local calendar dates use timezone('America/Regina', timestamp)::DATE.",
             "data and context are JSON columns: use data->>'plan' or json_extract_string(data, '$.plan').",
             "events_with_person adds person_id: 'u:<user>' when known (directly or through an identify), else 'a:<anonymous id>'. Count people with count(DISTINCT person_id).",
             "errors lists Sentry-style error events with exception, top frame, release and a group_key.",

@@ -10,20 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Editable system defaults. Credential values stay in the selected private store.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct Settings {
-    /// Private file storage by default; Keychain is an explicit alternative.
-    #[serde(default)]
-    pub credential_store: slurp_client::storage::Store,
-    /// Default API for new workspaces and cloud commands outside a bound workspace.
-    pub backend: Option<String>,
-    /// Default library root, containing a separate folder for each new project.
-    pub library_dir: Option<PathBuf>,
-    /// Qualified external or managed DuckDB executable.
-    pub duckdb: Option<PathBuf>,
-}
+pub use slurp_client::config::Settings;
 
 fn set(document: &mut toml_edit::DocumentMut, name: &str, text: &str) {
     let decoration = document
@@ -55,15 +42,12 @@ fn edit(home: &Path, change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<
         Err(error) => return Err(error.into()),
     };
     let mut document: toml_edit::DocumentMut = text.parse().context("reading system settings")?;
+    if path.exists() {
+        config::settings_at(home)?;
+    }
+    document["version"] = toml_edit::value(1);
     change(&mut document)?;
     slurp_client::files::write_atomic(&path, document.to_string().as_bytes())
-}
-
-impl Settings {
-    /// The default Worker (the local `wrangler dev` one when none is saved).
-    pub fn backend_url(&self) -> &str {
-        self.backend.as_deref().unwrap_or(config::DEFAULT_BACKEND)
-    }
 }
 
 /// Save machine preferences while retaining comments and unrelated TOML settings.
@@ -95,12 +79,7 @@ pub fn set_backend(home: &Path, backend: &str) -> Result<()> {
 /// # Errors
 /// Returns an error for invalid TOML, invalid backend URLs, or unreadable settings.
 pub fn settings(home: &Path) -> Result<Settings> {
-    let path = home.join("config.toml");
-    let mut settings: Settings = match fs::read_to_string(&path) {
-        Ok(text) => toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Settings::default(),
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
+    let mut settings = config::settings_at(home)?;
     let backend = settings
         .backend
         .take()
@@ -167,6 +146,8 @@ pub fn projects(home: &Path) -> Result<Vec<Project>> {
     let path = home.join("projects.json");
     match fs::read(&path) {
         Ok(bytes) => {
+            let header: serde_json::Value = serde_json::from_slice(&bytes)?;
+            config::check_version(&path, header["version"].as_u64(), 1, "slurp init")?;
             let registry: Registry = serde_json::from_slice(&bytes)
                 .with_context(|| format!("reading {}", path.display()))?;
             ensure!(
@@ -237,4 +218,39 @@ pub fn forget(home: &Path, root: &Path) -> Result<()> {
     update(home, |projects| {
         projects.retain(|project| project.root != root)
     })
+}
+
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn future_project_index_is_neither_read_nor_rewritten() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("projects.json");
+        for text in [r#"{"version":2}"#, r#"{"version":0}"#, r#"{}"#] {
+            std::fs::write(&path, text).unwrap();
+            assert!(super::projects(home.path()).is_err());
+            assert!(super::forget(home.path(), home.path()).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+    #[test]
+    fn project_binding_version_is_checked_before_its_payload() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".slurp")).unwrap();
+        let path = root.path().join(".slurp/project.toml");
+        std::fs::write(&path, "version=2").unwrap();
+        let error = crate::Workspace::read_binding(root.path()).unwrap_err();
+        assert!(error.to_string().contains("newer Slurp"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "version=2");
+    }
+    #[test]
+    fn settings_writes_refuse_unsupported_documents() {
+        let home = tempfile::tempdir().unwrap();
+        for text in ["version=2", "version=0", "backend='https://example.com'"] {
+            let path = home.path().join("config.toml");
+            std::fs::write(&path, text).unwrap();
+            assert!(super::set_backend(home.path(), "https://example.com").is_err());
+            assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+        }
+    }
 }

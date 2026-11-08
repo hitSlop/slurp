@@ -46,7 +46,7 @@ fn machine_setup_ignores_current_project_and_never_embeds_credentials() {
     let home = dir.path().join("home");
     let library = dir.path().join("library");
     std::fs::create_dir(&home).expect("system home");
-    std::fs::write(home.join("config.toml"), "# Keep my preferences\nbackend = 'https://slurp.example.workers.dev' # Account server\nfuture_setting = true\n").expect("existing settings");
+    std::fs::write(home.join("config.toml"), "# Keep my preferences\nversion = 1\nbackend = 'https://slurp.example.workers.dev' # Account server\nfuture_setting = true\n").expect("existing settings");
     std::fs::create_dir(dir.path().join(".slurp")).expect("project metadata");
     let project = dir.path().join(".slurp/project.toml");
     std::fs::write(&project, "existing project metadata remains untouched")
@@ -179,4 +179,45 @@ fn setup_without_a_connected_worker_names_slurp_connect_not_login() {
     assert!(text.contains("setup_required"), "{text}");
     assert!(text.contains("slurp connect"), "{text}");
     assert!(!text.contains("slurp login"), "{text}");
+}
+
+#[test]
+fn moving_unsupported_config_aside_allows_setup_to_recover() {
+    let Some(engine) = common::duckdb() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let config = home.join("config.toml");
+    std::fs::write(&config, "backend='https://example.com'").unwrap();
+    let setup = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_slurp"))
+            .args(["setup", "--no-connect", "--no-open", "--duckdb"])
+            .arg(&engine)
+            .arg("--library")
+            .arg(dir.path().join("library"))
+            .env("SLURP_HOME", &home)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let rejected = setup();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("slurp setup")
+            || String::from_utf8_lossy(&rejected.stdout).contains("slurp setup")
+    );
+    std::fs::rename(&config, home.join("config.saved")).unwrap();
+    let recovered = setup();
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(config)
+            .unwrap()
+            .contains("version = 1")
+    );
 }

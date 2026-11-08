@@ -1,4 +1,4 @@
-import type { ApiKey, ErrorCode, ProjectInfo } from './api.gen.ts'
+import type { ApiKey, Coverage, ErrorCode, ProjectInfo } from './api.gen.ts'
 import { type Auth, MIN_ADMIN_TOKEN, adminConfigured } from './auth.ts'
 import type { Config } from './config.ts'
 import { type Handlers } from './client.ts'
@@ -58,7 +58,7 @@ export const projectStub = (env: Env, id: string) => env.PROJECT.get(env.PROJECT
 
 const unwrap = <T>(r: Result<T>): T => {
   if (r.ok) return r.value
-  throw new ApiFailure(r.code === 'notfound' ? 'not_found' : r.code === 'exists' ? 'already_exists' : 'invalid_argument', r.message)
+  throw new ApiFailure(r.code === 'notfound' ? 'not_found' : r.code === 'exists' ? 'already_exists' : r.code === 'unavailable' ? 'unavailable' : 'invalid_argument', r.message)
 }
 async function resolve(c: Ctx, ref: string): Promise<ProjectRow> {
   const row = await registry(c.env).get(ref)
@@ -87,7 +87,7 @@ export const handlers: Handlers<Ctx> = {
   async CreateProject(c, r) {
     needAdmin(c)
     const claimed = unwrap(await registry(c.env).claim({ name: text(r, 'name', 63), title: optText(r, 'title') }))
-    const key = await projectStub(c.env, claimed.project.id).init()
+    const key = unwrap(await projectStub(c.env, claimed.project.id).init())
     return { project: info(claimed.project), created: claimed.created, publishableKey: key.plain!, ingestUrl: ingestUrl(c) }
   },
   async GetProject(c, r) {
@@ -114,7 +114,7 @@ export const handlers: Handlers<Ctx> = {
   async ListKeys(c, r) {
     needAdmin(c)
     const p = await resolve(c, text(r, 'project'))
-    return { keys: (await projectStub(c.env, p.id).listKeys(optOneOf(r, 'scope', ['publishable', 'secret'] as const))).map(k => keyInfo(p.id, k)) }
+    return { keys: unwrap(await projectStub(c.env, p.id).listKeys(optOneOf(r, 'scope', ['publishable', 'secret'] as const))).map(k => keyInfo(p.id, k)) }
   },
   async RevokeKey(c, r) {
     needAdmin(c)
@@ -140,15 +140,17 @@ export const handlers: Handlers<Ctx> = {
     if (!c.auth) throw new ApiFailure('unauthenticated', 'a bearer token is required')
     const p = await resolve(c, text(r, 'project'))
     needRead(c, p.id)
-    return await projectStub(c.env, p.id).archives(optInt(r, 'after', 0, Number.MAX_SAFE_INTEGER), optInt(r, 'limit', 1, 5000) ?? 1000)
+    return unwrap(await projectStub(c.env, p.id).archives(optInt(r, 'after', 0, Number.MAX_SAFE_INTEGER), optInt(r, 'limit', 1, 5000) ?? 1000))
   },
   async Publish(c, r) {
     needAdmin(c)
     const p = await resolve(c, text(r, 'project'))
-    try { return { coverage: await projectStub(c.env, p.id).publish() } } catch (e) {
+    let published: Result<Coverage>
+    try { published = await projectStub(c.env, p.id).publish() } catch (e) {
       console.error('publish failed', e)
       throw new ApiFailure('unavailable', 'archive storage is unavailable; the events are kept and will be published later')
     }
+    return { coverage: unwrap(published) }
   },
 }
 
@@ -175,7 +177,9 @@ export async function download(req: Request, c: Ctx, project: string, seq: strin
   const plain = (status: number, message: string) => new Response(message, { status })
   try { needRead(c, project) } catch (e) { return plain(STATUS[(e as ApiFailure).code], (e as ApiFailure).message) }
   const n = /^\d{1,15}$/.test(seq) ? Number(seq) : 0
-  if (n < 1 || !(await projectStub(c.env, project).hasArchive(n))) return plain(404, 'no such archive')
+  const found = n >= 1 ? await projectStub(c.env, project).hasArchive(n) : { ok: true as const, value: false }
+  if (!found.ok) return plain(STATUS.unavailable, found.message)
+  if (!found.value) return plain(404, 'no such archive')
   const key = archiveKey(project, n)
   const obj = req.method === 'HEAD' ? await c.env.ARCHIVE.head(key) : await c.env.ARCHIVE.get(key)
   if (!obj) return plain(404, 'no such archive')

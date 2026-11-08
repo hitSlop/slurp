@@ -140,6 +140,9 @@ pub struct ArchiveInfo {
     pub sha256: String,
     pub events: u64,
     pub created_at: String,
+    /// The envelope format of this archive (`docs/contracts.md`, "Versions and upgrades"). Every archive is format 1 today; a
+    /// reader refuses a format it does not know before downloading it.
+    pub format: u32,
 }
 
 /// Archives that retention deleted before they were read: `from..=to`.

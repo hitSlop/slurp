@@ -51,6 +51,7 @@ mod tests {
             sha256: sha.into(),
             events: 1,
             created_at: "2026-11-07T12:00:00.000Z".into(),
+            format: 1,
         }
     }
     fn page(

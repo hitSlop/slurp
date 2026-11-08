@@ -107,7 +107,13 @@ Measure your own: `SLURP_TOKEN=<admin token> node backend/scripts/load.mjs https
 
 - **Health:** `curl https://YOUR-WORKER/v1/health` answers `{ok, apiVersion, configured, build, geo}` with no credentials.
 - **Logs and CPU:** `npx wrangler tail` (observability is enabled).
-- **Upgrade:** `slurp cloud upgrade` (or, by hand, pull the repository and `cd backend && npx wrangler deploy`). Durable Object migrations are declared in `wrangler.jsonc`; existing data is kept.
+- **Upgrade:** run `slurp cloud upgrade` (or, by hand, pull the repository and `cd backend && npx wrangler deploy`).
+  - Data, the secret and settings are kept. Each project's storage upgrades itself the next time it's used.
+  - After deploying, the command waits for the new build and checks storage.
+  - It refuses to install an older Worker than the one deployed, and it refuses a Worker it can't reach. `--force` bypasses unavailable or unrecognizable health only; known incompatible deployments and newer releases are still refused.
+  - It needs the admin token saved by `slurp cloud init` or `slurp connect`, because it checks storage through the API after deploying.
+  - A Worker with unsupported deployment metadata cannot be upgraded: deploy a new one with `slurp cloud init --worker NEW`.
+  - See [contracts.md, "Versions and upgrades"](contracts.md#versions-and-upgrades).
 - **Back up:** archives are plain gzip NDJSON in R2 and are already on your machine after `slurp sync`.
 - **Remove everything:** `slurp cloud destroy`. By hand: `POST /v1/admin/purge` with `{"confirm":"delete-all-data"}` and the admin token empties all data, then `npx wrangler delete` and delete the bucket.
 
@@ -115,6 +121,7 @@ Measure your own: `SLURP_TOKEN=<admin token> node backend/scripts/load.mjs https
 
 | Symptom | Cause |
 |---|---|
+| `slurp cloud init` failed its readiness check | The receipt and admin token are saved. Run `slurp cloud status --worker NAME`, then retry `slurp cloud upgrade --worker NAME`. A matching build still checks storage. The default backend changes only after successful initialization. |
 | `slurp connect`: "could not reach" | Wrong URL, or the Worker is not deployed. Check `/v1/health`. |
 | `slurp connect`: "no ADMIN_TOKEN configured" | Set the secret (see Deploy). |
 | `slurp connect`: "rejected that admin token" | Token differs from the secret. |

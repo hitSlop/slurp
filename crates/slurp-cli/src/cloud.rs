@@ -83,6 +83,9 @@ pub struct WorkerArg {
 pub struct UpgradeArgs {
     #[command(flatten)]
     pub target: WorkerArg,
+    /// Allow deployment when health is unavailable; known newer or incompatible deployments remain refused.
+    #[arg(long)]
+    pub force: bool,
 }
 #[derive(Args, Clone)]
 pub struct DestroyArgs {
@@ -287,6 +290,7 @@ pub fn parse_buckets(text: &str) -> Vec<String> {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Receipt {
+    pub version: u32,
     pub worker: String,
     pub bucket: String,
     pub account_id: Option<String>,
@@ -317,7 +321,24 @@ fn load_receipts() -> Result<Vec<Receipt>> {
         if path.extension().is_none_or(|x| x != "json") {
             continue;
         }
-        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let bytes = std::fs::read(&path).with_context(|| {
+            format!(
+                "{} is not a valid deployment receipt; fix it or start fresh",
+                path.display()
+            )
+        })?;
+        let header: Value = serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "{} is not a valid deployment receipt; fix it or start fresh",
+                path.display()
+            )
+        })?;
+        slurp_client::config::check_version(
+            &path,
+            header["version"].as_u64(),
+            1,
+            "slurp cloud init --worker NEW (or restore a valid receipt for the existing Worker)",
+        )?;
         receipts.push(serde_json::from_slice(&bytes).with_context(|| {
             format!(
                 "{} is not a valid deployment receipt; fix or delete it",
@@ -598,6 +619,10 @@ pub async fn init(args: &InitArgs, ui: &Terminal, machine: bool) -> Result<Deplo
     let progress = Progress { machine };
     let wrangler = Wrangler::discover()?;
     let bundle = bundle()?;
+    let home = slurp_client::config::home()?;
+    slurp_client::config::settings_at(&home)?;
+    load_receipts()?;
+    slurp_client::storage::validate()?;
     let temp = tempfile::tempdir()?;
     let cwd = temp.path();
 
@@ -717,10 +742,8 @@ pub async fn init(args: &InitArgs, ui: &Terminal, machine: bool) -> Result<Deplo
         explain("setting the ADMIN_TOKEN secret", &secret.text, account)
     );
 
-    progress.step("Waiting for the Worker to come up");
-    wait_until_configured(&url).await?;
-
     save_receipt(&Receipt {
+        version: 1,
         worker: args.worker.clone(),
         bucket: args.bucket.clone(),
         account_id: account.map(str::to_owned),
@@ -729,6 +752,15 @@ pub async fn init(args: &InitArgs, ui: &Terminal, machine: bool) -> Result<Deplo
         deployed_at: chrono::Utc::now().to_rfc3339(),
         vars,
     })?;
+    slurp_client::connection::save(&url, &token)?;
+    progress.step("Waiting for the Worker to come up");
+    if let Err(error) = wait_until_configured(&url, &bundle.build, &token).await {
+        bail!(
+            "{error:#}. The Worker is deployed and its admin token is saved. Check slurp cloud status --worker {} and retry slurp cloud upgrade --worker {}",
+            args.worker,
+            args.worker
+        );
+    }
     let connected = crate::connect::verify_and_save(&url, token).await?;
     progress.step(&format!("Connected to {}", connected.backend));
     ui.success(&format!("Your Worker is live at {}", connected.backend))?;
@@ -748,20 +780,91 @@ async fn health(url: &str) -> Result<Value> {
         .await?)
 }
 
-async fn wait_until_configured(url: &str) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    let mut last = String::from("no response yet");
-    while Instant::now() < deadline {
+/// How long to wait for a deployed Worker to come up with the new build (`SLURP_CLOUD_WAIT_SECS` shortens it for tests).
+fn wait_limit() -> Duration {
+    Duration::from_secs(
+        std::env::var("SLURP_CLOUD_WAIT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(90),
+    )
+}
+
+/// Wait until the Worker answers as configured and runs `build`, then call `ListProjects` with the admin token. That call wakes
+/// the registry, which applies any storage migration, so a Worker whose storage is newer than its code (or otherwise broken)
+/// fails here, not at the first sync.
+async fn wait_until_configured(url: &str, build: &str, token: &str) -> Result<()> {
+    let deadline = Instant::now() + wait_limit();
+    let mut last;
+    loop {
         match health(url).await {
-            Ok(h) if h["ok"] == true && h["configured"] == true => return Ok(()),
+            Ok(h) if h["ok"] == true && h["configured"] == true => {
+                if h["build"].as_str() == Some(build) {
+                    use slurp_client::api;
+                    let checked = slurp_app::project_setup::Api::new(url, token)?
+                        .call::<api::ListProjects>(&api::ListProjectsRequest {})
+                        .await;
+                    match checked {
+                        Ok(_) => return Ok(()),
+                        Err(error) if slurp_app::project_setup::is_rejected(&error) => {
+                            return Err(error.into());
+                        }
+                        Err(error) => last = format!("could not list its projects: {error}"),
+                    }
+                } else {
+                    last = format!(
+                        "the Worker still runs build {}, not {build}",
+                        h["build"].as_str().unwrap_or("unknown")
+                    );
+                }
+            }
             Ok(h) => last = format!("not configured yet: {h}"),
             Err(error) => last = error.to_string(),
         }
+        if Instant::now() >= deadline {
+            bail!(
+                "the Worker did not become ready within {} seconds ({last}). Run `slurp cloud doctor` to see what is wrong.",
+                wait_limit().as_secs()
+            );
+        }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-    bail!(
-        "the Worker did not become ready within 90 seconds ({last}). Run `slurp cloud doctor` to see what is wrong."
-    )
+}
+
+/// Whether `slurp cloud upgrade` may deploy over what `health` says is running. `health` is the Worker's `/v1/health`, or the
+/// reason it could not be read. The three refusals do not depend on the control API version, which two releases can share.
+fn check_deployed(worker: &str, health: &Result<Value>) -> Result<()> {
+    let health = match health {
+        Ok(h) if h["ok"] == true => h,
+        Ok(_) => bail!(
+            "can't tell what is deployed: {worker} did not answer /v1/health like a Slurp Worker. Pass --force to deploy anyway."
+        ),
+        Err(error) => bail!(
+            "can't tell what is deployed: {worker} did not answer /v1/health ({error}). Check the Worker's URL and your network, or pass --force to deploy anyway."
+        ),
+    };
+    let release = health["release"].as_str();
+    let (Some(release), Some(_)) = (release, health["apiVersion"].as_u64()) else {
+        bail!(
+            "{worker} has unsupported deployment metadata, which this version cannot upgrade; deploy a new Worker with `slurp cloud init --worker NEW` and remove the old one with `slurp cloud destroy` when you're done"
+        )
+    };
+    let api = health["apiVersion"]
+        .as_u64()
+        .context("Worker API version")?;
+    ensure!(
+        (crate::connect::MIN_API..=crate::connect::MAX_API).contains(&api),
+        "{worker} reports incompatible Worker API {api}; use a compatible CLI or start fresh"
+    );
+    let deployed = semver::Version::parse(release).with_context(|| {
+        format!("{worker} reports release {release:?}, which is not a version; pass --force to deploy anyway")
+    })?;
+    let mine = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
+    ensure!(
+        deployed <= mine,
+        "the deployed Worker ({deployed}) is newer than this CLI's ({mine}); upgrade the CLI"
+    );
+    Ok(())
 }
 
 async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
@@ -795,10 +898,16 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
         .as_ref()
         .and_then(|h| h["build"].as_str())
         .map(str::to_owned);
+    let release = health
+        .as_ref()
+        .and_then(|h| h["release"].as_str())
+        .map(str::to_owned);
+    let api_version = health.as_ref().and_then(|h| h["apiVersion"].as_u64());
     let value = json!({
         "worker": receipt.worker, "url": receipt.url, "bucket": receipt.bucket,
         "reachable": health.is_some(),
         "configured": health.as_ref().is_some_and(|h| h["configured"] == true),
+        "release": release, "api_version": api_version, "latest_release": env!("CARGO_PKG_VERSION"),
         "build": deployed_build, "latest_build": latest,
         "up_to_date": deployed_build.as_deref() == Some(latest.as_str()),
         "deployed_at": receipt.deployed_at, "projects": projects,
@@ -823,6 +932,18 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
                 (Some(b), _) => format!("{b}, newer available: run slurp cloud upgrade"),
                 _ => "unknown".into(),
             },
+        );
+        line(
+            "Release",
+            format!(
+                "{} (this CLI: {})",
+                release.as_deref().unwrap_or("unknown"),
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
+        line(
+            "API",
+            api_version.map_or("unknown".into(), |v| v.to_string()),
         );
         line("Bucket", receipt.bucket.clone());
         for s in &projects {
@@ -901,7 +1022,11 @@ async fn doctor(target: &WorkerArg, machine: bool) -> Result<u8> {
                     add(
                         "Worker reachable",
                         h["ok"] == true,
-                        format!("apiVersion {}", h["apiVersion"]),
+                        format!(
+                            "release {}, apiVersion {}",
+                            h["release"].as_str().unwrap_or("unknown"),
+                            h["apiVersion"]
+                        ),
                         "This URL is not a Slurp Worker",
                     );
                     add(
@@ -997,15 +1122,36 @@ async fn upgrade(args: &UpgradeArgs, machine: bool) -> Result<u8> {
     let mut receipt = pick_receipt(args.target.worker.as_deref())?;
     let wrangler = Wrangler::discover()?;
     let bundle = bundle()?;
-    if receipt.build == bundle.build
-        && health(&receipt.url)
-            .await
-            .is_ok_and(|h| h["build"].as_str() == Some(bundle.build.as_str()))
+    let deployed = health(&receipt.url).await;
+    if !args.force || deployed.as_ref().is_ok_and(|h| h["ok"] == true) {
+        check_deployed(&receipt.worker, &deployed)?;
+    }
+    if deployed
+        .as_ref()
+        .is_ok_and(|h| h["build"].as_str() == Some(bundle.build.as_str()))
     {
+        let token = crate::login::token(&receipt.url)?;
+        wait_until_configured(&receipt.url, &bundle.build, &token).await?;
+        receipt.build = bundle.build.clone();
+        save_receipt(&receipt)?;
         crate::service::emit(
             &json!({"worker": receipt.worker, "build": bundle.build, "upgraded": false, "reason": "already up to date"}),
         )?;
         return Ok(0);
+    }
+    // The check after the deploy needs the admin token, so find out now rather than after the Worker has changed.
+    let token = crate::login::token(&receipt.url).with_context(|| {
+        format!(
+            "no admin token is saved for {}; run `slurp connect` first",
+            receipt.url
+        )
+    })?;
+    if deployed.as_ref().is_ok_and(|h| h["ok"] == true) {
+        let who = crate::login::whoami(&receipt.url, &token).await?;
+        ensure!(
+            who.scope == slurp_client::api::TokenScope::Admin,
+            "cloud upgrade requires an admin token"
+        );
     }
     let vars = upgraded_vars(&bundle.vars, &receipt.vars, &bundle.build);
     let staged = stage(&bundle, &receipt.worker, &receipt.bucket, &vars)?;
@@ -1018,7 +1164,7 @@ async fn upgrade(args: &UpgradeArgs, machine: bool) -> Result<u8> {
         None,
     )?;
     ensure!(out.ok, explain("deploying the Worker", &out.text, account));
-    wait_until_configured(&receipt.url).await?;
+    wait_until_configured(&receipt.url, &bundle.build, &token).await?;
     receipt.build = bundle.build.clone();
     receipt.vars = vars;
     receipt.deployed_at = chrono::Utc::now().to_rfc3339();
@@ -1129,6 +1275,24 @@ mod tests {
     fn lists_buckets() {
         let text = "Listing buckets...\nname:           audio\ncreation_date:  2025-07-06\nname:           slurp-archive\n";
         assert_eq!(parse_buckets(text), ["audio", "slurp-archive"]);
+    }
+
+    /// `backend/src/version.ts` is what `/v1/health` reports as `release`; it moves with the Cargo version.
+    #[test]
+    fn the_workers_release_matches_the_clis_version() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../backend/src/version.ts");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let release = text
+            .split("RELEASE = '")
+            .nth(1)
+            .and_then(|rest| rest.split('\'').next())
+            .unwrap_or_else(|| panic!("no RELEASE = '<version>' in {}", path.display()));
+        assert_eq!(
+            release,
+            env!("CARGO_PKG_VERSION"),
+            "backend/src/version.ts must equal [workspace.package] version in Cargo.toml"
+        );
     }
 
     #[test]

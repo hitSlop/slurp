@@ -1,8 +1,9 @@
 import { DurableObject } from 'cloudflare:workers'
+import { migrate } from './migrate.ts'
 import { type Env, randomHex } from './util.ts'
 
 export type ProjectRow = { id: string; name: string; title: string | null; created_at: string }
-export type Result<T> = { ok: true; value: T } | { ok: false; code: 'invalid' | 'exists' | 'notfound'; message: string }
+export type Result<T> = { ok: true; value: T } | { ok: false; code: 'invalid' | 'exists' | 'notfound' | 'unavailable'; message: string }
 
 const RESERVED_PREFIXES = ['session_', 'prj_', 'mdl_']
 // Reserved words from the local SQL engine (slurp-core sql.rs/columns.rs), which project names double as table aliases for.
@@ -17,11 +18,16 @@ export function validTitle(title: string | undefined): boolean {
   return title === undefined || new TextEncoder().encode(title).length <= 200
 }
 
+/** The registry's storage as migration steps (see `migrate.ts`): append-only. */
+export const REGISTRY_STEPS: readonly string[] = [
+  'CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)',
+]
+
 export class RegistryDO extends DurableObject<Env> {
   sql = this.ctx.storage.sql
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
-    this.sql.exec('CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)')
+    migrate(ctx.storage, REGISTRY_STEPS)
   }
 
   /** The project with this name, creating it first if there is none. Repeating a call returns the same project. */
@@ -40,6 +46,6 @@ export class RegistryDO extends DurableObject<Env> {
   /** Forget every project (used by `slurp cloud destroy`). */
   async purge(): Promise<void> {
     await this.ctx.storage.deleteAll()
-    this.sql.exec('CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, title TEXT, created_at TEXT NOT NULL)')
+    migrate(this.ctx.storage, REGISTRY_STEPS)
   }
 }

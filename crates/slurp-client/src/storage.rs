@@ -25,19 +25,16 @@ pub enum Store {
 pub fn selected() -> Result<Store> {
     selected_at(&crate::config::home()?)
 }
-fn selected_at(home: &Path) -> Result<Store> {
-    #[derive(Default, Deserialize)]
-    struct Settings {
-        #[serde(default)]
-        credential_store: Store,
+pub(crate) fn selected_at(home: &Path) -> Result<Store> {
+    Ok(crate::config::settings_at(home)?.credential_store)
+}
+
+/// Validate local credential metadata before provisioning a deployment. Native credentials are not probed.
+pub fn validate() -> Result<()> {
+    if selected()? == Store::File {
+        read_file(&crate::config::home()?.join("credentials.json"))?;
     }
-    match fs::read_to_string(home.join("config.toml")) {
-        Ok(text) => Ok(toml::from_str::<Settings>(&text)
-            .context("invalid credential_store setting; use file or keychain")?
-            .credential_store),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Store::File),
-        Err(_) => Err(anyhow!("could not read credential-store settings")),
-    }
+    Ok(())
 }
 
 /// Read from the selected store without prompting when file storage is selected.
@@ -125,7 +122,14 @@ fn read_file(path: &Path) -> Result<BTreeMap<String, String>> {
         }
     };
     private_file(&file)?;
-    serde_json::from_reader(file).map_err(|_| {
+    let value: serde_json::Value = serde_json::from_reader(file)?;
+    crate::config::check_version(
+        path,
+        value.get("version").and_then(serde_json::Value::as_u64),
+        1,
+        "slurp connect <backend>",
+    )?;
+    serde_json::from_value(value["entries"].clone()).map_err(|_| {
         anyhow!(
             "credential file is invalid; restore it or move it aside and run slurp connect again"
         )
@@ -166,7 +170,10 @@ fn update_file(path: &Path, change: impl FnOnce(&mut BTreeMap<String, String>)) 
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))?;
-    serde_json::to_writer(&mut temporary, &values)?;
+    serde_json::to_writer(
+        &mut temporary,
+        &serde_json::json!({"version":1,"entries":values}),
+    )?;
     temporary.write_all(b"\n")?;
     temporary.as_file().sync_all()?;
     temporary
@@ -189,19 +196,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unsupported_credentials_are_never_rewritten() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("credentials.json");
+        for text in [
+            r#"{"old":"token"}"#,
+            r#"{"version":2}"#,
+            r#"{"version":0}"#,
+            r#"{"version":"one"}"#,
+        ] {
+            fs::write(&path, text).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(read_file(&path).is_err());
+            assert!(
+                update_file(&path, |v| {
+                    v.clear();
+                })
+                .is_err()
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+    #[test]
     fn file_is_default_and_native_access_requires_an_explicit_setting() {
         let dir = tempfile::tempdir().expect("home");
         assert_eq!(selected_at(dir.path()).expect("default"), Store::File);
         assert!(!dir.path().join("credentials.json").exists());
         fs::write(
             dir.path().join("config.toml"),
-            "backend='http://127.0.0.1:8787'\n",
+            "version=1\nbackend='http://127.0.0.1:8787'\n",
         )
         .expect("settings");
         assert_eq!(selected_at(dir.path()).expect("old settings"), Store::File);
         fs::write(
             dir.path().join("config.toml"),
-            "credential_store='keychain'\n",
+            "version=1\ncredential_store='keychain'\n",
         )
         .expect("settings");
         assert_eq!(

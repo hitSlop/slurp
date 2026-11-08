@@ -17,14 +17,16 @@ export class Db {
 }
 
 /**
- * Every table, all `IF NOT EXISTS`, so one statement both creates a project's storage and brings an older one up to date.
+ * A project's storage, as migration steps (see `migrate.ts`). Step 0 is version 1: every table. Steps are append-only; a shipped step is
+ * never edited, a change to the layout is a new step after it.
  * `chunks` keeps its large `data` column last, so reading the small columns never walks the data's overflow pages.
  */
-export const SCHEMA = `
-CREATE TABLE IF NOT EXISTS keys(key_id TEXT PRIMARY KEY, scope TEXT NOT NULL, source TEXT, name TEXT, plain TEXT UNIQUE, hash TEXT UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);
-CREATE TABLE IF NOT EXISTS webhooks(provider TEXT PRIMARY KEY, source TEXT NOT NULL, secret TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, events INTEGER NOT NULL, bytes INTEGER NOT NULL, at_ms INTEGER NOT NULL, data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS intent(seq INTEGER PRIMARY KEY, through_chunk INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS manifest(seq INTEGER PRIMARY KEY, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL, deleted_at INTEGER);
-CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+const V1 = `
+CREATE TABLE keys(key_id TEXT PRIMARY KEY, scope TEXT NOT NULL, source TEXT, name TEXT, plain TEXT UNIQUE, hash TEXT UNIQUE, created_at TEXT NOT NULL, revoked_at TEXT);
+CREATE TABLE webhooks(provider TEXT PRIMARY KEY, source TEXT NOT NULL, secret TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE chunks(id INTEGER PRIMARY KEY, events INTEGER NOT NULL, bytes INTEGER NOT NULL, at_ms INTEGER NOT NULL, data TEXT NOT NULL);
+CREATE TABLE intent(seq INTEGER PRIMARY KEY, through_chunk INTEGER NOT NULL);
+CREATE TABLE manifest(seq INTEGER PRIMARY KEY, size INTEGER NOT NULL, sha256 TEXT NOT NULL, events INTEGER NOT NULL, created_at INTEGER NOT NULL, deleted_at INTEGER, format INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE settings(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `
+export const PROJECT_STEPS: readonly string[] = [V1]

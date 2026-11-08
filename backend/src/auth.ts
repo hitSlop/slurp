@@ -9,6 +9,9 @@ export const MIN_ADMIN_TOKEN = 20
 export const PUBLISHABLE_KEY = /^slurp_pk_([0-9a-f]{16})_([a-z][a-z0-9_]{0,31})_([0-9a-f]{48})$/
 export const SECRET_KEY = /^slurp_sk_([0-9a-f]{16})_([0-9a-f]{48})$/
 
+/** A project's object refused to answer (its stored data is newer than this Worker): not "wrong key", but "try again after the deploy". */
+export class Unavailable extends Error {}
+
 export const adminConfigured = (env: Env) => !!env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN
 const isAdmin = (token: string, env: Env) => adminConfigured(env) && timingSafeEqual(token, env.ADMIN_TOKEN)
 
@@ -39,6 +42,7 @@ export async function authenticate(env: Env, token: string | null | undefined): 
   if (isAdmin(token, env)) return { kind: 'admin' }
   const project = projectOfKey(token)
   if (!project) return null
-  const principal = await env.PROJECT.get(env.PROJECT.idFromName(project)).authorize(token)
-  return principal ? { kind: 'key', project, ...principal } : null
+  const authorized = await env.PROJECT.get(env.PROJECT.idFromName(project)).authorize(token)
+  if (!authorized.ok) throw new Unavailable(authorized.message)
+  return authorized.value ? { kind: 'key', project, ...authorized.value } : null
 }

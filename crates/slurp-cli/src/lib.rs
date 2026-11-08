@@ -98,13 +98,56 @@ pub fn null_non_finite(json: &str) -> std::borrow::Cow<'_, str> {
     }
     out.into()
 }
-/// The tables of a fresh database (`docs/contracts.md`, "Local import"). There is no migration from earlier layouts.
-const SCHEMA: &str = "BEGIN;
-CREATE SCHEMA _slurp;
-CREATE TABLE _slurp.identity(version INTEGER, backend VARCHAR, project VARCHAR);
+/// Step 1 of the local database (`docs/contracts.md`, "Local import"): the tables of a fresh database.
+const V1: &str = "CREATE SCHEMA _slurp;
+CREATE TABLE _slurp.meta(schema INTEGER, backend VARCHAR, project VARCHAR);
 CREATE TABLE _slurp.deliveries(project VARCHAR, sequence BIGINT, sha256 VARCHAR, bytes UBIGINT, imported_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(project, sequence));
 CREATE TABLE _slurp.problems(kind VARCHAR, sender VARCHAR, id VARCHAR, archive_seq BIGINT, line BIGINT, record VARCHAR, detail VARCHAR, seen_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(kind, archive_seq, line));
 CREATE TABLE events(sender VARCHAR, id VARCHAR, type VARCHAR, event VARCHAR, timestamp TIMESTAMPTZ, user_id VARCHAR, anonymous_id VARCHAR, session_id VARCHAR, data JSON, context JSON, geo JSON, received_at TIMESTAMPTZ, archive_seq BIGINT, line BIGINT, raw JSON, fingerprint VARCHAR, PRIMARY KEY(sender, id));";
+/// The local database's migration steps. Step `i` takes schema `i` to `i + 1`. Steps are only ever appended: a shipped step is
+/// never edited (`docs/contracts.md`, "Versions and upgrades").
+const MIGRATIONS: &[&str] = &[V1];
+/// How long a command waits for another Slurp process that holds DuckDB's write lock before it reports `Busy`.
+const BUSY_WAIT: Duration = Duration::from_secs(10);
+/// What a migration run is allowed: copying a large database takes longer than an ordinary query.
+const MIGRATION_TIMEOUT: Duration = Duration::from_secs(600);
+/// Marks the guard error of a migration that found the schema already changed by another process.
+const SCHEMA_CHANGED: &str = "slurp_schema_changed";
+
+/// Migration steps as one script: each step ends with a semicolon, so a step may omit its own.
+fn join_steps(steps: &[&str]) -> String {
+    steps
+        .iter()
+        .map(|step| {
+            let step = step.trim_end();
+            if step.ends_with(';') {
+                step.to_string()
+            } else {
+                format!("{step};")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+fn is_busy(error: &anyhow::Error) -> bool {
+    matches!(error.downcast_ref::<Failure>(), Some(f) if matches!(f.code, ErrorCode::Busy))
+}
+fn is_schema_changed(error: &anyhow::Error) -> bool {
+    matches!(error.downcast_ref::<Failure>(), Some(f) if f.message.contains(SCHEMA_CHANGED))
+}
+
+/// Cleanup must not replace the error that determines whether the caller retries.
+fn discard_attempt(directory: &Path, error: anyhow::Error) -> anyhow::Error {
+    if let Err(cleanup) = fs::remove_dir_all(directory) {
+        eprintln!(
+            "could not remove migration attempt {}: {cleanup}",
+            directory.display()
+        );
+    }
+    let message =
+        format!("database migration failed; this attempt did not change its schema: {error}");
+    error.context(message)
+}
 
 /// Quote SQL data; identifiers in generated SQL are fixed by Slurp.
 pub fn literal(s: &str) -> String {
@@ -154,7 +197,9 @@ impl Workspace {
         };
         w.execute_inner(
             &format!(
-                "{SCHEMA}\nINSERT INTO _slurp.identity VALUES(1,{},{}); COMMIT;",
+                "BEGIN;\n{}\nINSERT INTO _slurp.meta VALUES({},{},{}); COMMIT;",
+                join_steps(MIGRATIONS),
+                MIGRATIONS.len(),
                 literal(&w.backend),
                 literal(&w.project)
             ),
@@ -203,6 +248,16 @@ impl Workspace {
     /// Returns an error for missing, malformed or incompatible project metadata.
     pub fn read_binding(root: &Path) -> Result<Self> {
         let text = fs::read_to_string(root.join(".slurp/project.toml"))?;
+        let header: toml::Value = toml::from_str(&text)?;
+        slurp_client::config::check_version(
+            &root.join(".slurp/project.toml"),
+            header
+                .get("version")
+                .and_then(toml::Value::as_integer)
+                .and_then(|v| u64::try_from(v).ok()),
+            1,
+            "slurp init",
+        )?;
         let w: Self = toml::from_str(&text)?;
         if w.version != 1 {
             bail!(Failure::new(
@@ -240,20 +295,144 @@ impl Workspace {
         w.sandbox = true;
         w
     }
-    /// Load and verify a workspace without creating missing storage.
+    /// Load and verify a workspace without creating missing storage. A database made by an older schema is backed up and
+    /// migrated first (see [`Workspace::load_with_migrations`]).
     pub fn load(root: &Path) -> Result<Self> {
+        Self::load_with_migrations(root, MIGRATIONS)
+    }
+    /// [`Workspace::load`] with an explicit list of migration steps, so tests can exercise a longer list than the shipped one.
+    ///
+    /// - A database without baseline metadata is refused.
+    /// - A schema newer than `steps` is refused.
+    /// - A schema older than `steps` is copied to a uniquely reserved directory beside the database and migrated in one DuckDB process,
+    ///   so DuckDB's write lock covers the copy and the whole migration. A failing step leaves the database as it was.
+    #[doc(hidden)]
+    pub fn load_with_migrations(root: &Path, steps: &[&str]) -> Result<Self> {
         let w = Self::read_binding(root)?;
         storage::require_database(&w.database)?;
         setup::check_engine(&w.duckdb)?;
-        let identity = w.execute("SELECT version,backend,project FROM _slurp.identity", true)?;
-        if identity != json!([{"version":1,"backend":w.backend,"project":w.project}]) {
+        let started = Instant::now();
+        loop {
+            let (alias, schema) = w.read_schema()?;
+            if schema > steps.len() as u64 {
+                bail!(Failure::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    format!(
+                        "this database was made by a newer Slurp; upgrade the CLI (its schema is {schema}, this version reads up to {})",
+                        steps.len()
+                    )
+                ))
+            }
+            if schema < steps.len() as u64 {
+                match w.migrate(&alias, schema as usize, steps) {
+                    Err(error)
+                        if (is_schema_changed(&error) || is_busy(&error))
+                            && started.elapsed() < BUSY_WAIT
+                            && !w.cancellation.is_cancelled() =>
+                    {
+                        // Another Slurp process migrated, or holds the lock: read the schema again.
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                    Ok(()) => {}
+                }
+            }
+            break;
+        }
+        w.ensure_helpers();
+        Ok(w)
+    }
+    /// The database's name inside DuckDB and its schema version, after checking that it is a Slurp database made for this
+    /// workspace's backend and project.
+    fn read_schema(&self) -> Result<(String, u64)> {
+        let tables = self.execute(
+            "SELECT current_database() AS alias, (SELECT count(*) FROM information_schema.tables WHERE table_schema = '_slurp' AND table_name = 'meta') AS meta",
+            true,
+        )?;
+        let row = &tables[0];
+        if row["meta"].as_u64() != Some(1) {
+            bail!(Failure::new(
+                ErrorCode::WorkspaceUnavailable,
+                format!("{} is not a Slurp database", self.database.display())
+            ))
+        }
+        let alias = row["alias"].as_str().context("database name")?.to_string();
+        let meta = self.execute("SELECT schema, backend, project FROM _slurp.meta", true)?;
+        let [row] = meta.as_array().map(Vec::as_slice).unwrap_or_default() else {
+            bail!(Failure::new(
+                ErrorCode::WorkspaceUnavailable,
+                format!(
+                    "{} is not a Slurp database (its `_slurp.meta` is damaged)",
+                    self.database.display()
+                )
+            ))
+        };
+        let schema = row["schema"].as_u64().context("database schema version")?;
+        if row["backend"] != json!(self.backend) || row["project"] != json!(self.project) {
             bail!(Failure::new(
                 ErrorCode::BindingMismatch,
                 "database binding mismatch"
             ))
         }
-        w.ensure_helpers();
-        Ok(w)
+        Ok((alias, schema))
+    }
+    /// Back the database up and apply `steps[from..]` in one DuckDB process, which holds DuckDB's write lock throughout.
+    ///
+    /// The first statement fails if another process migrated the database after `from` was read (the caller reads again);
+    /// otherwise nothing is copied or changed before the lock is held. A failing step rolls back and leaves the backup.
+    fn migrate(&self, alias: &str, from: usize, steps: &[&str]) -> Result<()> {
+        let directory = tempfile::Builder::new()
+            .prefix(&format!(
+                "{}.schema{from}-",
+                self.database
+                    .file_name()
+                    .context("database filename")?
+                    .to_string_lossy()
+            ))
+            .suffix(".bak")
+            .tempdir_in(self.database.parent().context("database parent")?)?
+            .keep();
+        let backup = directory.join(self.database.file_name().context("database filename")?);
+        let destination = if alias.eq_ignore_ascii_case("slurp_backup") {
+            "slurp_backup_2"
+        } else {
+            "slurp_backup"
+        };
+        let script = format!(
+            "CREATE TEMP TABLE _slurp_guard AS SELECT CASE WHEN (SELECT schema FROM _slurp.meta) = {from} THEN 0 ELSE error('{SCHEMA_CHANGED}') END AS ok;\nCHECKPOINT;\nATTACH {} AS {destination};\nCOPY FROM DATABASE \"{}\" TO {destination};\nDETACH {destination};\nBEGIN;\n{}\nUPDATE _slurp.meta SET schema = {};\nCOMMIT;",
+            literal(&backup.to_string_lossy()),
+            alias.replace('"', "\"\""),
+            join_steps(&steps[from..]),
+            steps.len()
+        );
+        let result = self.run_once(&script, false, false, MIGRATION_TIMEOUT);
+        match result {
+            Ok(_) => {
+                eprintln!(
+                    "upgraded the database from schema {from} to {} (backup at {})",
+                    steps.len(),
+                    backup.display()
+                );
+                Ok(())
+            }
+            Err(error) => {
+                let unchanged = if is_busy(&error) || is_schema_changed(&error) {
+                    true // This process never passed the guard or acquired the write lock.
+                } else {
+                    matches!(self.read_schema(), Ok((_, schema)) if schema == from as u64)
+                };
+                if unchanged {
+                    Err(discard_attempt(&directory, error))
+                } else {
+                    let message = format!(
+                        "database migration did not finish; attempt files retained at {} (the copy may be incomplete): {error}",
+                        directory.display()
+                    );
+                    Err(error.context(message))
+                }
+            }
+        }
     }
     /// Run bounded-time SQL using the configured external engine.
     pub fn execute(&self, sql: &str, readonly: bool) -> Result<Value> {
@@ -265,7 +444,45 @@ impl Workspace {
             .prefix(".slurp-tmp-")
             .tempdir_in(self.database.parent().context("database parent")?)?)
     }
+    /// Run SQL, waiting up to [`BUSY_WAIT`] for another Slurp process that holds DuckDB's write lock.
     fn execute_inner(&self, sql: &str, readonly: bool, initializing: bool) -> Result<Value> {
+        let start = Instant::now();
+        let mut pause = Duration::from_millis(50);
+        let bytes = loop {
+            match self.run_once(sql, readonly, initializing, Duration::from_secs(60)) {
+                Err(error)
+                    if is_busy(&error)
+                        && start.elapsed() + pause < BUSY_WAIT
+                        && !self.cancellation.is_cancelled() =>
+                {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(Duration::from_millis(1000));
+                }
+                other => break other?,
+            }
+        };
+        if bytes.is_empty() {
+            Ok(json!([]))
+        } else {
+            match serde_json::from_slice(&bytes) {
+                Ok(value) => Ok(value),
+                Err(error) => {
+                    // DuckDB writes a non-finite double (1.0 / 0, a NaN ratio) as the bare words Infinity and NaN, which is
+                    // not JSON. Show those as null (there is no JSON number for them) rather than failing the whole query.
+                    let text = String::from_utf8(bytes).map_err(|_| error)?;
+                    Ok(serde_json::from_str(&null_non_finite(&text))?)
+                }
+            }
+        }
+    }
+    /// One DuckDB process run, with no retry: its standard output, or the failure it reported.
+    fn run_once(
+        &self,
+        sql: &str,
+        readonly: bool,
+        initializing: bool,
+        timeout: Duration,
+    ) -> Result<Vec<u8>> {
         if !initializing {
             storage::require_database(&self.database)?;
         }
@@ -311,12 +528,12 @@ impl Workspace {
                 child.wait()?;
                 bail!(Failure::new(ErrorCode::Cancelled, "cancelled"))
             }
-            if start.elapsed() > Duration::from_secs(60) {
+            if start.elapsed() > timeout {
                 child.kill()?;
                 child.wait()?;
                 bail!(Failure::new(
                     ErrorCode::QueryTimeout,
-                    "DuckDB exceeded 60 seconds"
+                    format!("DuckDB exceeded {} seconds", timeout.as_secs())
                 ))
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -343,19 +560,7 @@ impl Workspace {
         if bytes.len() > 32 * 1024 * 1024 {
             bail!("query output exceeds 32 MiB")
         }
-        if bytes.is_empty() {
-            Ok(json!([]))
-        } else {
-            match serde_json::from_slice(&bytes) {
-                Ok(value) => Ok(value),
-                Err(error) => {
-                    // DuckDB writes a non-finite double (1.0 / 0, a NaN ratio) as the bare words Infinity and NaN, which is
-                    // not JSON. Show those as null (there is no JSON number for them) rather than failing the whole query.
-                    let text = String::from_utf8(bytes).map_err(|_| error)?;
-                    Ok(serde_json::from_str(&null_non_finite(&text))?)
-                }
-            }
-        }
+        Ok(bytes)
     }
     /// Read a bounded query result. Raw JSON numbers are parsed without float conversion.
     pub fn query(&self, sql: &str) -> Result<Value> {
@@ -559,5 +764,18 @@ impl Workspace {
             result["history_incomplete"] = incomplete;
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod migration_failure_tests {
+    #[test]
+    fn cleanup_failure_does_not_replace_busy_classification() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let error = super::Failure::new(super::ErrorCode::Busy, "original busy error").into();
+        let error = super::discard_attempt(file.path(), error);
+        assert!(super::is_busy(&error));
+        assert!(format!("{error:#}").contains("original busy error"));
+        assert!(file.path().exists());
     }
 }

@@ -37,17 +37,6 @@ export class RegistryDO extends DurableObject<Env> {
     return (this.sql.exec('SELECT * FROM projects WHERE id=? OR name=? LIMIT 1', ref, ref).toArray()[0] as ProjectRow) ?? null
   }
   list(): ProjectRow[] { return this.sql.exec('SELECT * FROM projects ORDER BY id').toArray() as ProjectRow[] }
-  update(ref: string, p: { name?: string; title?: string }): Result<ProjectRow> {
-    const s = this.get(ref); if (!s) return { ok: false, code: 'notfound', message: 'project' }
-    if (!validTitle(p.title)) return { ok: false, code: 'invalid', message: 'bad title' }
-    if (p.name !== undefined && !validProjectName(p.name)) return { ok: false, code: 'invalid', message: 'bad name' }
-    if (p.name !== undefined && p.name !== s.name && this.sql.exec('SELECT 1 FROM projects WHERE name=?', p.name).toArray().length) return { ok: false, code: 'exists', message: 'name exists' }
-    this.ctx.storage.transactionSync(() => {
-      if (p.name !== undefined) this.sql.exec('UPDATE projects SET name=? WHERE id=?', p.name, s.id)
-      if (p.title !== undefined) this.sql.exec('UPDATE projects SET title=? WHERE id=?', p.title === '' ? null : p.title, s.id)
-    })
-    return { ok: true, value: this.get(s.id)! }
-  }
   /** Forget every project (used by `slurp cloud destroy`). */
   async purge(): Promise<void> {
     await this.ctx.storage.deleteAll()

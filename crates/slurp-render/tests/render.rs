@@ -181,3 +181,27 @@ fn rendering_is_byte_identical_in_utc_and_chicago() {
         "chart output changed with TZ"
     );
 }
+
+#[test]
+fn chart_axis_layout_uses_actual_font_advances() {
+    let mut renderer = ChartRenderer::new();
+    let spec = json!({"mark":"bar","encoding":{"y":{"field":"label","type":"nominal","axis":{"title":null}},"x":{"field":"value","type":"quantitative","axis":{"title":null}}}});
+    let mut width = |label: &str, font: &str| {
+        let chart=renderer.compile(&spec,&json!({"columns":[{"name":"label","type":"VARCHAR"},{"name":"value","type":"DOUBLE"}],"rows":[[label,10]]}),CompileOptions{font:font.into(),width:200,height:100,..Default::default()}).unwrap();
+        chart
+            .svg
+            .split(" width=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .unwrap()
+    };
+    assert!(width("WWWWWWWWWW", "Geist") > width("iiiiiiiiii", "Geist") + 40);
+    assert_eq!(
+        width("WWWWWWWWWW", "Geist Mono"),
+        width("iiiiiiiiii", "Geist Mono")
+    );
+}

@@ -1,0 +1,106 @@
+use std::fmt;
+
+use cssparser::Parser;
+
+use crate::style::{FromCss, MakeComputed, ParseResult, ToCss};
+
+/// Represents the direction of the grid auto flow.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum GridDirection {
+  /// The grid auto flow is in the row direction.
+  #[default]
+  Row,
+  /// The grid auto flow is in the column direction.
+  Column,
+}
+
+/// Represents the flow of the grid auto placement.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct GridAutoFlow {
+  /// The direction of the grid auto flow.
+  pub direction: GridDirection,
+  /// Whether the grid auto flow is dense.
+  pub dense: bool,
+}
+
+impl MakeComputed for GridAutoFlow {}
+
+impl GridAutoFlow {
+  /// The grid auto flow is in the row direction.
+  pub const fn row() -> Self {
+    Self {
+      direction: GridDirection::Row,
+      dense: false,
+    }
+  }
+
+  /// The grid auto flow is in the column direction.
+  pub const fn column() -> Self {
+    Self {
+      direction: GridDirection::Column,
+      dense: false,
+    }
+  }
+
+  /// The grid auto flow is dense.
+  pub const fn dense(self) -> Self {
+    Self {
+      dense: true,
+      ..self
+    }
+  }
+}
+
+impl<'i> FromCss<'i> for GridAutoFlow {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let mut direction = GridDirection::default();
+    let mut dense = false;
+
+    while !input.is_exhausted() {
+      if input
+        .try_parse(|input| input.expect_ident_matching("dense"))
+        .is_ok()
+      {
+        dense = true;
+        continue;
+      }
+
+      if input
+        .try_parse(|input| input.expect_ident_matching("row"))
+        .is_ok()
+      {
+        direction = GridDirection::Row;
+        continue;
+      }
+
+      if input
+        .try_parse(|input| input.expect_ident_matching("column"))
+        .is_ok()
+      {
+        direction = GridDirection::Column;
+        continue;
+      }
+
+      return Err(input.new_error_for_next_token());
+    }
+
+    Ok(GridAutoFlow { direction, dense })
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["row", "column", "dense"];
+}
+
+impl ToCss for GridAutoFlow {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self.direction {
+      GridDirection::Row => dest.write_str("row")?,
+      GridDirection::Column => dest.write_str("column")?,
+    }
+    if self.dense {
+      dest.write_str(" dense")?;
+    }
+    Ok(())
+  }
+}

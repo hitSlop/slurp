@@ -1,0 +1,913 @@
+use std::{borrow::Cow, error::Error, fmt, sync::Arc};
+
+use cssparser::{
+  BasicParseErrorKind, ParseError as CssParseError, ParseErrorKind, Parser,
+  ToCss as CssParserToCss, Token,
+};
+
+use crate::style::{Color, SizingContext, build_unexpected_token, math::lcm, merge_enum_values};
+
+/// Parser result type alias for CSS property parsers.
+pub(crate) type ParseResult<'i, T> = Result<T, CssParseError<ValueError<'i>>>;
+
+/// Why a CSS value failed to parse, put into words only when a caller shows it: parsers try
+/// alternatives and drop most failures.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ValueError<'i> {
+  Message(Cow<'i, str>),
+  /// `token` where `expect` asked for one of `valid_tokens`.
+  UnexpectedToken {
+    token: Token<'i>,
+    expect: CssExpectedMessage,
+    valid_tokens: &'static [&'static str],
+  },
+}
+
+impl<'i> ValueError<'i> {
+  /// The parse error that says `message`.
+  pub(crate) fn invalid(message: &'static str) -> CssParseError<Self> {
+    CssParseError::custom(Self::Message(Cow::Borrowed(message)))
+  }
+}
+
+impl fmt::Display for ValueError<'_> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::Message(message) => f.write_str(message),
+      Self::UnexpectedToken {
+        token,
+        expect,
+        valid_tokens,
+      } => f.write_str(&expect.build_message(
+        &CssParserToCss::to_css_string(token),
+        merge_enum_values(valid_tokens),
+      )),
+    }
+  }
+}
+
+impl<'i> From<Cow<'i, str>> for ValueError<'i> {
+  fn from(message: Cow<'i, str>) -> Self {
+    Self::Message(message)
+  }
+}
+
+/// The error of [`FromCssStr::from_css_str`], keeping `cssparser` out of the public API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+  message: String,
+}
+
+impl fmt::Display for ParseError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(&self.message)
+  }
+}
+
+impl Error for ParseError {}
+
+impl ParseError {
+  /// Stringifies an internal `cssparser` error into an owned [`ParseError`].
+  pub(crate) fn from_css_error(error: &CssParseError<ValueError<'_>>) -> Self {
+    let message = match &error.kind {
+      ParseErrorKind::Custom(message) => message.to_string(),
+      basic => format!("{basic:?}"),
+    };
+
+    Self { message }
+  }
+}
+
+/// Runs the internal `FromCss` parser over `source`, mapping the borrowed
+/// `cssparser` error into the owned public [`ParseError`].
+pub(crate) fn parse_css_str<T>(source: &str) -> Result<T, ParseError>
+where
+  T: for<'i> FromCss<'i>,
+{
+  let mut parser = Parser::new(source);
+
+  T::from_css(&mut parser).map_err(|error| ParseError::from_css_error(&error))
+}
+
+/// Parses a CSS value type from a string.
+pub trait FromCssStr: Sized {
+  /// Parses `source` into this value type.
+  fn from_css_str(source: &str) -> Result<Self, ParseError>;
+}
+
+impl<T> FromCssStr for T
+where
+  T: for<'i> FromCss<'i>,
+{
+  fn from_css_str(source: &str) -> Result<Self, ParseError> {
+    parse_css_str::<Self>(source)
+  }
+}
+
+/// Compact identifiers for frequently reused CSS syntax tokens.
+/// Total length of `lists` flattened, for sizing the [`merge_token_lists`] array.
+pub(crate) const fn merged_token_len(lists: &[&[&'static str]]) -> usize {
+  let (mut len, mut list) = (0, 0);
+  while list < lists.len() {
+    len += lists[list].len();
+    list += 1;
+  }
+  len
+}
+
+/// Concatenates token lists into a single array, e.g. to build a shorthand's `VALID_TOKENS` from
+/// its longhands'. `N` must be [`merged_token_len`].
+pub(crate) const fn merge_token_lists<const N: usize>(
+  lists: &[&[&'static str]],
+) -> [&'static str; N] {
+  let mut merged = [""; N];
+  let (mut index, mut list) = (0, 0);
+  while list < lists.len() {
+    let tokens = lists[list];
+    let mut token = 0;
+    while token < tokens.len() {
+      merged[index] = tokens[token];
+      index += 1;
+      token += 1;
+    }
+    list += 1;
+  }
+  merged
+}
+
+/// The index of the keyword `ident` names in `tokens`, skipping `<syntax>` entries, which an
+/// escaped ident could otherwise spell.
+#[inline(never)]
+pub(crate) fn keyword_index(ident: &str, tokens: &[&'static str]) -> Option<usize> {
+  tokens
+    .iter()
+    .position(|token| !token.starts_with('<') && ident.eq_ignore_ascii_case(token))
+}
+
+#[inline(never)]
+pub(crate) fn parse_enum_keyword<'i>(
+  input: &mut Parser<'i>,
+  valid_tokens: &'static [&'static str],
+  expect: CssExpectedMessage,
+) -> ParseResult<'i, usize> {
+  let token = input.next()?;
+
+  let Token::Ident(ident) = token else {
+    return Err(build_unexpected_token(token, expect, valid_tokens));
+  };
+
+  keyword_index(ident, valid_tokens)
+    .ok_or_else(|| build_unexpected_token(token, expect, valid_tokens))
+}
+
+#[inline(never)]
+pub(crate) fn parse_ident_enum_keyword<'i>(
+  input: &mut Parser<'i>,
+  valid_tokens: &'static [&'static str],
+  expect: CssExpectedMessage,
+) -> ParseResult<'i, usize> {
+  let ident = input.expect_ident()?;
+
+  keyword_index(ident, valid_tokens)
+    .ok_or_else(|| build_unexpected_token(&Token::Ident(ident.to_owned()), expect, valid_tokens))
+}
+
+/// Defines reusable message templates for CSS parse errors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub(crate) enum CssExpectedMessage {
+  /// Expects a value or the `none` keyword.
+  ValueOrNone,
+  /// Expects exactly one value.
+  OneValue,
+  /// Expects one or two values.
+  OneOrTwoValues,
+  /// Expects one to four values.
+  OneToFourValues,
+  /// Expects the border-radius shorthand grammar.
+  BorderRadius,
+}
+
+impl CssExpectedMessage {
+  /// Builds the parse-error message for an unexpected token.
+  pub(crate) fn build_message(&self, token: &str, valid_tokens: String) -> String {
+    match self {
+      Self::ValueOrNone => {
+        format!("Unexpected token: {token}, expected a value of {valid_tokens} or 'none'")
+      }
+      Self::OneValue => format!("Unexpected token: {token}, expected a value of {valid_tokens}"),
+      Self::OneOrTwoValues => {
+        format!("Unexpected token: {token}, expected 1 ~ 2 values of {valid_tokens}")
+      }
+      Self::OneToFourValues => {
+        format!("Unexpected token: {token}, expected 1 ~ 4 values of {valid_tokens}")
+      }
+      Self::BorderRadius => format!(
+        "Unexpected token: {token}, expected 1 to 4 length values for width, optionally followed by '/' and 1 to 4 length values for height"
+      ),
+    }
+  }
+}
+
+/// Trait for types that can be parsed from CSS.
+pub(crate) trait FromCss<'i> {
+  /// Parses the type from a [`Parser`] instance.
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self>
+  where
+    Self: Sized;
+
+  /// The keywords this type accepts, and the `<syntax>` of each other value it takes, for
+  /// parse errors.
+  const VALID_TOKENS: &'static [&'static str];
+
+  /// Message template used when building parse errors for this type.
+  const EXPECT_MESSAGE: CssExpectedMessage = CssExpectedMessage::OneValue;
+}
+
+impl<'i, T: FromCss<'i>> FromCss<'i> for Option<T> {
+  // 'none' is intentionally omitted and applied in `expect_message`
+  const VALID_TOKENS: &'static [&'static str] = T::VALID_TOKENS;
+
+  const EXPECT_MESSAGE: CssExpectedMessage = CssExpectedMessage::ValueOrNone;
+
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let start = input.state();
+
+    if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+      let after_none = input.state();
+
+      if input.try_parse(Parser::expect_comma).is_err() {
+        return Ok(None);
+      }
+
+      // `none, ...` starts a list whose first item is `none`, as `background-image: none, none`.
+      input.reset(&start);
+
+      if let Ok(value) = input.try_parse(T::from_css) {
+        return Ok(Some(value));
+      }
+
+      input.reset(&after_none);
+
+      return Ok(None);
+    }
+
+    T::from_css(input).map(Some)
+  }
+}
+
+impl<'i> FromCss<'i> for String {
+  const VALID_TOKENS: &'static [&'static str] = &["<string>", "<custom-ident>"];
+
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    Ok(input.expect_ident_or_string()?.to_string())
+  }
+}
+
+/// Converts a parsed/inherited value into a computed value for the current node context.
+pub(crate) trait MakeComputed {
+  /// Default no-op for types that do not need computed-value normalization.
+  fn make_computed(&mut self, _sizing: &SizingContext) {}
+}
+
+pub(crate) trait Animatable: Sized + Clone {
+  fn interpolate(
+    &mut self,
+    from: &Self,
+    to: &Self,
+    progress: f32,
+    _sizing: &SizingContext,
+    _current_color: Color,
+  ) {
+    *self = discrete(from, to, progress);
+  }
+
+  /// The value `progress` of the way from `from` to `to`.
+  fn interpolated(
+    from: &Self,
+    to: &Self,
+    progress: f32,
+    sizing: &SizingContext,
+    current_color: Color,
+  ) -> Self {
+    let mut value = from.clone();
+
+    value.interpolate(from, to, progress, sizing, current_color);
+    value
+  }
+
+  fn list_interpolation_strategy() -> ListInterpolationStrategy {
+    ListInterpolationStrategy::Discrete
+  }
+
+  fn neutral_value_like(_other: &Self) -> Option<Self> {
+    None
+  }
+
+  fn missing_value() -> Option<Self> {
+    None
+  }
+}
+
+/// The discrete animation step: `from` before the midpoint, `to` from it on.
+pub(crate) fn discrete<T: Clone>(from: &T, to: &T, progress: f32) -> T {
+  if progress >= 0.5 {
+    to.clone()
+  } else {
+    from.clone()
+  }
+}
+
+pub(crate) enum ListInterpolationStrategy {
+  Discrete,
+  RepeatToLcm,
+  PadToLongestWithNeutral,
+}
+
+impl<T: MakeComputed> MakeComputed for Option<T> {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    if let Some(value) = self.as_mut() {
+      value.make_computed(sizing);
+    }
+  }
+}
+
+impl<T: MakeComputed> MakeComputed for Box<[T]> {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    for value in self.iter_mut() {
+      value.make_computed(sizing);
+    }
+  }
+}
+
+impl<T: MakeComputed> MakeComputed for Vec<T> {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    for value in self.iter_mut() {
+      value.make_computed(sizing);
+    }
+  }
+}
+
+impl<T: Animatable + Clone> Animatable for Option<T> {
+  fn interpolate(
+    &mut self,
+    from: &Self,
+    to: &Self,
+    progress: f32,
+    sizing: &SizingContext,
+    current_color: Color,
+  ) {
+    *self = match (from, to) {
+      (Some(start), Some(end)) => {
+        Some(T::interpolated(start, end, progress, sizing, current_color))
+      }
+      (Some(start), None) => T::missing_value().map_or_else(
+        || discrete(from, to, progress),
+        |missing| {
+          Some(T::interpolated(
+            start,
+            &missing,
+            progress,
+            sizing,
+            current_color,
+          ))
+        },
+      ),
+      (None, Some(end)) => T::missing_value().map_or_else(
+        || discrete(from, to, progress),
+        |missing| {
+          Some(T::interpolated(
+            &missing,
+            end,
+            progress,
+            sizing,
+            current_color,
+          ))
+        },
+      ),
+      (None, None) => None,
+    };
+  }
+}
+
+macro_rules! impl_list_animatable {
+  ($($list:ty),+) => {$(
+    impl<T: Animatable + Clone> Animatable for $list {
+      fn missing_value() -> Option<Self> {
+        match T::list_interpolation_strategy() {
+          ListInterpolationStrategy::Discrete => None,
+          ListInterpolationStrategy::RepeatToLcm
+          | ListInterpolationStrategy::PadToLongestWithNeutral => Some(Self::default()),
+        }
+      }
+
+      fn interpolate(
+        &mut self,
+        from: &Self,
+        to: &Self,
+        progress: f32,
+        sizing: &SizingContext,
+        current_color: Color,
+      ) {
+        *self = interpolate_list(from, to, progress, sizing, current_color)
+          .map_or_else(|| discrete(from, to, progress), Into::into);
+      }
+    }
+  )+};
+}
+
+impl_list_animatable!(Box<[T]>, Arc<[T]>, Vec<T>);
+
+// Blink's `kRepeatableListMaxLength`, bounding the LCM expansion (crbug.com/739197).
+const MAX_INTERPOLATED_LIST_LEN: usize = 1000;
+
+fn interpolate_list<T: Animatable + Clone, C: AsRef<[T]>>(
+  from: &C,
+  to: &C,
+  progress: f32,
+  sizing: &SizingContext,
+  current_color: Color,
+) -> Option<Vec<T>> {
+  let from = from.as_ref();
+  let to = to.as_ref();
+
+  match T::list_interpolation_strategy() {
+    ListInterpolationStrategy::Discrete => {
+      if from.len() != to.len() {
+        return None;
+      }
+
+      Some(interpolate_pairwise_list(
+        from,
+        to,
+        from.len(),
+        progress,
+        sizing,
+        current_color,
+      ))
+    }
+    ListInterpolationStrategy::RepeatToLcm => {
+      interpolate_repeated_list(from, to, progress, sizing, current_color)
+    }
+    ListInterpolationStrategy::PadToLongestWithNeutral => {
+      interpolate_neutral_padded_list(from, to, progress, sizing, current_color)
+    }
+  }
+}
+
+/// The lists repeated to their least common multiple and interpolated item by item, none when
+/// either is empty.
+pub(crate) fn interpolate_repeated_list<T: Animatable + Clone>(
+  from: &[T],
+  to: &[T],
+  progress: f32,
+  sizing: &SizingContext,
+  current_color: Color,
+) -> Option<Vec<T>> {
+  if from.is_empty() || to.is_empty() {
+    return None;
+  }
+
+  let output_len = lcm(from.len(), to.len()).min(MAX_INTERPOLATED_LIST_LEN);
+
+  Some(interpolate_pairwise_list(
+    from,
+    to,
+    output_len,
+    progress,
+    sizing,
+    current_color,
+  ))
+}
+
+fn interpolate_pairwise_list<T: Animatable + Clone>(
+  from: &[T],
+  to: &[T],
+  output_len: usize,
+  progress: f32,
+  sizing: &SizingContext,
+  current_color: Color,
+) -> Vec<T> {
+  (0..output_len)
+    .map(|index| {
+      T::interpolated(
+        &from[index % from.len()],
+        &to[index % to.len()],
+        progress,
+        sizing,
+        current_color,
+      )
+    })
+    .collect()
+}
+
+fn interpolate_neutral_padded_list<T: Animatable + Clone>(
+  from: &[T],
+  to: &[T],
+  progress: f32,
+  sizing: &SizingContext,
+  current_color: Color,
+) -> Option<Vec<T>> {
+  let output_len = from.len().max(to.len());
+
+  (0..output_len)
+    .map(|index| {
+      let from_value = if index < from.len() {
+        from.get(index).cloned()
+      } else {
+        to.get(index).and_then(T::neutral_value_like)
+      }?;
+      let to_value = if index < to.len() {
+        to.get(index).cloned()
+      } else {
+        from.get(index).and_then(T::neutral_value_like)
+      }?;
+
+      Some(T::interpolated(
+        &from_value,
+        &to_value,
+        progress,
+        sizing,
+        current_color,
+      ))
+    })
+    .collect()
+}
+
+/// Serialize a style value to its CSS string representation.
+pub trait ToCss {
+  /// The separator between list items, `", "` unless the grammar is space-separated.
+  const LIST_SEPARATOR: &'static str = ", ";
+
+  /// The keyword an empty list serializes to, such as `none`, or `None` for an empty string.
+  const EMPTY_LIST_KEYWORD: Option<&'static str> = None;
+
+  /// Write the CSS representation of this value into `dest`.
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result;
+
+  /// The CSS representation of this value as an owned `String`.
+  fn to_css_string(&self) -> String {
+    let mut css = String::new();
+    let _ = self.to_css(&mut css);
+    css
+  }
+}
+
+impl<T: ToCss + ?Sized> ToCss for &T {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    (*self).to_css(dest)
+  }
+}
+
+impl<T: ToCss> ToCss for Option<T> {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Some(v) => v.to_css(dest),
+      None => dest.write_str("none"),
+    }
+  }
+}
+
+/// Writes `keywords` space-separated, or `empty` when there are none.
+pub(crate) fn write_keywords<'k, W: fmt::Write>(
+  dest: &mut W,
+  keywords: impl IntoIterator<Item = &'k str>,
+  empty: &str,
+) -> fmt::Result {
+  let mut keywords = keywords.into_iter().peekable();
+
+  if keywords.peek().is_none() {
+    return dest.write_str(empty);
+  }
+
+  for (index, keyword) in keywords.enumerate() {
+    if index > 0 {
+      dest.write_char(' ')?;
+    }
+
+    dest.write_str(keyword)?;
+  }
+
+  Ok(())
+}
+
+fn write_css_list<W: fmt::Write, T: ToCss>(items: &[T], dest: &mut W) -> fmt::Result {
+  if items.is_empty() {
+    return match T::EMPTY_LIST_KEYWORD {
+      Some(keyword) => dest.write_str(keyword),
+      None => Ok(()),
+    };
+  }
+
+  for (i, item) in items.iter().enumerate() {
+    if i > 0 {
+      dest.write_str(T::LIST_SEPARATOR)?;
+    }
+    item.to_css(dest)?;
+  }
+  Ok(())
+}
+
+impl<T: ToCss> ToCss for Box<[T]> {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    write_css_list(self, dest)
+  }
+}
+
+impl<T: ToCss> ToCss for Arc<[T]> {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    write_css_list(self, dest)
+  }
+}
+
+impl<T: ToCss> ToCss for Vec<T> {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    write_css_list(self, dest)
+  }
+}
+
+impl ToCss for f32 {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    write!(dest, "{self}")
+  }
+}
+
+impl ToCss for u32 {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    write!(dest, "{self}")
+  }
+}
+
+impl MakeComputed for u32 {}
+impl Animatable for u32 {}
+
+impl<'i> FromCss<'i> for u32 {
+  const VALID_TOKENS: &'static [&'static str] = &["<integer>"];
+
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let value = input.expect_integer()?;
+    if value < 0 {
+      return Err(CssParseError::from_basic_kind(
+        BasicParseErrorKind::QualifiedRuleInvalid,
+      ));
+    }
+    Ok(value as u32)
+  }
+}
+
+impl ToCss for i32 {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    write!(dest, "{self}")
+  }
+}
+
+impl ToCss for String {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    dest.write_str(self)
+  }
+}
+
+impl ToCss for Arc<str> {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    dest.write_str(self)
+  }
+}
+
+/// Implements `FromCss` for a `Box<[$elem]>` list as a comma-separated list of `$elem`.
+macro_rules! impl_comma_list_from_css {
+  ($list:ty, $elem:ty) => {
+    $crate::style::properties::impl_comma_list_from_css!($list, $elem, <$elem>::VALID_TOKENS);
+  };
+  ($list:ty, $elem:ty, $valid:expr) => {
+    impl<'i> $crate::style::FromCss<'i> for $list {
+      fn from_css(input: &mut cssparser::Parser<'i>) -> $crate::style::ParseResult<'i, Self> {
+        input
+          .parse_comma_separated(<$elem as $crate::style::FromCss>::from_css)
+          .map(Vec::into_boxed_slice)
+      }
+
+      const VALID_TOKENS: &'static [&'static str] = $valid;
+    }
+  };
+}
+
+pub(crate) use impl_comma_list_from_css;
+
+/// Treats the first keyword in each group as canonical and the rest as aliases.
+macro_rules! impl_css_enum {
+  (
+    $enum_type:ty,
+    $($canonical:literal $(| $alias:literal)* => $variant:path),* $(,)?
+  ) => {
+    $crate::style::properties::impl_css_enum!(@impl
+      $crate::style::properties::parse_enum_keyword,
+      default,
+      $enum_type,
+      $($canonical $(| $alias)* => $variant),*
+    );
+  };
+
+  (
+    custom_animatable $enum_type:ty,
+    $($canonical:literal $(| $alias:literal)* => $variant:path),* $(,)?
+  ) => {
+    $crate::style::properties::impl_css_enum!(@impl
+      $crate::style::properties::parse_enum_keyword,
+      custom,
+      $enum_type,
+      $($canonical $(| $alias)* => $variant),*
+    );
+  };
+
+  (ident $enum_type:ty, $($canonical:literal $(| $alias:literal)* => $variant:path),* $(,)?) => {
+    $crate::style::properties::impl_css_enum!(@impl
+      $crate::style::properties::parse_ident_enum_keyword,
+      default,
+      $enum_type,
+      $($canonical $(| $alias)* => $variant),*
+    );
+  };
+
+  (ident keyword $enum_type:ty, $($canonical:literal $(| $alias:literal)* => $variant:path),* $(,)?) => {
+    $crate::style::properties::impl_css_enum!(
+      ident $enum_type,
+      $($canonical $(| $alias)* => $variant),*
+    );
+
+    impl $enum_type {
+      fn from_keyword(ident: &str) -> Option<Self> {
+        $crate::style::keyword_index(
+          ident,
+          <Self as $crate::style::properties::FromCss>::VALID_TOKENS,
+        )
+          .map(|index| Self::KEYWORD_VALUES[index])
+      }
+    }
+  };
+
+  (@impl $parser:path, $animatable:ident, $enum_type:ty, $($canonical:literal $(| $alias:literal)* => $variant:path),* $(,)?) => {
+    impl $enum_type {
+      const KEYWORD_VALUES: &'static [Self] = &[
+        $($variant $(, $crate::style::properties::impl_css_enum!(@value $variant, $alias))*),*
+      ];
+    }
+
+    impl crate::style::MakeComputed for $enum_type {}
+
+    $crate::style::properties::impl_css_enum!(@animatable $animatable $enum_type);
+
+    impl<'i> crate::style::FromCss<'i> for $enum_type {
+      const VALID_TOKENS: &'static [&'static str] = &[
+        $(
+          $canonical
+          $(, $alias)*
+        ),*
+      ];
+
+      fn from_css(input: &mut cssparser::Parser<'i>) -> crate::style::ParseResult<'i, Self> {
+        let index = $parser(
+          input,
+          Self::VALID_TOKENS,
+          <Self as crate::style::FromCss>::EXPECT_MESSAGE,
+        )?;
+
+        Ok(Self::KEYWORD_VALUES[index])
+      }
+    }
+
+    impl crate::style::properties::ToCss for $enum_type {
+      fn to_css<W: std::fmt::Write>(&self, dest: &mut W) -> std::fmt::Result {
+        match self {
+          $(
+            $variant => dest.write_str($canonical),
+          )*
+        }
+      }
+    }
+
+  };
+
+  (@animatable default $enum_type:ty) => {
+    impl $crate::style::Animatable for $enum_type {}
+  };
+
+  (@animatable custom $enum_type:ty) => {};
+
+  (@value $variant:path, $alias:literal) => {
+    $variant
+  };
+}
+
+pub(crate) use impl_css_enum;
+
+/// Declares a box-alignment enum parser that accepts the optional `safe`/`unsafe`
+/// overflow-position prefix on its positional keywords.
+macro_rules! declare_box_alignment_enum_impl {
+  (
+    $enum_type:ty,
+    safe { $($safe_css:literal => $base_variant:ident / $safe_variant:ident $(/ $unsafe_variant:ident)?),+ $(,)? },
+    plain { $($plain_css:literal => $plain_variant:ident),* $(,)? }
+  ) => {
+    impl crate::style::MakeComputed for $enum_type {}
+
+    impl<'i> crate::style::FromCss<'i> for $enum_type {
+      const VALID_TOKENS: &'static [&'static str] = &[
+        $($plain_css,)*
+        $($safe_css,)*
+        "safe",
+        "unsafe",
+      ];
+
+      fn from_css(input: &mut cssparser::Parser<'i>) -> crate::style::ParseResult<'i, Self> {
+        let mut overflow_position = None;
+
+        loop {
+          let token = input.next()?;
+
+          let cssparser::Token::Ident(ident) = token else {
+            return Err($crate::style::unexpected_token!(token));
+          };
+
+          cssparser::match_ignore_ascii_case! {&ident,
+            "safe" | "unsafe" => {
+              if overflow_position.replace(ident.eq_ignore_ascii_case("safe")).is_some() {
+                return Err($crate::style::unexpected_token!(token));
+              }
+            },
+            $($safe_css => return Ok(match overflow_position {
+              Some(true) => Self::$safe_variant,
+              $(Some(false) => Self::$unsafe_variant,)?
+              _ => Self::$base_variant,
+            }),)*
+            $($plain_css => return if overflow_position.unwrap_or(false) {
+              Err($crate::style::unexpected_token!(token))
+            } else {
+              Ok(Self::$plain_variant)
+            },)*
+            _ => return Err($crate::style::unexpected_token!(token)),
+          }
+        }
+      }
+    }
+
+    impl crate::style::properties::ToCss for $enum_type {
+      fn to_css<W: std::fmt::Write>(&self, dest: &mut W) -> std::fmt::Result {
+        match self {
+          $(Self::$plain_variant => dest.write_str($plain_css),)*
+          $(Self::$base_variant => dest.write_str($safe_css),)*
+          $(Self::$safe_variant => {
+            dest.write_str("safe ")?;
+            dest.write_str($safe_css)
+          })*
+          $($(Self::$unsafe_variant => {
+            dest.write_str("unsafe ")?;
+            dest.write_str($safe_css)
+          })?)*
+        }
+      }
+    }
+
+  };
+}
+
+pub(crate) use declare_box_alignment_enum_impl;
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{
+    style::{BackgroundRepeat, BackgroundRepeatStyle},
+    viewport::Viewport,
+  };
+
+  fn repeats(len: usize, style: BackgroundRepeatStyle) -> Vec<BackgroundRepeat> {
+    vec![BackgroundRepeat(style, style); len]
+  }
+
+  fn interpolated(from_len: usize, to_len: usize) -> Option<Vec<BackgroundRepeat>> {
+    let sizing = SizingContext::builder()
+      .viewport(Viewport::default())
+      .build();
+
+    interpolate_list(
+      &repeats(from_len, BackgroundRepeatStyle::Repeat),
+      &repeats(to_len, BackgroundRepeatStyle::NoRepeat),
+      0.75,
+      &sizing,
+      Color([0, 0, 0, 255]),
+    )
+  }
+
+  #[test]
+  fn repeat_to_lcm_interpolates_under_the_cap() {
+    assert_eq!(interpolated(2, 3).map(|values| values.len()), Some(6));
+  }
+
+  #[test]
+  fn repeat_to_lcm_clamps_past_the_cap() {
+    assert_eq!(
+      interpolated(61, 67).map(|values| values.len()),
+      Some(MAX_INTERPOLATED_LIST_LEN)
+    );
+  }
+}

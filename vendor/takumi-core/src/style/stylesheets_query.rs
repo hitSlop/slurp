@@ -1,0 +1,505 @@
+use std::borrow::Cow;
+
+use super::ComputedStyle;
+use crate::{
+  fonts::{
+    font_description::FontSelectionDescription,
+    font_selection_types::{FontSelectionRequest, FontSelectionValue},
+  },
+  geometry::{Point, Size as CoreSize},
+  style::{Lang, SizingContext, properties::*},
+  text::{
+    capitalize::capitalize,
+    case_map::CaseMap,
+    character::{
+      IDEOGRAPHIC_SPACE, is_modern_georgian_uppercase, lowercase_modern_georgian_uppercase,
+    },
+    character_variants::{full_size_kana_variant, full_width_variant},
+  },
+};
+
+impl ComputedStyle {
+  /// The style a render's root inherits from: its language and font fallback chain.
+  pub fn root(lang: Option<Lang>, font_family: Option<FontFamily>) -> Self {
+    let mut style = Self {
+      lang,
+      ..Self::default()
+    };
+
+    if let Some(font_family) = font_family {
+      style.inherited_data_mut().font_family = font_family;
+    }
+    style
+  }
+
+  /// Blink's `ResolvedIsColumnFlexDirection`, as a direction: a `-webkit-box` takes its axis from
+  /// `-webkit-box-orient`.
+  pub(crate) fn resolved_flex_direction(&self) -> FlexDirection {
+    if self.base_data.display.is_deprecated_webkit_box() {
+      self.misc_data.box_orient.into()
+    } else {
+      self.misc_data.flex_direction
+    }
+  }
+
+  /// Normalize inheritable text-related values to computed values for this node.
+  pub(crate) fn make_computed(&mut self, sizing: &SizingContext) {
+    #[cfg(debug_assertions)]
+    let expected = {
+      let mut style = self.unshared();
+
+      style.resolve_computed(sizing);
+      style
+    };
+
+    self.share_computed_initial_groups();
+    self.resolve_computed(sizing);
+    #[cfg(debug_assertions)]
+    debug_assert!(
+      *self == expected,
+      "a shared style group resolved differently"
+    );
+  }
+
+  /// [`Self::make_computed`] on the groups this style owns alone, writing a shared group only
+  /// when its value changes.
+  pub(super) fn resolve_computed(&mut self, sizing: &SizingContext) {
+    // `font-size` computed value is already resolved in `sizing.font_size`.
+    // Keep it as css-px in style to avoid re-resolving descendant inheritance.
+    let font_size = FontSize::Length(Length::Px(sizing.to_css(sizing.font_size)));
+
+    if self.inherited_data.font_size != font_size {
+      self.inherited_data_mut().font_size = font_size;
+    }
+
+    self.make_computed_values(sizing);
+
+    // A `none` or `hidden` border is zero wide when used. `outline-width` keeps its value, as Blink's.
+    let none = LineWidth::Length(Length::zero());
+    let unrendered = |style: BorderStyle, width: LineWidth| !style.is_rendered() && width != none;
+    let box_data = &self.box_data;
+
+    if unrendered(box_data.border_top_style, box_data.border_top_width)
+      || unrendered(box_data.border_right_style, box_data.border_right_width)
+      || unrendered(box_data.border_bottom_style, box_data.border_bottom_width)
+      || unrendered(box_data.border_left_style, box_data.border_left_width)
+    {
+      let box_data = self.box_data_mut();
+
+      for (style, width) in [
+        (box_data.border_top_style, &mut box_data.border_top_width),
+        (
+          box_data.border_right_style,
+          &mut box_data.border_right_width,
+        ),
+        (
+          box_data.border_bottom_style,
+          &mut box_data.border_bottom_width,
+        ),
+        (box_data.border_left_style, &mut box_data.border_left_width),
+      ] {
+        if !style.is_rendered() {
+          *width = none;
+        }
+      }
+    }
+
+    // `-webkit-legacy` collapses only in a vertical `-webkit-box`, Blink's
+    // `IsDeprecatedWebkitBoxWithVerticalLineClamp`.
+    if self.misc_data.r#continue == Continue::WebkitLegacy {
+      let collapses = self.base_data.display.is_deprecated_webkit_box()
+        && self.misc_data.box_orient == BoxOrient::Vertical;
+
+      self.misc_data_mut().r#continue = if collapses {
+        Continue::Collapse
+      } else {
+        Continue::Normal
+      };
+    }
+
+    self.original_display = self.base_data.display;
+
+    // https://www.w3.org/TR/css-display-3/#transformations
+    // Elements with position: absolute or fixed are blockified
+    let base_data = &self.base_data;
+
+    if (base_data.position.is_out_of_flow() || base_data.float != Float::None)
+      && base_data.display.as_blockified() != base_data.display
+    {
+      self.base_data_mut().display.blockify();
+    }
+  }
+
+  /// Whether the element and everything inside it paint nothing: zero opacity or `display:none`.
+  /// A `visibility: hidden` element still lets its visible descendants paint.
+  pub fn is_invisible(&self) -> bool {
+    self.svg_data.opacity.0 == 0.0 || self.base_data.display == Display::None
+  }
+
+  /// Whether the element paints its own box and content, which `visibility: hidden` stops.
+  pub(crate) fn is_visible(&self) -> bool {
+    self.inherited_data.visibility == Visibility::Visible
+  }
+
+  /// Whether `z-index` takes effect on this element.
+  pub(crate) fn is_z_index_applicable(&self, is_flex_or_grid_item: bool) -> bool {
+    !matches!(self.box_data.z_index, ZIndex::Auto)
+      && (self.base_data.position.is_positioned() || is_flex_or_grid_item)
+  }
+
+  /// The effective paint-order z-index of a child with this style.
+  pub(crate) fn paint_order_z(&self, is_flex_or_grid_item: bool) -> i32 {
+    if self.participates_in_positioned_paint_bucket(is_flex_or_grid_item) {
+      self.box_data.z_index.painting_order_value()
+    } else {
+      0
+    }
+  }
+
+  /// Whether the element paints in the positioned/z-index bucket.
+  pub(crate) fn participates_in_positioned_paint_bucket(&self, is_flex_or_grid_item: bool) -> bool {
+    self.base_data.position.is_positioned() || self.is_z_index_applicable(is_flex_or_grid_item)
+  }
+
+  /// Blink's `CalculateIsStackingContextWithoutContainment` and `LayoutObject::IsStackingContext`.
+  pub(crate) fn creates_stacking_context(&self, is_flex_or_grid_item: bool) -> bool {
+    self.base_data.position == Position::Fixed
+      || self.misc_data.contain.contains(Contain::LAYOUT)
+      || self.misc_data.contain.contains(Contain::PAINT)
+      || self.is_z_index_applicable(is_flex_or_grid_item)
+      || self.has_transform_related_property()
+      || self.needs_offscreen_compositing()
+  }
+
+  /// Whether the element floats in a paint layer of its own, as Blink's floats with a
+  /// self-painting layer do.
+  pub(crate) fn floats_in_own_layer(&self, is_flex_or_grid_item: bool) -> bool {
+    self.base_data.float != Float::None
+      && !is_flex_or_grid_item
+      && (self.base_data.position.is_positioned()
+        || self.creates_stacking_context(is_flex_or_grid_item))
+  }
+
+  /// Whether the box contains `fixed` descendants, as Blink's `ComputeIsFixedContainer`.
+  pub fn contains_fixed_descendants(&self) -> bool {
+    self.misc_data.contain.contains(Contain::LAYOUT)
+      || self.misc_data.contain.contains(Contain::PAINT)
+      || self.has_transform_related_property()
+      || !self.misc1_data.filter.is_empty()
+      || !self.misc1_data.backdrop_filter.is_empty()
+  }
+
+  /// Blink's `HasTransformRelatedProperty`, for the properties takumi has.
+  pub(crate) fn has_transform_related_property(&self) -> bool {
+    self
+      .svg_data
+      .transform
+      .as_ref()
+      .is_some_and(|t| !t.0.is_empty())
+      || self.misc3_data.offset_path.is_some()
+      || self.misc3_data.rotate.is_some()
+      || self.misc4_data.translate != SpacePair::default()
+      || self.misc3_data.scale.is_some()
+  }
+
+  /// Blink's `UpdateForPaintOffsetTranslation`; `local` is the box's transform.
+  pub(crate) fn paint_offset_after_translation(
+    &self,
+    paint_offset: Point<f32>,
+    local: Affine,
+  ) -> Point<f32> {
+    // Blink's `NeedsIsolationNodes`.
+    let isolates = self.misc_data.contain.contains(Contain::PAINT)
+      || (self.misc_data.contain.contains(Contain::STYLE)
+        && self.misc_data.contain.contains(Contain::LAYOUT));
+
+    if isolates {
+      return Point::ZERO;
+    }
+    if !self.has_transform_related_property() && self.misc1_data.backdrop_filter.is_empty() {
+      return paint_offset;
+    }
+
+    // `ToRoundedVector2d` rounds as `LayoutUnit::Round` does, halves up.
+    let subpixel = |offset: f32| offset - (offset + 0.5).floor();
+    // Blink's `CanPropagateSubpixelAccumulation`.
+    let (keep_x, keep_y) = if local.only_translation() {
+      (true, true)
+    } else if local.b == 0.0 && local.c == 0.0 {
+      (local.a == 1.0, local.d == 1.0)
+    } else {
+      (false, false)
+    };
+
+    Point {
+      x: if keep_x {
+        subpixel(paint_offset.x)
+      } else {
+        0.0
+      },
+      y: if keep_y {
+        subpixel(paint_offset.y)
+      } else {
+        0.0
+      },
+    }
+  }
+
+  /// Whether the element must render to an offscreen layer before compositing.
+  pub fn needs_offscreen_compositing(&self) -> bool {
+    self.needs_effect_group() || !self.misc1_data.filter.is_empty()
+  }
+
+  /// Whether opacity, blending, masking, or a backdrop needs an effect group.
+  pub(crate) fn needs_effect_group(&self) -> bool {
+    self.misc_data.isolation == Isolation::Isolate
+      || *self.svg_data.opacity < 1.0
+      || !self.misc1_data.backdrop_filter.is_empty()
+      || self.misc_data.mix_blend_mode != BlendMode::Normal
+      || self.has_shape_mask()
+  }
+
+  /// Whether `clip-path` or a non-empty `mask-image` shapes the element's
+  /// visible area.
+  pub fn has_shape_mask(&self) -> bool {
+    self.misc1_data.clip_path.is_some()
+      || self.misc2_data.mask_image.as_ref().is_some_and(|images| {
+        images
+          .iter()
+          .any(|image| !matches!(image, BackgroundImage::None))
+      })
+  }
+
+  /// The local transform, in CSS Transforms 2 order around `transform-origin`.
+  pub fn local_transform(&self, width: f32, height: f32, sizing: &SizingContext) -> Affine {
+    let (origin_x, origin_y) = self
+      .svg_data
+      .transform_origin
+      .to_point(sizing, width, height);
+    let mut local = Affine::translation(origin_x, origin_y);
+
+    if self.misc4_data.translate != SpacePair::default() {
+      local *= Affine::translation(
+        self.misc4_data.translate.x.to_px(sizing, width),
+        self.misc4_data.translate.y.to_px(sizing, height),
+      );
+    }
+    if let Some(rotate) = self.misc3_data.rotate {
+      local *= Affine::rotation(rotate);
+    }
+    if let Some(scale) = self.misc3_data.scale {
+      local *= Affine::scale(scale.x.0, scale.y.0);
+    }
+    // Approximate: `offset-path` resolves against the query container for Blink's `GetReferenceBox`.
+    let reference_width = sizing
+      .container_size
+      .width
+      .filter(|width| *width > 0.0)
+      .or_else(|| sizing.viewport.size.width.map(|width| width as f32))
+      .unwrap_or(width);
+    let reference_height = sizing
+      .container_size
+      .height
+      .filter(|height| *height > 0.0)
+      .or_else(|| sizing.viewport.size.height.map(|height| height as f32))
+      .unwrap_or(height);
+    if let Some(path) = &self.misc3_data.offset_path
+      && let Some((point, tangent)) = path.sample(
+        self.misc3_data.offset_distance,
+        &self.misc3_data.offset_position,
+        sizing,
+        CoreSize {
+          width: reference_width,
+          height: reference_height,
+        },
+      )
+    {
+      local *= Affine::translation(point.x - origin_x, point.y - origin_y);
+      local *= Affine::rotation_radians(self.misc3_data.offset_rotate.resolve(tangent));
+      if let Some((anchor_x, anchor_y)) =
+        self.misc3_data.offset_anchor.resolve(sizing, width, height)
+      {
+        local *= Affine::translation(origin_x - anchor_x, origin_y - anchor_y);
+      }
+    }
+    if let Some(node_transform) = &self.svg_data.transform {
+      local *= Affine::from_transforms(node_transform.iter(), sizing, width, height);
+    }
+    local *= Affine::translation(-origin_x, -origin_y);
+    local
+  }
+
+  /// The computed [overflow pair](https://drafts.csswg.org/css-overflow-3/#overflow-properties),
+  /// `contain: paint` clipping as Blink's `ComputeOverflowClipAxes`.
+  pub fn resolve_overflows(&self) -> SpacePair<Overflow> {
+    let (mut x, mut y) = match (self.base_data.overflow_x, self.base_data.overflow_y) {
+      (Overflow::Visible, other) if !other.is_clip_or_visible() => (Overflow::Hidden, other),
+      (other, Overflow::Visible) if !other.is_clip_or_visible() => (other, Overflow::Hidden),
+      pair => pair,
+    };
+
+    if self.misc_data.contain.contains(Contain::PAINT) {
+      if x == Overflow::Visible {
+        x = Overflow::Clip;
+      }
+      if y == Overflow::Visible {
+        y = Overflow::Clip;
+      }
+    }
+
+    SpacePair::from_pair(x, y)
+  }
+
+  /// Whether overflowing content is clipped.
+  pub fn clips_overflow(&self) -> bool {
+    self.resolve_overflows().should_clip_content()
+  }
+
+  /// Blink's `ApplyTextTransform`: the case, then full-width forms, then full-size kana.
+  /// `previous_character` ends the text before, which decides whether `capitalize` starts a word.
+  pub(crate) fn apply_text_transform<'t>(
+    &self,
+    text: &'t str,
+    previous_character: char,
+  ) -> Cow<'t, str> {
+    let transform = self.inherited_data.text_transform;
+    let case_map = || CaseMap::new(self.lang.as_ref().map(Lang::as_str));
+    let mut text = match transform.case {
+      TextTransformCase::None => Cow::Borrowed(text),
+      TextTransformCase::Capitalize => Cow::Owned(capitalize(text, previous_character)),
+      // Fonts lack the Mtavruli letters, so Georgian stays in Mkhedruli. <https://crbug.com/865427>
+      TextTransformCase::Uppercase => match case_map().to_upper(text) {
+        Cow::Owned(upper) if upper.contains(is_modern_georgian_uppercase) => Cow::Owned(
+          upper
+            .chars()
+            .map(|c| {
+              if is_modern_georgian_uppercase(c) {
+                lowercase_modern_georgian_uppercase(c)
+              } else {
+                c
+              }
+            })
+            .collect(),
+        ),
+        upper => upper,
+      },
+      TextTransformCase::Lowercase => case_map().to_lower(text),
+    };
+
+    if transform.full_width {
+      // A space white space processing may collapse stays one, as in Blink.
+      let preserves_spaces = self
+        .inherited_data
+        .white_space_collapse
+        .should_preserve_white_spaces();
+
+      text = Cow::Owned(
+        text
+          .chars()
+          .map(|c| match c {
+            ' ' if preserves_spaces => IDEOGRAPHIC_SPACE,
+            c => full_width_variant(c),
+          })
+          .collect(),
+      );
+    }
+
+    if transform.full_size_kana {
+      text = Cow::Owned(text.chars().map(full_size_kana_variant).collect());
+    }
+
+    text
+  }
+
+  #[inline]
+  /// The decoration thickness resolved to pixels or `from-font`.
+  pub(crate) fn resolved_text_decoration_thickness(
+    &self,
+    sizing: &SizingContext,
+  ) -> SizedTextDecorationThickness {
+    match self.misc3_data.text_decoration_thickness {
+      TextDecorationThickness::Length(Length::Auto) => SizedTextDecorationThickness::Auto,
+      TextDecorationThickness::FromFont => SizedTextDecorationThickness::FromFont,
+      TextDecorationThickness::Length(thickness) => {
+        SizedTextDecorationThickness::Value(thickness.to_px(sizing, sizing.font_size))
+      }
+    }
+  }
+
+  /// The lines `line-clamp` keeps, which collapse the lines past them.
+  pub(crate) fn line_clamp(&self) -> Option<u32> {
+    self
+      .misc3_data
+      .max_lines
+      .filter(|&lines| self.misc_data.r#continue == Continue::Collapse && lines >= 1)
+  }
+
+  /// What font matching reads of this style at `sizing`'s font size, apart from the families.
+  pub(crate) fn font_selection_description(
+    &self,
+    sizing: &SizingContext,
+  ) -> FontSelectionDescription {
+    let inherited = &self.inherited_data;
+
+    FontSelectionDescription {
+      font_selection_request: FontSelectionRequest::new(
+        FontSelectionValue::new(inherited.font_weight.value()),
+        FontSelectionValue::new(inherited.font_stretch.percentage() * 100.0),
+        FontSelectionValue::new(inherited.font_style.slope()),
+      ),
+      is_italic_keyword: inherited.font_style.is_italic(),
+      synthetic_bold_allowed: inherited.font_synthesis_weight.is_allowed(),
+      synthetic_italic_allowed: inherited.font_synthesis_style.is_allowed(),
+      is_synthetic_bold: false,
+      is_synthetic_italic: false,
+      effective_font_size: sizing.font_size,
+      adjusted_specified_size: sizing.to_css(sizing.font_size),
+      font_optical_sizing: inherited.font_optical_sizing,
+      variation_settings: inherited
+        .font_variation_settings
+        .iter()
+        .map(|variation| harfrust::font::Variation {
+          tag: variation.tag.into_harfrust(),
+          value: variation.value,
+        })
+        .collect(),
+    }
+  }
+
+  /// The `font-variant-*` features, then `font-feature-settings`, which wins on conflicts.
+  pub(crate) fn resolved_font_features(
+    &self,
+    letter_spacing: bool,
+    caps: FontVariantCaps,
+  ) -> Cow<'_, [FontFeature]> {
+    let mut features = Vec::new();
+    self
+      .inherited_data
+      .font_variant_ligatures
+      .append_features(letter_spacing, &mut features);
+    self
+      .inherited_data
+      .font_variant_numeric
+      .append_features(&mut features);
+    self
+      .inherited_data
+      .font_variant_east_asian
+      .append_features(&mut features);
+    caps.append_features(&mut features);
+    self
+      .inherited_data
+      .font_variant_position
+      .append_features(&mut features);
+    self
+      .inherited_data
+      .font_kerning
+      .append_features(&mut features);
+
+    if features.is_empty() {
+      return Cow::Borrowed(self.inherited_data.font_feature_settings.as_ref());
+    }
+
+    features.extend_from_slice(&self.inherited_data.font_feature_settings);
+    Cow::Owned(features)
+  }
+}

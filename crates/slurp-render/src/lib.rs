@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod metrics;
 mod page;
 pub use page::{PAGE_WIDTH, PNG_SCALE, RenderedPage};
 
@@ -380,6 +381,28 @@ impl Engine {
             Instant::now() >= *clock.lock().unwrap()
         })));
         let context = Context::full(&runtime).map_err(ChartError::new)?;
+        let measurer = metrics::TextMeasurer::new()?;
+        context
+            .with(|ctx| {
+                let measure = rquickjs::Function::new(
+                    ctx.clone(),
+                    move |ctx: rquickjs::Ctx<'_>,
+                          text: String,
+                          family: String,
+                          size: f64,
+                          weight: String,
+                          style: String,
+                          variant: String| {
+                        measurer
+                            .width(&text, &family, size, &weight, &style, &variant)
+                            .map_err(|error| {
+                                rquickjs::Exception::throw_message(&ctx, &error.to_string())
+                            })
+                    },
+                )?;
+                ctx.globals().set("__slurpMeasureText", measure)
+            })
+            .map_err(ChartError::new)?;
         let bundle = zstd::decode_all(&include_bytes!("../assets/render.js.zst")[..])
             .map_err(ChartError::new)?;
         context

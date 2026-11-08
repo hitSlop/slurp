@@ -122,6 +122,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install chart bundle verifier
+        run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: Embedded chart assets match their source
+        run: pnpm --dir report-assets check
+      - name: Chart text measurement tests
+        run: pnpm --dir report-assets test
       - run: pnpm --filter slurp-setup check
       - run: pnpm --filter slurp-setup build
       - name: The CLI's embedded quickstart page is current

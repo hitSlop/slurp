@@ -1,0 +1,689 @@
+use std::fmt;
+
+use cssparser::{Parser, Token, match_ignore_ascii_case};
+
+use crate::style::{
+  Animatable, FontFeature, FromCss, MakeComputed, ParseResult, Tag, ToCss, impl_css_enum,
+  merge_token_lists, merged_token_len, unexpected_token, write_keywords,
+};
+
+/// Tri-state for one `font-variant-ligatures` group.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum LigatureState {
+  #[default]
+  Normal,
+  Enabled,
+  Disabled,
+}
+
+/// `font-variant-ligatures`. swash enables `liga`/`clig`/`calt` by default, so each group
+/// only emits a tag when the author overrides it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontVariantLigatures {
+  common: LigatureState,
+  discretionary: LigatureState,
+  historical: LigatureState,
+  contextual: LigatureState,
+}
+
+impl FontVariantLigatures {
+  fn none() -> Self {
+    Self {
+      common: LigatureState::Disabled,
+      discretionary: LigatureState::Disabled,
+      historical: LigatureState::Disabled,
+      contextual: LigatureState::Disabled,
+    }
+  }
+
+  fn set_keyword(&mut self, ident: &str) -> bool {
+    match_ignore_ascii_case! { ident,
+      "none" => *self = Self::none(),
+      "common-ligatures" => self.common = LigatureState::Enabled,
+      "no-common-ligatures" => self.common = LigatureState::Disabled,
+      "discretionary-ligatures" => self.discretionary = LigatureState::Enabled,
+      "no-discretionary-ligatures" => self.discretionary = LigatureState::Disabled,
+      "historical-ligatures" => self.historical = LigatureState::Enabled,
+      "no-historical-ligatures" => self.historical = LigatureState::Disabled,
+      "contextual" => self.contextual = LigatureState::Enabled,
+      "no-contextual" => self.contextual = LigatureState::Disabled,
+      _ => return false,
+    }
+    true
+  }
+
+  /// Non-zero `letter-spacing` turns every group off, as in Blink's `FontFeatures::Initialize`.
+  pub(crate) fn append_features(&self, letter_spacing: bool, out: &mut Vec<FontFeature>) {
+    let ligatures = if letter_spacing { Self::none() } else { *self };
+
+    for (state, tags) in [
+      (ligatures.common, &[b"liga", b"clig"][..]),
+      (ligatures.discretionary, &[b"dlig"][..]),
+      (ligatures.historical, &[b"hlig"][..]),
+      (ligatures.contextual, &[b"calt"][..]),
+    ] {
+      let value = match state {
+        LigatureState::Normal => continue,
+        LigatureState::Enabled => 1,
+        LigatureState::Disabled => 0,
+      };
+      for tag in tags {
+        out.push(FontFeature::new(Tag::new(tag), value));
+      }
+    }
+  }
+}
+
+impl MakeComputed for FontVariantLigatures {}
+impl Animatable for FontVariantLigatures {}
+
+impl<'i> FromCss<'i> for FontVariantLigatures {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    parse_keyword_set(input, Self::set_keyword)
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &[
+    "normal",
+    "none",
+    "common-ligatures",
+    "no-common-ligatures",
+    "discretionary-ligatures",
+    "no-discretionary-ligatures",
+    "historical-ligatures",
+    "no-historical-ligatures",
+    "contextual",
+    "no-contextual",
+  ];
+}
+
+impl ToCss for FontVariantLigatures {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    let keywords = [
+      (self.common, "common-ligatures", "no-common-ligatures"),
+      (
+        self.discretionary,
+        "discretionary-ligatures",
+        "no-discretionary-ligatures",
+      ),
+      (
+        self.historical,
+        "historical-ligatures",
+        "no-historical-ligatures",
+      ),
+      (self.contextual, "contextual", "no-contextual"),
+    ]
+    .into_iter()
+    .filter_map(|(state, on, off)| match state {
+      LigatureState::Normal => None,
+      LigatureState::Enabled => Some(on),
+      LigatureState::Disabled => Some(off),
+    });
+
+    write_keywords(dest, keywords, "normal")
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum NumericFigure {
+  #[default]
+  Normal,
+  Lining,
+  Oldstyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum NumericSpacing {
+  #[default]
+  Normal,
+  Proportional,
+  Tabular,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum NumericFraction {
+  #[default]
+  Normal,
+  Diagonal,
+  Stacked,
+}
+
+/// `font-variant-numeric`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontVariantNumeric {
+  figure: NumericFigure,
+  spacing: NumericSpacing,
+  fraction: NumericFraction,
+  ordinal: bool,
+  slashed_zero: bool,
+}
+
+impl FontVariantNumeric {
+  fn set_keyword(&mut self, ident: &str) -> bool {
+    match_ignore_ascii_case! { ident,
+      "lining-nums" => self.figure = NumericFigure::Lining,
+      "oldstyle-nums" => self.figure = NumericFigure::Oldstyle,
+      "proportional-nums" => self.spacing = NumericSpacing::Proportional,
+      "tabular-nums" => self.spacing = NumericSpacing::Tabular,
+      "diagonal-fractions" => self.fraction = NumericFraction::Diagonal,
+      "stacked-fractions" => self.fraction = NumericFraction::Stacked,
+      "ordinal" => self.ordinal = true,
+      "slashed-zero" => self.slashed_zero = true,
+      _ => return false,
+    }
+    true
+  }
+
+  pub(crate) fn append_features(&self, out: &mut Vec<FontFeature>) {
+    match self.figure {
+      NumericFigure::Normal => {}
+      NumericFigure::Lining => out.push(FontFeature::new(Tag::new(b"lnum"), 1)),
+      NumericFigure::Oldstyle => out.push(FontFeature::new(Tag::new(b"onum"), 1)),
+    }
+    match self.spacing {
+      NumericSpacing::Normal => {}
+      NumericSpacing::Proportional => out.push(FontFeature::new(Tag::new(b"pnum"), 1)),
+      NumericSpacing::Tabular => out.push(FontFeature::new(Tag::new(b"tnum"), 1)),
+    }
+    match self.fraction {
+      NumericFraction::Normal => {}
+      NumericFraction::Diagonal => out.push(FontFeature::new(Tag::new(b"frac"), 1)),
+      NumericFraction::Stacked => out.push(FontFeature::new(Tag::new(b"afrc"), 1)),
+    }
+    if self.ordinal {
+      out.push(FontFeature::new(Tag::new(b"ordn"), 1));
+    }
+    if self.slashed_zero {
+      out.push(FontFeature::new(Tag::new(b"zero"), 1));
+    }
+  }
+}
+
+impl MakeComputed for FontVariantNumeric {}
+impl Animatable for FontVariantNumeric {}
+
+impl<'i> FromCss<'i> for FontVariantNumeric {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    parse_keyword_set(input, Self::set_keyword)
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &[
+    "normal",
+    "lining-nums",
+    "oldstyle-nums",
+    "proportional-nums",
+    "tabular-nums",
+    "diagonal-fractions",
+    "stacked-fractions",
+    "ordinal",
+    "slashed-zero",
+  ];
+}
+
+impl ToCss for FontVariantNumeric {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    let figure = match self.figure {
+      NumericFigure::Normal => None,
+      NumericFigure::Lining => Some("lining-nums"),
+      NumericFigure::Oldstyle => Some("oldstyle-nums"),
+    };
+    let spacing = match self.spacing {
+      NumericSpacing::Normal => None,
+      NumericSpacing::Proportional => Some("proportional-nums"),
+      NumericSpacing::Tabular => Some("tabular-nums"),
+    };
+    let fraction = match self.fraction {
+      NumericFraction::Normal => None,
+      NumericFraction::Diagonal => Some("diagonal-fractions"),
+      NumericFraction::Stacked => Some("stacked-fractions"),
+    };
+    let keywords = [
+      figure,
+      spacing,
+      fraction,
+      self.ordinal.then_some("ordinal"),
+      self.slashed_zero.then_some("slashed-zero"),
+    ];
+
+    write_keywords(dest, keywords.into_iter().flatten(), "normal")
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum EastAsianForm {
+  #[default]
+  Normal,
+  Jis78,
+  Jis83,
+  Jis90,
+  Jis04,
+  Simplified,
+  Traditional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum EastAsianWidth {
+  #[default]
+  Normal,
+  Full,
+  Proportional,
+}
+
+/// `font-variant-east-asian`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontVariantEastAsian {
+  form: EastAsianForm,
+  width: EastAsianWidth,
+  ruby: bool,
+}
+
+impl FontVariantEastAsian {
+  fn set_keyword(&mut self, ident: &str) -> bool {
+    match_ignore_ascii_case! { ident,
+      "jis78" => self.form = EastAsianForm::Jis78,
+      "jis83" => self.form = EastAsianForm::Jis83,
+      "jis90" => self.form = EastAsianForm::Jis90,
+      "jis04" => self.form = EastAsianForm::Jis04,
+      "simplified" => self.form = EastAsianForm::Simplified,
+      "traditional" => self.form = EastAsianForm::Traditional,
+      "full-width" => self.width = EastAsianWidth::Full,
+      "proportional-width" => self.width = EastAsianWidth::Proportional,
+      "ruby" => self.ruby = true,
+      _ => return false,
+    }
+    true
+  }
+
+  pub(crate) fn append_features(&self, out: &mut Vec<FontFeature>) {
+    match self.form {
+      EastAsianForm::Normal => {}
+      EastAsianForm::Jis78 => out.push(FontFeature::new(Tag::new(b"jp78"), 1)),
+      EastAsianForm::Jis83 => out.push(FontFeature::new(Tag::new(b"jp83"), 1)),
+      EastAsianForm::Jis90 => out.push(FontFeature::new(Tag::new(b"jp90"), 1)),
+      EastAsianForm::Jis04 => out.push(FontFeature::new(Tag::new(b"jp04"), 1)),
+      EastAsianForm::Simplified => out.push(FontFeature::new(Tag::new(b"smpl"), 1)),
+      EastAsianForm::Traditional => out.push(FontFeature::new(Tag::new(b"trad"), 1)),
+    }
+    match self.width {
+      EastAsianWidth::Normal => {}
+      EastAsianWidth::Full => out.push(FontFeature::new(Tag::new(b"fwid"), 1)),
+      EastAsianWidth::Proportional => out.push(FontFeature::new(Tag::new(b"pwid"), 1)),
+    }
+    if self.ruby {
+      out.push(FontFeature::new(Tag::new(b"ruby"), 1));
+    }
+  }
+}
+
+impl MakeComputed for FontVariantEastAsian {}
+impl Animatable for FontVariantEastAsian {}
+
+impl<'i> FromCss<'i> for FontVariantEastAsian {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    parse_keyword_set(input, Self::set_keyword)
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &[
+    "normal",
+    "jis78",
+    "jis83",
+    "jis90",
+    "jis04",
+    "simplified",
+    "traditional",
+    "full-width",
+    "proportional-width",
+    "ruby",
+  ];
+}
+
+impl ToCss for FontVariantEastAsian {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    let form = match self.form {
+      EastAsianForm::Normal => None,
+      EastAsianForm::Jis78 => Some("jis78"),
+      EastAsianForm::Jis83 => Some("jis83"),
+      EastAsianForm::Jis90 => Some("jis90"),
+      EastAsianForm::Jis04 => Some("jis04"),
+      EastAsianForm::Simplified => Some("simplified"),
+      EastAsianForm::Traditional => Some("traditional"),
+    };
+    let width = match self.width {
+      EastAsianWidth::Normal => None,
+      EastAsianWidth::Full => Some("full-width"),
+      EastAsianWidth::Proportional => Some("proportional-width"),
+    };
+    let keywords = [form, width, self.ruby.then_some("ruby")];
+
+    write_keywords(dest, keywords.into_iter().flatten(), "normal")
+  }
+}
+
+/// `font-variant-caps`. Each value maps to OpenType caps features.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum FontVariantCaps {
+  /// No caps feature.
+  #[default]
+  Normal,
+  /// Small capitals for lowercase (`smcp`).
+  SmallCaps,
+  /// Small capitals for both lower- and uppercase (`smcp`, `c2sc`).
+  AllSmallCaps,
+  /// Petite capitals for lowercase (`pcap`).
+  PetiteCaps,
+  /// Petite capitals for both lower- and uppercase (`pcap`, `c2pc`).
+  AllPetiteCaps,
+  /// Unicase: small caps for uppercase, normal lowercase (`unic`).
+  Unicase,
+  /// Titling capitals (`titl`).
+  TitlingCaps,
+}
+
+impl FontVariantCaps {
+  pub(crate) fn append_features(&self, out: &mut Vec<FontFeature>) {
+    match self {
+      Self::Normal => {}
+      Self::SmallCaps => out.push(FontFeature::new(Tag::new(b"smcp"), 1)),
+      Self::AllSmallCaps => {
+        out.push(FontFeature::new(Tag::new(b"c2sc"), 1));
+        out.push(FontFeature::new(Tag::new(b"smcp"), 1));
+      }
+      Self::PetiteCaps => out.push(FontFeature::new(Tag::new(b"pcap"), 1)),
+      Self::AllPetiteCaps => {
+        out.push(FontFeature::new(Tag::new(b"c2pc"), 1));
+        out.push(FontFeature::new(Tag::new(b"pcap"), 1));
+      }
+      Self::Unicase => out.push(FontFeature::new(Tag::new(b"unic"), 1)),
+      Self::TitlingCaps => out.push(FontFeature::new(Tag::new(b"titl"), 1)),
+    }
+  }
+}
+
+impl_css_enum!(
+  ident keyword FontVariantCaps,
+  "normal" => FontVariantCaps::Normal,
+  "small-caps" => FontVariantCaps::SmallCaps,
+  "all-small-caps" => FontVariantCaps::AllSmallCaps,
+  "petite-caps" => FontVariantCaps::PetiteCaps,
+  "all-petite-caps" => FontVariantCaps::AllPetiteCaps,
+  "unicase" => FontVariantCaps::Unicase,
+  "titling-caps" => FontVariantCaps::TitlingCaps,
+);
+
+/// `font-variant-position`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum FontVariantPosition {
+  /// No positional feature.
+  #[default]
+  Normal,
+  /// Subscript forms (`subs`).
+  Sub,
+  /// Superscript forms (`sups`).
+  Super,
+}
+
+impl FontVariantPosition {
+  pub(crate) fn append_features(&self, out: &mut Vec<FontFeature>) {
+    match self {
+      Self::Normal => {}
+      Self::Sub => out.push(FontFeature::new(Tag::new(b"subs"), 1)),
+      Self::Super => out.push(FontFeature::new(Tag::new(b"sups"), 1)),
+    }
+  }
+}
+
+impl_css_enum!(
+  ident keyword FontVariantPosition,
+  "normal" => FontVariantPosition::Normal,
+  "sub" => FontVariantPosition::Sub,
+  "super" => FontVariantPosition::Super,
+);
+
+/// Parses `normal` or a space-separated run of keywords that `set_keyword` accepts.
+fn parse_keyword_set<'i, T: Default + FromCss<'i>>(
+  input: &mut Parser<'i>,
+  set_keyword: fn(&mut T, &str) -> bool,
+) -> ParseResult<'i, T> {
+  let mut value = T::default();
+
+  while !input.is_exhausted() {
+    let ident = input.expect_ident()?;
+
+    if !ident.eq_ignore_ascii_case("normal") && !set_keyword(&mut value, ident) {
+      return Err(unexpected_token!(T, &Token::Ident(ident.to_owned())));
+    }
+  }
+
+  Ok(value)
+}
+
+/// The `font-variant` shorthand. Only the subset of values takumi maps to OpenType features is
+/// supported; `font-variant-alternates` and `font-variant-emoji` are out of scope.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontVariant {
+  /// `font-variant-ligatures` component.
+  pub ligatures: FontVariantLigatures,
+  /// `font-variant-numeric` component.
+  pub numeric: FontVariantNumeric,
+  /// `font-variant-east-asian` component.
+  pub east_asian: FontVariantEastAsian,
+  /// `font-variant-caps` component.
+  pub caps: FontVariantCaps,
+  /// `font-variant-position` component.
+  pub position: FontVariantPosition,
+}
+
+impl<'i> FromCss<'i> for FontVariant {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let mut value = Self::default();
+    while !input.is_exhausted() {
+      let ident = input.expect_ident()?;
+
+      if ident.eq_ignore_ascii_case("normal") {
+        continue;
+      }
+      if value.ligatures.set_keyword(ident)
+        || value.numeric.set_keyword(ident)
+        || value.east_asian.set_keyword(ident)
+      {
+        continue;
+      }
+      if let Some(caps) = FontVariantCaps::from_keyword(ident) {
+        value.caps = caps;
+        continue;
+      }
+      if let Some(position) = FontVariantPosition::from_keyword(ident) {
+        value.position = position;
+        continue;
+      }
+      return Err(unexpected_token!(&Token::Ident(ident.to_owned())));
+    }
+    Ok(value)
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &VARIANT_TOKENS;
+}
+
+const VARIANT_TOKEN_LISTS: &[&[&str]] = &[
+  FontVariantLigatures::VALID_TOKENS,
+  FontVariantNumeric::VALID_TOKENS,
+  FontVariantEastAsian::VALID_TOKENS,
+  FontVariantCaps::VALID_TOKENS,
+  FontVariantPosition::VALID_TOKENS,
+];
+
+const VARIANT_TOKENS: [&str; merged_token_len(VARIANT_TOKEN_LISTS)] =
+  merge_token_lists(VARIANT_TOKEN_LISTS);
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn test_parse_font_variant_ligatures() {
+    for (css, expected) in [
+      ("normal", FontVariantLigatures::default()),
+      ("none", FontVariantLigatures::none()),
+      (
+        "common-ligatures no-discretionary-ligatures",
+        FontVariantLigatures {
+          common: LigatureState::Enabled,
+          discretionary: LigatureState::Disabled,
+          historical: LigatureState::Normal,
+          contextual: LigatureState::Normal,
+        },
+      ),
+    ] {
+      assert_eq!(
+        FontVariantLigatures::from_css_str(css),
+        Ok(expected),
+        "failed for {css}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_font_variant_ligatures_round_trip() {
+    for css in [
+      "normal",
+      "none",
+      "common-ligatures no-discretionary-ligatures",
+    ] {
+      let parsed = FontVariantLigatures::from_css_str(css).unwrap();
+      let reparsed = FontVariantLigatures::from_css_str(&parsed.to_css_string()).unwrap();
+      assert_eq!(parsed, reparsed, "failed for {css}");
+    }
+  }
+
+  #[test]
+  fn test_parse_font_variant_ligatures_invalid() {
+    assert!(FontVariantLigatures::from_css_str("bogus").is_err());
+    assert!(FontVariantLigatures::from_css_str("123").is_err());
+  }
+
+  #[test]
+  fn test_parse_font_variant_numeric() {
+    for (css, expected) in [
+      ("normal", FontVariantNumeric::default()),
+      (
+        "lining-nums tabular-nums ordinal",
+        FontVariantNumeric {
+          figure: NumericFigure::Lining,
+          spacing: NumericSpacing::Tabular,
+          fraction: NumericFraction::Normal,
+          ordinal: true,
+          slashed_zero: false,
+        },
+      ),
+      (
+        "oldstyle-nums diagonal-fractions slashed-zero",
+        FontVariantNumeric {
+          figure: NumericFigure::Oldstyle,
+          spacing: NumericSpacing::Normal,
+          fraction: NumericFraction::Diagonal,
+          ordinal: false,
+          slashed_zero: true,
+        },
+      ),
+    ] {
+      assert_eq!(
+        FontVariantNumeric::from_css_str(css),
+        Ok(expected),
+        "failed for {css}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_font_variant_numeric_round_trip() {
+    for css in ["normal", "lining-nums tabular-nums ordinal"] {
+      let parsed = FontVariantNumeric::from_css_str(css).unwrap();
+      let reparsed = FontVariantNumeric::from_css_str(&parsed.to_css_string()).unwrap();
+      assert_eq!(parsed, reparsed, "failed for {css}");
+    }
+  }
+
+  #[test]
+  fn test_parse_font_variant_numeric_invalid() {
+    assert!(FontVariantNumeric::from_css_str("bogus").is_err());
+  }
+
+  #[test]
+  fn test_parse_font_variant_east_asian() {
+    for (css, expected) in [
+      ("normal", FontVariantEastAsian::default()),
+      (
+        "jis78 full-width ruby",
+        FontVariantEastAsian {
+          form: EastAsianForm::Jis78,
+          width: EastAsianWidth::Full,
+          ruby: true,
+        },
+      ),
+    ] {
+      assert_eq!(
+        FontVariantEastAsian::from_css_str(css),
+        Ok(expected),
+        "failed for {css}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_font_variant_east_asian_round_trip() {
+    for css in ["normal", "jis78 full-width ruby"] {
+      let parsed = FontVariantEastAsian::from_css_str(css).unwrap();
+      let reparsed = FontVariantEastAsian::from_css_str(&parsed.to_css_string()).unwrap();
+      assert_eq!(parsed, reparsed, "failed for {css}");
+    }
+  }
+
+  #[test]
+  fn test_parse_font_variant_east_asian_invalid() {
+    assert!(FontVariantEastAsian::from_css_str("bogus").is_err());
+  }
+
+  #[test]
+  fn test_parse_font_variant_caps() {
+    for (css, expected) in [
+      ("normal", FontVariantCaps::Normal),
+      ("small-caps", FontVariantCaps::SmallCaps),
+      ("all-small-caps", FontVariantCaps::AllSmallCaps),
+      ("titling-caps", FontVariantCaps::TitlingCaps),
+    ] {
+      assert_eq!(
+        FontVariantCaps::from_css_str(css),
+        Ok(expected),
+        "failed for {css}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_parse_font_variant_position() {
+    for (css, expected) in [
+      ("normal", FontVariantPosition::Normal),
+      ("sub", FontVariantPosition::Sub),
+      ("super", FontVariantPosition::Super),
+    ] {
+      assert_eq!(
+        FontVariantPosition::from_css_str(css),
+        Ok(expected),
+        "failed for {css}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_parse_font_variant_shorthand() {
+    let value = FontVariant::from_css_str("small-caps sub common-ligatures").unwrap();
+    assert_eq!(value.caps, FontVariantCaps::SmallCaps);
+    assert_eq!(value.position, FontVariantPosition::Sub);
+    assert_eq!(value.ligatures.common, LigatureState::Enabled);
+  }
+
+  #[test]
+  fn test_parse_font_variant_shorthand_invalid() {
+    assert!(FontVariant::from_css_str("bogus").is_err());
+  }
+}

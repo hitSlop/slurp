@@ -1,0 +1,332 @@
+use cssparser::{BasicParseErrorKind, ParseError, ParseErrorKind};
+use selectors::parser::SelectorParseErrorKind;
+use thiserror::Error;
+
+use crate::{
+  keyframes::KeyframePreludeParseError,
+  resources::{font::FontError, image::ImageError},
+  style::ValueError,
+};
+
+/// Structured errors raised by the WebP encoding and container assembly paths.
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum WebPError {
+  /// Encoder setup failed before actual frame encoding.
+  #[error("WebP encoder setup failed")]
+  EncoderSetupFailed,
+
+  /// Encoding failed.
+  #[error("WebP encode failed")]
+  EncodeFailed,
+
+  /// Encoding failed with a libwebp error code.
+  #[error("WebP encode failed ({error_code})")]
+  EncodeFailedWithCode {
+    /// The libwebp error code rendered as text.
+    error_code: String,
+  },
+
+  /// A named dimension exceeded the supported WebP 24-bit range.
+  #[error("{name} must be in 1..={max}, got {value}")]
+  InvalidDimension {
+    /// The dimension name used in the error message.
+    name: &'static str,
+    /// The invalid dimension value that was supplied.
+    value: u32,
+    /// The maximum accepted dimension value.
+    max: u32,
+  },
+
+  /// The animation frame size exceeded the supported WebP 24-bit range.
+  #[error("WebP animation frame dimensions must be in 1..={max}, got {width}x{height}")]
+  InvalidFrameDimensions {
+    /// The invalid frame width.
+    width: u32,
+    /// The invalid frame height.
+    height: u32,
+    /// The maximum accepted dimension value.
+    max: u32,
+  },
+
+  /// An animated encode was requested without any frames.
+  #[error("animation must contain at least one frame")]
+  EmptyAnimation,
+
+  /// A frame exceeded the dimensions of the animation canvas.
+  #[error(
+    "frame {index} dimensions {frame_width}x{frame_height} exceed canvas {canvas_width}x{canvas_height}"
+  )]
+  FrameExceedsCanvas {
+    /// The zero-based frame index.
+    index: usize,
+    /// The frame width.
+    frame_width: u32,
+    /// The frame height.
+    frame_height: u32,
+    /// The canvas width.
+    canvas_width: u32,
+    /// The canvas height.
+    canvas_height: u32,
+  },
+
+  /// Animated frames did not all share the same dimensions.
+  #[error("all animation frames must have the same dimensions")]
+  MixedFrameDimensions,
+
+  /// Encoded data cannot be parsed as the expected WebP structure.
+  #[error("WebP encoded data is invalid or unsupported")]
+  InvalidEncodedData,
+
+  /// Internal WebP container size calculations exceeded supported limits.
+  #[error("WebP container size exceeds supported limits")]
+  ContainerSizeOverflow,
+}
+
+/// The main error type for the Takumi crate.
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum Error {
+  /// Error resolving an image resource.
+  #[error("Image resolution error: {0}")]
+  ImageResolveError(#[from] ImageError),
+
+  /// Standard IO error.
+  #[error("IO error: {0}")]
+  IoError(#[from] std::io::Error),
+
+  /// Encoding an image or animation failed.
+  #[error("Encoding error: {0}")]
+  Encode(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+  /// Structured errors from WebP encoding and RIFF container assembly.
+  #[error("WebP error: {0}")]
+  WebPError(#[from] WebPError),
+
+  /// Zero-sized viewport, or one over the 64 megapixel canvas budget.
+  #[error("Invalid viewport dimensions: a canvas holds 1 to 64 megapixels")]
+  InvalidViewport,
+
+  /// RGBA buffer length does not match `width * height * 4`.
+  #[error("Invalid RGBA buffer length: expected {expected} bytes, got {actual}")]
+  InvalidRgbaBufferLength {
+    /// Actual RGBA byte length in the buffer.
+    actual: usize,
+    /// Expected RGBA byte length from dimensions.
+    expected: usize,
+  },
+
+  /// Alpha buffer length does not match `width * height`.
+  #[error("Invalid alpha buffer length: expected {expected} bytes, got {actual}")]
+  InvalidAlphaBufferLength {
+    /// Actual alpha byte length in the buffer.
+    actual: usize,
+    /// Expected alpha byte length from dimensions.
+    expected: usize,
+  },
+
+  /// Animated encode was requested without any frames.
+  #[error("Animation must contain at least one frame")]
+  EmptyAnimationFrames,
+
+  /// The frame rate is past what the format plays back without browsers clamping frames.
+  #[error("Frame rate {fps} fps exceeds the maximum {max_fps} fps for this animation format")]
+  AnimationFrameRateTooHigh {
+    /// The requested frame rate.
+    fps: u32,
+    /// The highest frame rate the format encodes without decoder clamping.
+    max_fps: u32,
+  },
+
+  /// Animated frames for a given format did not all share the same dimensions.
+  #[error("Animation frames must share the same dimensions")]
+  MixedAnimationFrameDimensions,
+
+  /// GIF frame dimensions exceeded the format limits.
+  #[error("GIF frame dimensions must be <= {max}x{max}, got {width}x{height}")]
+  GifFrameDimensionsTooLarge {
+    /// The invalid frame width.
+    width: u32,
+    /// The invalid frame height.
+    height: u32,
+    /// The maximum accepted dimension value.
+    max: u16,
+  },
+
+  /// Error related to font processing.
+  #[error("Font error: {0}")]
+  FontError(#[from] FontError),
+
+  /// Parsing a CSS value or property failed.
+  #[error("Parse error: {0}")]
+  Parse(#[from] crate::style::properties::ParseError),
+
+  /// Computing layout failed.
+  #[error("Layout error: {0}")]
+  Layout(String),
+
+  /// The layout engine was asked for a node id it does not know.
+  #[error("Invalid layout node id: {0}")]
+  InvalidLayoutNode(u64),
+
+  /// Paged layout needed more pages than the caller allows.
+  #[error("The content spans more than {0} pages")]
+  TooManyPages(usize),
+
+  /// A page was painted from a page of the layout that was already released.
+  #[error("Page {0} was released before a later page painted from it")]
+  PageReleased(usize),
+
+  /// An invalid BCP-47 language tag was supplied to a node's `lang` attribute.
+  #[error("Invalid language tag: {0}")]
+  InvalidLanguageTag(String),
+}
+
+impl Error {
+  /// Wraps an encoder-crate error opaquely so takumi's public API stays
+  /// independent of the encoder crates' versions.
+  pub fn encode(err: impl std::error::Error + Send + Sync + 'static) -> Self {
+    Self::Encode(Box::new(err))
+  }
+}
+
+/// A specialized Result type for Takumi operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Errors raised while parsing a CSS declaration block string.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum StyleDeclarationBlockParseError {
+  /// The declaration block could not be parsed as CSS declarations.
+  #[error("failed to parse CSS declaration block `{input}` near `{context}`: {reason}")]
+  InvalidDeclarationBlock {
+    /// The original declaration block input.
+    input: String,
+    /// The declaration slice being parsed when the error was raised.
+    context: String,
+    /// The parser failure rendered as text.
+    reason: String,
+  },
+}
+
+/// Errors raised while parsing a CSS stylesheet string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleSheetParseError {
+  /// The stylesheet slice being parsed when the error was raised.
+  pub context: Option<String>,
+  /// The specific stylesheet parse failure.
+  pub kind: StyleSheetParseErrorKind,
+}
+
+/// The specific stylesheet parse failure.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum StyleSheetParseErrorKind {
+  /// The stylesheet could not be parsed as valid CSS.
+  #[error("{0}")]
+  InvalidStyleSheet(String),
+
+  /// The stylesheet uses an unsupported media feature.
+  #[error("unsupported media feature")]
+  UnsupportedMediaFeature,
+
+  /// `@property` requires `inherits` to be `true` or `false`.
+  #[error("@property inherits must be true or false")]
+  PropertyInheritsMustBeBoolean,
+
+  /// `@property` is missing its `syntax` descriptor.
+  #[error("missing `@property` syntax")]
+  MissingPropertySyntax,
+
+  /// `@property` is missing its `inherits` descriptor.
+  #[error("missing `@property` inherits")]
+  MissingPropertyInherits,
+
+  /// `@property` gives a typed `syntax` without the `initial-value` it needs.
+  #[error("`@property` with a typed syntax needs an initial-value")]
+  MissingPropertyInitialValue,
+
+  /// `@supports` mixed `and` and `or` without parentheses.
+  #[error("@supports cannot mix `and` and `or` without parentheses")]
+  SupportsMixedAndOrWithoutParentheses,
+
+  /// `@apply` only takes plain utilities, without variants.
+  #[error("@apply expects plain utilities without variants")]
+  InvalidApplyUtility,
+
+  /// `@property` names must be custom properties.
+  #[error("@property name must be a custom property")]
+  PropertyNameMustBeCustomProperty,
+
+  /// `@layer` blocks accept at most one name.
+  #[error("@layer blocks accept at most one name")]
+  LayerBlockMultipleNames,
+
+  /// Nested `@keyframes` and `@property` rules are not supported.
+  #[error("unsupported nested at-rule")]
+  UnsupportedNestedAtRule,
+}
+
+impl std::fmt::Display for StyleSheetParseError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if let Some(context) = &self.context {
+      write!(
+        f,
+        "failed to parse stylesheet near `{context}`: {}",
+        self.kind
+      )
+    } else {
+      write!(f, "failed to parse stylesheet: {}", self.kind)
+    }
+  }
+}
+
+impl std::error::Error for StyleSheetParseError {}
+
+impl From<StyleSheetParseErrorKind> for StyleSheetParseError {
+  fn from(kind: StyleSheetParseErrorKind) -> Self {
+    Self {
+      context: None,
+      kind,
+    }
+  }
+}
+
+impl From<SelectorParseErrorKind> for StyleSheetParseError {
+  fn from(err: SelectorParseErrorKind) -> Self {
+    Self::invalid_reason(format!("{err:?}"))
+  }
+}
+
+impl<'i> From<ValueError<'i>> for StyleSheetParseError {
+  fn from(err: ValueError<'i>) -> Self {
+    Self::invalid_reason(err.to_string())
+  }
+}
+
+impl<'i> From<KeyframePreludeParseError<'i>> for StyleSheetParseError {
+  fn from(_err: KeyframePreludeParseError<'i>) -> Self {
+    Self::invalid_reason(format!("{:?}", BasicParseErrorKind::QualifiedRuleInvalid))
+  }
+}
+
+impl StyleSheetParseError {
+  /// Builds an invalid-stylesheet error from a reason string.
+  pub(crate) fn invalid_reason(reason: impl Into<String>) -> Self {
+    StyleSheetParseErrorKind::InvalidStyleSheet(reason.into()).into()
+  }
+
+  fn with_context(self, context: &str) -> Self {
+    Self {
+      context: Some(context.to_owned()),
+      kind: self.kind,
+    }
+  }
+
+  /// Converts a `cssparser` parse error into a stylesheet error with context.
+  pub(crate) fn from_parse_error(context: &str, error: ParseError<StyleSheetParseError>) -> Self {
+    match error.kind {
+      ParseErrorKind::Basic(error) => Self::invalid_reason(format!("{error:?}")),
+      ParseErrorKind::Custom(error) => error,
+    }
+    .with_context(context)
+  }
+}

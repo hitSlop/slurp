@@ -2998,7 +2998,6 @@ dependencies = [
 name = "slurp-render"
 version = "0.1.2"
 dependencies = [
- "base64 0.22.1",
  "hex",
  "rquickjs",
  "serde",
@@ -3169,8 +3168,6 @@ dependencies = [
 [[package]]
 name = "takumi-core"
 version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81026e2b18d8ce4035c95ef8d1d33665201091630e82587a40e778645be3b1d9"
 dependencies = [
  "bitflags",
  "bytemuck",

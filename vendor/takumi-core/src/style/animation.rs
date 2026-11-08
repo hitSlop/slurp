@@ -1,0 +1,1506 @@
+use std::borrow::Cow;
+
+use serde::Deserialize;
+use typed_builder::TypedBuilder;
+
+use crate::{
+  sort_key::sort_by_key,
+  style::{
+    StyleDeclarationBlock,
+    selector::{MediaQueryList, StyleSheet},
+    *,
+  },
+  viewport::Viewport,
+};
+
+#[derive(Debug, Clone, Deserialize, PartialEq, TypedBuilder)]
+#[serde(rename_all = "camelCase")]
+/// A single structured keyframe rule.
+pub struct KeyframeRule {
+  /// Keyframe offsets as values between 0.0 and 1.0.
+  #[builder(setter(into))]
+  pub offsets: Vec<f32>,
+  /// Declarations applied at this step.
+  pub declarations: StyleDeclarationBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, TypedBuilder)]
+#[serde(rename_all = "camelCase")]
+/// Structured keyframes that can be passed directly in render options.
+pub struct KeyframesRule {
+  /// Animation name matched by `animation-name`.
+  #[builder(setter(into))]
+  pub name: String,
+  /// Individual keyframe rules for this animation.
+  #[builder(setter(into))]
+  pub keyframes: Vec<KeyframeRule>,
+  /// Media queries gating this `@keyframes` rule.
+  #[serde(skip, default)]
+  #[builder(default, setter(skip))]
+  pub media_queries: Vec<MediaQueryList>,
+}
+
+/// Applies a stylesheet's matching animations to a style at the given time.
+pub(crate) fn apply_stylesheet_animations(
+  mut base_style: ComputedStyle,
+  stylesheet: &StyleSheet,
+  time: u64,
+  sizing: &SizingContext,
+  current_color: Color,
+) -> ComputedStyle {
+  if base_style.misc1_data.animation_name.is_empty() {
+    return base_style;
+  }
+
+  let base_snapshot = base_style.clone();
+
+  for (animation_index, animation_name) in
+    base_snapshot.misc1_data.animation_name.iter().enumerate()
+  {
+    let Some(animation_name) = animation_name else {
+      continue;
+    };
+
+    let Some(keyframes) = find_keyframes(stylesheet, animation_name, sizing.viewport) else {
+      continue;
+    };
+
+    let duration: AnimationTime = repeated_list_value(
+      &base_snapshot.misc1_data.animation_duration,
+      animation_index,
+    );
+    let delay: AnimationTime =
+      repeated_list_value(&base_snapshot.misc1_data.animation_delay, animation_index);
+    let iteration_count = repeated_list_value(
+      &base_snapshot.misc1_data.animation_iteration_count,
+      animation_index,
+    );
+    let direction = repeated_list_value(
+      &base_snapshot.misc1_data.animation_direction,
+      animation_index,
+    );
+    let fill_mode = repeated_list_value(
+      &base_snapshot.misc1_data.animation_fill_mode,
+      animation_index,
+    );
+    let timing_function: AnimationTimingFunction = repeated_list_value(
+      &base_snapshot.misc1_data.animation_timing_function,
+      animation_index,
+    );
+
+    let Some(sample) = sample_animation_progress(
+      time as f32,
+      duration.milliseconds,
+      delay.milliseconds,
+      iteration_count,
+      direction,
+      fill_mode,
+    ) else {
+      continue;
+    };
+
+    let resolved_frames = resolve_keyframes(&keyframes, &base_snapshot);
+    let Some(segment) = sample_keyframe_segment(&resolved_frames, &base_snapshot, sample.progress)
+    else {
+      continue;
+    };
+
+    let eased_progress = timing_function.apply(segment.progress, sample.before);
+    base_style.apply_interpolated_properties(
+      segment.from_style,
+      segment.to_style,
+      &segment.animated_properties,
+      eased_progress,
+      sizing,
+      current_color,
+    );
+  }
+
+  base_style
+}
+
+pub(crate) fn find_keyframes<'a>(
+  stylesheet: &'a StyleSheet,
+  name: &str,
+  viewport: Viewport,
+) -> Option<Cow<'a, KeyframesRule>> {
+  stylesheet
+    .keyframes
+    .iter()
+    .rev()
+    .find(|rule| {
+      rule.name.eq_ignore_ascii_case(name)
+        && rule
+          .media_queries
+          .iter()
+          .all(|media_query| media_query.matches(viewport))
+    })
+    .map(Cow::Borrowed)
+    .or_else(|| tailwind_animation_keyframes(name).map(Cow::Owned))
+}
+
+fn tailwind_animation_keyframes(name: &str) -> Option<KeyframesRule> {
+  match name.to_ascii_lowercase().as_str() {
+    "spin" => Some(KeyframesRule {
+      name: "spin".to_string(),
+      keyframes: vec![
+        keyframe(0.25, [StyleDeclaration::rotate(Some(Angle::new(90.0)))]),
+        keyframe(0.5, [StyleDeclaration::rotate(Some(Angle::new(180.0)))]),
+        keyframe(0.75, [StyleDeclaration::rotate(Some(Angle::new(270.0)))]),
+        keyframe(1.0, [StyleDeclaration::rotate(Some(Angle::new(359.999)))]),
+      ],
+      media_queries: Vec::new(),
+    }),
+    "ping" => Some(KeyframesRule {
+      name: "ping".to_string(),
+      keyframes: vec![
+        keyframe(
+          0.75,
+          [
+            StyleDeclaration::scale(Some(SpacePair::from_single(PercentageNumber(2.0)))),
+            StyleDeclaration::opacity(PercentageNumber(0.0)),
+          ],
+        ),
+        keyframe(
+          1.0,
+          [
+            StyleDeclaration::scale(Some(SpacePair::from_single(PercentageNumber(2.0)))),
+            StyleDeclaration::opacity(PercentageNumber(0.0)),
+          ],
+        ),
+      ],
+      media_queries: Vec::new(),
+    }),
+    "pulse" => Some(KeyframesRule {
+      name: "pulse".to_string(),
+      keyframes: vec![keyframe(
+        0.5,
+        [StyleDeclaration::opacity(PercentageNumber(0.5))],
+      )],
+      media_queries: Vec::new(),
+    }),
+    "bounce" => Some(KeyframesRule {
+      name: "bounce".to_string(),
+      keyframes: vec![
+        keyframe(
+          0.0,
+          [StyleDeclaration::translate(SpacePair::from_pair(
+            Length::Px(0.0),
+            Length::Percentage(-25.0),
+          ))],
+        ),
+        keyframe(
+          0.5,
+          [StyleDeclaration::translate(SpacePair::from_pair(
+            Length::Px(0.0),
+            Length::Percentage(0.0),
+          ))],
+        ),
+        keyframe(
+          1.0,
+          [StyleDeclaration::translate(SpacePair::from_pair(
+            Length::Px(0.0),
+            Length::Percentage(-25.0),
+          ))],
+        ),
+      ],
+      media_queries: Vec::new(),
+    }),
+    _ => None,
+  }
+}
+
+fn keyframe<const N: usize>(offset: f32, declarations: [StyleDeclaration; N]) -> KeyframeRule {
+  let mut block = StyleDeclarationBlock::default();
+  for declaration in declarations {
+    block.push(declaration, false);
+  }
+
+  KeyframeRule {
+    offsets: vec![offset],
+    declarations: block,
+  }
+}
+
+/// One sampled point on an animation's timeline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AnimationSample {
+  /// Progress through the current iteration.
+  progress: f32,
+  /// Whether the sample comes from before the active phase, which the step
+  /// easing functions treat as sitting on the lower step.
+  before: bool,
+}
+
+impl AnimationSample {
+  fn active(progress: f32) -> Self {
+    Self {
+      progress,
+      before: false,
+    }
+  }
+
+  fn before(progress: f32) -> Self {
+    Self {
+      progress,
+      before: true,
+    }
+  }
+}
+
+fn sample_animation_progress(
+  time_ms: f32,
+  duration_ms: f32,
+  delay_ms: f32,
+  iteration_count: AnimationIterationCount,
+  direction: AnimationDirection,
+  fill_mode: AnimationFillMode,
+) -> Option<AnimationSample> {
+  let active_time = time_ms - delay_ms;
+
+  if active_time < 0.0 {
+    return match fill_mode {
+      AnimationFillMode::Backwards | AnimationFillMode::Both => {
+        Some(AnimationSample::before(start_progress(direction)))
+      }
+      _ => None,
+    };
+  }
+
+  if duration_ms <= 0.0 {
+    return Some(AnimationSample::active(end_progress(direction, 0)));
+  }
+
+  let total_active_duration = match iteration_count {
+    AnimationIterationCount::Infinite => f32::INFINITY,
+    AnimationIterationCount::Number(count) => duration_ms * count.max(0.0),
+  };
+
+  if active_time >= total_active_duration {
+    return match fill_mode {
+      AnimationFillMode::Forwards | AnimationFillMode::Both => {
+        let end_progress = match iteration_count {
+          AnimationIterationCount::Infinite => end_progress(direction, 0),
+          AnimationIterationCount::Number(count) => {
+            let count = count.max(0.0);
+            let completed_iterations = count.floor() as usize;
+            let fraction = count.fract();
+            if fraction > f32::EPSILON {
+              apply_direction(fraction, direction, completed_iterations)
+            } else {
+              end_progress(direction, count.max(1.0) as usize - 1)
+            }
+          }
+        };
+        Some(AnimationSample::active(end_progress))
+      }
+      _ => None,
+    };
+  }
+
+  let progress_within_iteration = active_time / duration_ms;
+  let mut iteration_index = progress_within_iteration.floor() as usize;
+  let mut progress = progress_within_iteration.fract();
+  if active_time > 0.0 && progress_within_iteration.fract().abs() <= f32::EPSILON {
+    progress = 1.0;
+    iteration_index = iteration_index.saturating_sub(1);
+  }
+
+  Some(AnimationSample::active(apply_direction(
+    progress,
+    direction,
+    iteration_index,
+  )))
+}
+
+fn start_progress(direction: AnimationDirection) -> f32 {
+  apply_direction(0.0, direction, 0)
+}
+
+fn end_progress(direction: AnimationDirection, iteration_index: usize) -> f32 {
+  apply_direction(1.0, direction, iteration_index)
+}
+
+fn apply_direction(progress: f32, direction: AnimationDirection, iteration_index: usize) -> f32 {
+  match direction {
+    AnimationDirection::Normal => progress,
+    AnimationDirection::Reverse => 1.0 - progress,
+    AnimationDirection::Alternate => {
+      if iteration_index.is_multiple_of(2) {
+        progress
+      } else {
+        1.0 - progress
+      }
+    }
+    AnimationDirection::AlternateReverse => {
+      if iteration_index.is_multiple_of(2) {
+        1.0 - progress
+      } else {
+        progress
+      }
+    }
+  }
+}
+
+fn sample_keyframe_segment<'a>(
+  resolved_frames: &'a ResolvedKeyframes,
+  base_style: &'a ComputedStyle,
+  progress: f32,
+) -> Option<InterpolationSegment<'a>> {
+  let first = resolved_frames.points.first()?;
+
+  // A progress on the first keyframe starts the interval from it.
+  if progress < first.offset {
+    let segment_progress = if first.offset <= 0.0 {
+      1.0
+    } else {
+      progress / first.offset
+    };
+    let to = resolved_frames.style(first);
+
+    return Some(InterpolationSegment {
+      from_style: base_style,
+      to_style: &to.style,
+      animated_properties: to.mask,
+      progress: segment_progress.clamp(0.0, 1.0),
+    });
+  }
+
+  for window in resolved_frames.points.windows(2) {
+    let [start_point, end_point] = window else {
+      continue;
+    };
+    if progress <= end_point.offset {
+      let width = end_point.offset - start_point.offset;
+      let segment_progress = if width <= f32::EPSILON {
+        1.0
+      } else {
+        (progress - start_point.offset) / width
+      };
+      let from = resolved_frames.style(start_point);
+      let to = resolved_frames.style(end_point);
+      let mut animated_properties = from.mask;
+
+      animated_properties.union(&to.mask);
+      return Some(InterpolationSegment {
+        from_style: &from.style,
+        to_style: &to.style,
+        animated_properties,
+        progress: segment_progress.clamp(0.0, 1.0),
+      });
+    }
+  }
+
+  let last = resolved_frames.points.last()?;
+  let segment_progress = if last.offset >= 1.0 {
+    1.0
+  } else {
+    (progress - last.offset) / (1.0 - last.offset)
+  };
+  let from = resolved_frames.style(last);
+
+  Some(InterpolationSegment {
+    from_style: &from.style,
+    to_style: base_style,
+    animated_properties: from.mask,
+    progress: segment_progress.clamp(0.0, 1.0),
+  })
+}
+
+fn resolve_keyframes(keyframes: &KeyframesRule, base_style: &ComputedStyle) -> ResolvedKeyframes {
+  let mut points = keyframes
+    .keyframes
+    .iter()
+    .enumerate()
+    .flat_map(|(style_index, keyframe)| {
+      keyframe
+        .offsets
+        .iter()
+        .copied()
+        .map(move |offset| ResolvedKeyframePoint {
+          offset,
+          style_index,
+        })
+    })
+    .collect::<Vec<_>>();
+
+  sort_by_key(&mut points, |point| point.offset);
+
+  let mut styles: Vec<ResolvedKeyframeStyle> = Vec::with_capacity(points.len());
+  let mut merged_points: Vec<ResolvedKeyframePoint> = Vec::with_capacity(points.len());
+  for point in points {
+    let keyframe = &keyframes.keyframes[point.style_index];
+
+    if let Some(last_point) = merged_points.last_mut()
+      && (last_point.offset - point.offset).abs() <= f32::EPSILON
+    {
+      styles[last_point.style_index].apply(keyframe);
+      continue;
+    }
+
+    let style_index = styles.len();
+    let mut style = ResolvedKeyframeStyle {
+      style: base_style.clone(),
+      mask: PropertyMask::new(),
+    };
+
+    style.apply(keyframe);
+    styles.push(style);
+    merged_points.push(ResolvedKeyframePoint {
+      offset: point.offset,
+      style_index,
+    });
+  }
+
+  ResolvedKeyframes {
+    points: merged_points,
+    styles,
+  }
+}
+
+/// A keyframe's style and the longhands its declarations animate.
+#[derive(Debug)]
+struct ResolvedKeyframeStyle {
+  style: ComputedStyle,
+  mask: PropertyMask,
+}
+
+impl ResolvedKeyframeStyle {
+  fn apply(&mut self, keyframe: &KeyframeRule) {
+    for declaration in keyframe.declarations.iter() {
+      declaration.apply_to_computed(&mut self.style);
+      self.mask.extend(declaration.affected_longhands().iter());
+    }
+  }
+}
+
+#[derive(Debug)]
+struct ResolvedKeyframePoint {
+  offset: f32,
+  style_index: usize,
+}
+
+#[derive(Debug)]
+struct ResolvedKeyframes {
+  points: Vec<ResolvedKeyframePoint>,
+  styles: Vec<ResolvedKeyframeStyle>,
+}
+
+impl ResolvedKeyframes {
+  fn style(&self, point: &ResolvedKeyframePoint) -> &ResolvedKeyframeStyle {
+    &self.styles[point.style_index]
+  }
+}
+
+#[derive(Debug)]
+struct InterpolationSegment<'a> {
+  from_style: &'a ComputedStyle,
+  to_style: &'a ComputedStyle,
+  animated_properties: PropertyMask,
+  progress: f32,
+}
+
+macro_rules! impl_passthrough_animatable {
+  ($($ty:ty),* $(,)?) => {
+    $(
+      impl Animatable for $ty {}
+    )*
+  };
+}
+
+impl_passthrough_animatable!(
+  AnimationNames,
+  AnimationDurations,
+  AnimationTimingFunctions,
+  AnimationIterationCounts,
+  AlignItems,
+  JustifyContent,
+  Border,
+  GridAutoFlow,
+  GridLine,
+  GridTemplateAreas,
+  TextOverflow,
+  FontStyle,
+  FontFamily,
+  LineHeight,
+  FontSynthesis,
+  LineClamp,
+  TextStroke,
+  TextDecoration,
+  TextDecorationLines,
+  BasicShape,
+  OffsetPath,
+  OffsetAnchor,
+  OffsetPosition,
+  WhiteSpace,
+  TextWrap,
+  VerticalAlign,
+  Flex,
+  Background,
+  GridTrackSize,
+  GridTemplateComponent,
+  FontFeature,
+  FontVariation,
+);
+
+impl Animatable for Length {
+  fn interpolate(
+    &mut self,
+    from: &Self,
+    to: &Self,
+    progress: f32,
+    sizing: &SizingContext,
+    _current_color: Color,
+  ) {
+    *self = interpolate_length(*from, *to, progress)
+      .or_else(|| {
+        resolve_length_with_sizing(*from, sizing).and_then(|resolved_from| {
+          resolve_length_with_sizing(*to, sizing)
+            .map(|resolved_to| Length::Px(lerp(resolved_from, resolved_to, progress)))
+        })
+      })
+      .unwrap_or_else(|| discrete(from, to, progress));
+  }
+}
+
+fn interpolate_length(from: Length, to: Length, progress: f32) -> Option<Length> {
+  macro_rules! lerp_variants {
+    ($($variant:ident),+ $(,)?) => {
+      match (from, to) {
+        $(
+          (Length::$variant(lhs), Length::$variant(rhs)) => {
+            Some(Length::$variant(lerp(lhs, rhs, progress)))
+          }
+        )+
+        (Length::Auto, Length::Auto) => Some(Length::Auto),
+        _ => None,
+      }
+    };
+  }
+  lerp_variants!(
+    Percentage, Rem, Em, Vh, Vw, CqH, CqW, CqMin, CqMax, VMin, VMax, Cm, Mm, In, Q, Pt, Pc, Px,
+  )
+}
+
+fn resolve_length_with_sizing(value: Length, sizing: &SizingContext) -> Option<f32> {
+  if matches!(value, Length::Auto) {
+    return None;
+  }
+
+  Some(value.to_px(
+    sizing,
+    sizing.viewport.size.width.unwrap_or_default() as f32,
+  ))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::rc::Rc;
+
+  use crate::{
+    geometry::Size,
+    style::{
+      SizingContext,
+      animation::{sample_animation_progress, tailwind_animation_keyframes},
+      *,
+    },
+    viewport::Viewport,
+  };
+
+  #[test]
+  fn stylesheet_animation_interpolates_corner_shape() {
+    let stylesheet = StyleSheet::parse(
+      r#"
+      @keyframes morph {
+        from { corner-shape: squircle; }
+        to { corner-shape: bevel; }
+      }
+      "#,
+    )
+    .unwrap();
+
+    let style = ComputedStyle {
+      misc1_data: Rc::new(StyleMisc1Data {
+        animation_name: AnimationNames::from_css_str("morph").unwrap(),
+        animation_duration: AnimationDurations::from_css_str("1000ms").unwrap(),
+        animation_timing_function: AnimationTimingFunctions::from_css_str("linear").unwrap(),
+        animation_fill_mode: AnimationFillModes::from_css_str("both").unwrap(),
+        ..Default::default()
+      }),
+      ..Default::default()
+    };
+
+    let at = |time: u64| {
+      apply_stylesheet_animations(style.clone(), &stylesheet, time, &sizing(), current_color())
+        .surround_data
+        .corner_top_left_shape
+    };
+
+    assert_eq!(at(0), Superellipse::SQUIRCLE);
+    assert_eq!(at(1000), Superellipse::BEVEL);
+
+    let midpoint = at(500);
+
+    assert!(
+      midpoint.0 > 0.0 && midpoint.0 < 2.0,
+      "expected value between bevel and squircle, got {}",
+      midpoint.0
+    );
+  }
+
+  /// At its start an animation samples the interval from its first keyframe, so a step that jumps
+  /// at the start shows its first step there.
+  /// <https://drafts.csswg.org/web-animations-1/#the-effect-value-of-a-keyframe-animation-effect>
+  #[test]
+  fn a_start_step_jumps_at_the_first_keyframe() {
+    let stylesheet =
+      StyleSheet::parse("@keyframes fade { from { opacity: 0 } to { opacity: 1 } }").unwrap();
+    let style = ComputedStyle {
+      misc1_data: Rc::new(StyleMisc1Data {
+        animation_name: AnimationNames::from_css_str("fade").unwrap(),
+        animation_duration: AnimationDurations::from_css_str("1000ms").unwrap(),
+        animation_timing_function: AnimationTimingFunctions::from_css_str("steps(2, start)")
+          .unwrap(),
+        ..Default::default()
+      }),
+      ..Default::default()
+    };
+    let animated = apply_stylesheet_animations(style, &stylesheet, 0, &sizing(), current_color());
+
+    assert_eq!(animated.svg_data.opacity.0, 0.5);
+  }
+
+  fn sizing() -> SizingContext {
+    SizingContext {
+      viewport: Viewport::new((200, 100)),
+      container_size: Size::NONE,
+      container_read: Default::default(),
+      font_size: 16.0,
+      root_font_size: None,
+      line_height: 0.0,
+      root_line_height: None,
+      ch: 16.0 / 2.0,
+      ex: 16.0 / 2.0,
+    }
+  }
+
+  fn current_color() -> Color {
+    Color([10, 20, 30, 255])
+  }
+
+  #[derive(Clone, Copy, Debug, PartialEq)]
+  struct Dummy(u8);
+
+  impl Animatable for Dummy {}
+
+  #[test]
+  fn animatable_default_flips_at_half_progress() {
+    let mut target = Dummy(9);
+    target.interpolate(&Dummy(3), &Dummy(7), 0.25, &sizing(), current_color());
+    assert_eq!(target, Dummy(3));
+
+    target.interpolate(&Dummy(3), &Dummy(7), 0.5, &sizing(), current_color());
+    assert_eq!(target, Dummy(7));
+  }
+
+  #[test]
+  fn animation_keyword_lists_remain_discrete() {
+    fn interpolate<T: Animatable>(from: T, to: T, progress: f32) -> T {
+      let mut value = from.clone();
+
+      value.interpolate(&from, &to, progress, &sizing(), current_color());
+      value
+    }
+
+    macro_rules! assert_discrete_list {
+      ($type:ty; [$($from:expr),*]; [$($to:expr),*]) => {
+        let from: $type = Box::from([$($from),*]);
+        let to: $type = Box::from([$($to),*]);
+
+        assert_eq!(interpolate(from.clone(), to.clone(), 0.49), from);
+        assert_eq!(interpolate(from.clone(), to.clone(), 0.5), to);
+      };
+    }
+
+    assert_discrete_list!(
+      AnimationDirections;
+      [AnimationDirection::Normal, AnimationDirection::Reverse];
+      [AnimationDirection::Alternate, AnimationDirection::AlternateReverse]
+    );
+    assert_discrete_list!(
+      AnimationDirections;
+      [AnimationDirection::Normal];
+      [AnimationDirection::Reverse, AnimationDirection::Alternate]
+    );
+    assert_discrete_list!(
+      AnimationFillModes;
+      [AnimationFillMode::None, AnimationFillMode::Forwards];
+      [AnimationFillMode::Backwards, AnimationFillMode::Both]
+    );
+    assert_discrete_list!(
+      AnimationFillModes;
+      [AnimationFillMode::None];
+      [AnimationFillMode::Forwards, AnimationFillMode::Both]
+    );
+    assert_discrete_list!(
+      AnimationPlayStates;
+      [AnimationPlayState::Running, AnimationPlayState::Paused];
+      [AnimationPlayState::Paused, AnimationPlayState::Running]
+    );
+    assert_discrete_list!(
+      AnimationPlayStates;
+      [AnimationPlayState::Running];
+      [AnimationPlayState::Paused, AnimationPlayState::Running]
+    );
+  }
+
+  #[test]
+  fn blend_modes_repeat_to_lcm() {
+    let from: BlendModes = Box::from([BlendMode::Normal, BlendMode::Multiply]);
+    let to: BlendModes = Box::from([BlendMode::Screen, BlendMode::Overlay, BlendMode::Darken]);
+    let mut value = from.clone();
+
+    value.interpolate(&from, &to, 0.5, &sizing(), current_color());
+
+    assert_eq!(
+      value.as_ref(),
+      [
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::Darken,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::Darken,
+      ]
+    );
+  }
+
+  #[test]
+  fn length_interpolates_continuously() {
+    let mut target: Length = Length::zero();
+    target.interpolate(
+      &Length::Px(10.0),
+      &Length::Px(30.0),
+      0.25,
+      &sizing(),
+      current_color(),
+    );
+    assert_eq!(target, Length::Px(15.0));
+  }
+
+  #[test]
+  fn mixed_unit_length_interpolates_via_sizing() {
+    let mut target: Length = Length::zero();
+    target.interpolate(
+      &Length::Px(0.0),
+      &Length::Percentage(50.0),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(target, Length::Px(50.0));
+  }
+
+  #[test]
+  fn option_length_uses_discrete_fallback() {
+    let mut target: Option<Length> = None;
+    target.interpolate(
+      &Some(Length::Px(10.0)),
+      &None,
+      0.25,
+      &sizing(),
+      current_color(),
+    );
+    assert_eq!(target, Some(Length::Px(10.0)));
+
+    target.interpolate(
+      &Some(Length::Px(10.0)),
+      &None,
+      0.75,
+      &sizing(),
+      current_color(),
+    );
+    assert_eq!(target, None);
+  }
+
+  #[test]
+  fn background_position_interpolates_components() {
+    let mut target: PositionValue = PositionValue::default();
+    target.interpolate(
+      &PositionValue(SpacePair::from_pair(
+        PositionComponent::KeywordX(PositionKeywordX::Left),
+        PositionComponent::KeywordY(PositionKeywordY::Top),
+      )),
+      &PositionValue(SpacePair::from_pair(
+        PositionComponent::KeywordX(PositionKeywordX::Right),
+        PositionComponent::KeywordY(PositionKeywordY::Bottom),
+      )),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      target,
+      PositionValue(SpacePair::from_pair(
+        PositionComponent::Length(Length::Percentage(50.0)),
+        PositionComponent::Length(Length::Percentage(50.0)),
+      ))
+    );
+  }
+
+  #[test]
+  fn border_radius_interpolates_via_container_impls() {
+    let mut target = BorderRadius::default();
+    target.interpolate(
+      &BorderRadius::from(4.0),
+      &BorderRadius::from(12.0),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(target, BorderRadius::from(8.0));
+  }
+
+  #[test]
+  fn percentage_number_interpolates() {
+    let mut target = PercentageNumber::default();
+    target.interpolate(
+      &PercentageNumber(0.2),
+      &PercentageNumber(0.6),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert!((target.0 - 0.4).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn option_angle_interpolates_inner_angle() {
+    let mut target: Option<Angle> = None;
+    target.interpolate(
+      &Some(Angle::new(0.0)),
+      &Some(Angle::new(90.0)),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(target, Some(Angle::new(45.0)));
+  }
+
+  #[test]
+  fn scale_interpolates_from_none_as_identity() {
+    let mut target: Option<SpacePair<PercentageNumber>> = None;
+    target.interpolate(
+      &None,
+      &Some(SpacePair::from_single(PercentageNumber(2.0))),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(target, Some(SpacePair::from_single(PercentageNumber(1.5))));
+  }
+
+  #[test]
+  fn aspect_ratio_interpolates_ratio_values() {
+    let mut target = AspectRatio::Auto;
+    target.interpolate(
+      &AspectRatio::Ratio(1.0),
+      &AspectRatio::Ratio(2.0),
+      0.25,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(target, AspectRatio::Ratio(1.25));
+  }
+
+  #[test]
+  fn font_stretch_interpolates_percentages() {
+    let mut target = FontStretch::from_percentage(0.0);
+    target.interpolate(
+      &FontStretch::from_percentage(0.75),
+      &FontStretch::from_percentage(1.25),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert!((target.percentage() - 1.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn font_weight_interpolates_numeric_values() {
+    let mut target = FontWeight::default();
+    target.interpolate(
+      &FontWeight::from(400.0),
+      &FontWeight::from(700.0),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert!((target.value() - 550.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn text_decoration_thickness_interpolates_lengths() {
+    let mut target = TextDecorationThickness::default();
+    target.interpolate(
+      &TextDecorationThickness::Length(Length::Px(2.0)),
+      &TextDecorationThickness::Length(Length::Px(10.0)),
+      0.25,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(target, TextDecorationThickness::Length(Length::Px(4.0)));
+  }
+
+  #[test]
+  fn flex_grow_interpolates_numeric_values() {
+    let mut target = FlexGrow(0.0);
+    target.interpolate(
+      &FlexGrow(1.0),
+      &FlexGrow(3.0),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert!((target.0 - 2.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn transform_translate_interpolates_lengths() {
+    let mut target = Transform::Translate(Length::zero(), Length::zero());
+    target.interpolate(
+      &Transform::Translate(Length::Px(0.0), Length::Px(10.0)),
+      &Transform::Translate(Length::Px(20.0), Length::Px(30.0)),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      target,
+      Transform::Translate(Length::Px(10.0), Length::Px(20.0))
+    );
+  }
+
+  #[test]
+  fn background_size_interpolates_explicit_lengths() {
+    let mut target = BackgroundSize::default();
+    target.interpolate(
+      &BackgroundSize::Explicit {
+        width: Length::Px(10.0),
+        height: Length::Px(20.0),
+      },
+      &BackgroundSize::Explicit {
+        width: Length::Px(30.0),
+        height: Length::Px(60.0),
+      },
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      target,
+      BackgroundSize::Explicit {
+        width: Length::Px(20.0),
+        height: Length::Px(40.0),
+      }
+    );
+  }
+
+  #[test]
+  fn box_shadow_interpolates_lengths_and_color() {
+    let mut target = BoxShadow {
+      inset: false,
+      offset_x: Length::zero(),
+      offset_y: Length::zero(),
+      blur_radius: Length::zero(),
+      spread_radius: Length::zero(),
+      color: ColorInput::CurrentColor,
+    };
+    target.interpolate(
+      &BoxShadow {
+        inset: false,
+        offset_x: Length::Px(0.0),
+        offset_y: Length::Px(10.0),
+        blur_radius: Length::Px(20.0),
+        spread_radius: Length::Px(30.0),
+        color: ColorInput::Value(Color([0, 0, 0, 255])),
+      },
+      &BoxShadow {
+        inset: false,
+        offset_x: Length::Px(20.0),
+        offset_y: Length::Px(30.0),
+        blur_radius: Length::Px(40.0),
+        spread_radius: Length::Px(50.0),
+        color: ColorInput::Value(Color([200, 100, 50, 255])),
+      },
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      target,
+      BoxShadow {
+        inset: false,
+        offset_x: Length::Px(10.0),
+        offset_y: Length::Px(20.0),
+        blur_radius: Length::Px(30.0),
+        spread_radius: Length::Px(40.0),
+        color: ColorInput::Value(Color([100, 50, 25, 255])),
+      }
+    );
+  }
+
+  #[test]
+  fn text_shadow_interpolates_lengths_and_color() {
+    let mut target = TextShadow {
+      offset_x: Length::zero(),
+      offset_y: Length::zero(),
+      blur_radius: Length::zero(),
+      color: ColorInput::CurrentColor,
+    };
+    target.interpolate(
+      &TextShadow {
+        offset_x: Length::Px(0.0),
+        offset_y: Length::Px(10.0),
+        blur_radius: Length::Px(20.0),
+        color: ColorInput::Value(Color([0, 0, 0, 255])),
+      },
+      &TextShadow {
+        offset_x: Length::Px(20.0),
+        offset_y: Length::Px(30.0),
+        blur_radius: Length::Px(40.0),
+        color: ColorInput::Value(Color([200, 100, 50, 255])),
+      },
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      target,
+      TextShadow {
+        offset_x: Length::Px(10.0),
+        offset_y: Length::Px(20.0),
+        blur_radius: Length::Px(30.0),
+        color: ColorInput::Value(Color([100, 50, 25, 255])),
+      }
+    );
+  }
+
+  #[test]
+  fn filter_blur_interpolates_lengths() {
+    let mut target = Filter::Blur(Length::zero());
+    target.interpolate(
+      &Filter::Blur(Length::Px(4.0)),
+      &Filter::Blur(Length::Px(12.0)),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(target, Filter::Blur(Length::Px(8.0)));
+  }
+
+  #[test]
+  fn backwards_fill_samples_from_before_the_active_phase() {
+    let sample = sample_animation_progress(
+      0.0,
+      1000.0,
+      500.0,
+      AnimationIterationCount::Number(1.0),
+      AnimationDirection::Normal,
+      AnimationFillMode::Backwards,
+    )
+    .expect("backwards fill applies during the delay");
+
+    assert_eq!(sample.progress, 0.0);
+    assert!(sample.before);
+  }
+
+  #[test]
+  fn animation_progress_uses_next_iteration_start_at_boundaries() {
+    let progress = sample_animation_progress(
+      1000.0,
+      1000.0,
+      0.0,
+      AnimationIterationCount::Infinite,
+      AnimationDirection::Alternate,
+      AnimationFillMode::Both,
+    );
+
+    assert_eq!(progress.map(|sample| sample.progress), Some(1.0));
+  }
+
+  #[test]
+  fn animation_progress_keeps_final_state_after_finite_completion() {
+    let progress = sample_animation_progress(
+      2000.0,
+      1000.0,
+      0.0,
+      AnimationIterationCount::Number(2.0),
+      AnimationDirection::Alternate,
+      AnimationFillMode::Forwards,
+    );
+
+    assert_eq!(progress.map(|sample| sample.progress), Some(0.0));
+  }
+
+  #[test]
+  fn animation_progress_keeps_fractional_final_iteration_state() {
+    let progress = sample_animation_progress(
+      1500.0,
+      1000.0,
+      0.0,
+      AnimationIterationCount::Number(1.5),
+      AnimationDirection::Normal,
+      AnimationFillMode::Forwards,
+    );
+
+    assert_eq!(progress.map(|sample| sample.progress), Some(0.5));
+  }
+
+  #[test]
+  fn animation_progress_uses_end_of_iteration_for_exact_normal_boundaries() {
+    let progress = sample_animation_progress(
+      1000.0,
+      1000.0,
+      0.0,
+      AnimationIterationCount::Infinite,
+      AnimationDirection::Normal,
+      AnimationFillMode::Both,
+    );
+
+    assert_eq!(progress.map(|sample| sample.progress), Some(1.0));
+  }
+
+  #[test]
+  fn tailwind_animation_presets_include_built_in_keyframes() {
+    assert!(tailwind_animation_keyframes("spin").is_some());
+    assert!(tailwind_animation_keyframes("ping").is_some());
+    assert!(tailwind_animation_keyframes("pulse").is_some());
+    assert!(tailwind_animation_keyframes("bounce").is_some());
+  }
+
+  #[test]
+  fn vec_animates_pairwise() {
+    let mut values: Vec<Length> = vec![Length::Px(0.0), Length::Px(10.0)];
+    values.interpolate(
+      &vec![Length::Px(0.0), Length::Px(10.0)],
+      &vec![Length::Px(20.0), Length::Px(30.0)],
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(values, vec![Length::Px(10.0), Length::Px(20.0)]);
+  }
+
+  #[test]
+  fn boxed_background_lists_animate_repeatable_lists_to_lcm_length() {
+    let mut values: Box<[BackgroundSize]> = Box::default();
+    values.interpolate(
+      &[BackgroundSize::Explicit {
+        width: Length::Px(10.0),
+        height: Length::Px(20.0),
+      }]
+      .into(),
+      &[
+        BackgroundSize::Explicit {
+          width: Length::Px(30.0),
+          height: Length::Px(40.0),
+        },
+        BackgroundSize::Explicit {
+          width: Length::Px(50.0),
+          height: Length::Px(60.0),
+        },
+      ]
+      .into(),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      values,
+      [
+        BackgroundSize::Explicit {
+          width: Length::Px(20.0),
+          height: Length::Px(30.0),
+        },
+        BackgroundSize::Explicit {
+          width: Length::Px(30.0),
+          height: Length::Px(40.0),
+        },
+      ]
+      .into()
+    );
+  }
+
+  #[test]
+  fn boxed_transform_lists_pad_to_longest_with_neutral_values() {
+    let mut values: Box<[Transform]> = Box::default();
+    values.interpolate(
+      &[Transform::Scale(1.0, 1.0)].into(),
+      &[Transform::Scale(2.0, 2.0), Transform::Scale(4.0, 4.0)].into(),
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      values,
+      [Transform::Scale(1.5, 1.5), Transform::Scale(2.5, 2.5)].into()
+    );
+  }
+
+  #[test]
+  fn apply_interpolated_properties_only_updates_masked_fields() {
+    let mut base_style = ComputedStyle {
+      box_data: Rc::new(StyleBoxData {
+        width: Length::Px(10.0).into(),
+        height: Length::Px(20.0).into(),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let from = ComputedStyle {
+      box_data: Rc::new(StyleBoxData {
+        width: Length::Px(10.0).into(),
+        height: Length::Px(100.0).into(),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let to = ComputedStyle {
+      box_data: Rc::new(StyleBoxData {
+        width: Length::Px(30.0).into(),
+        height: Length::Px(200.0).into(),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let animated_properties: PropertyMask = [LonghandId::Width].into_iter().collect();
+
+    base_style.apply_interpolated_properties(
+      &from,
+      &to,
+      &animated_properties,
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(base_style.box_data.width, Length::Px(20.0).into());
+    assert_eq!(base_style.box_data.height, Length::Px(20.0).into());
+  }
+
+  #[test]
+  fn apply_interpolated_properties_interpolates_rotate_from_implicit_none() {
+    let mut base_style = ComputedStyle::default();
+    let from = ComputedStyle::default();
+    let to = ComputedStyle {
+      misc3_data: Rc::new(StyleMisc3Data {
+        rotate: Some(Angle::new(45.0)),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let animated_properties: PropertyMask = [LonghandId::Rotate].into_iter().collect();
+
+    base_style.apply_interpolated_properties(
+      &from,
+      &to,
+      &animated_properties,
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(base_style.misc3_data.rotate, Some(Angle::new(22.5)));
+  }
+
+  #[test]
+  fn apply_interpolated_properties_interpolates_flex_grow_from_implicit_zero() {
+    let mut base_style = ComputedStyle::default();
+    let from = ComputedStyle::default();
+    let to = ComputedStyle {
+      misc1_data: Rc::new(StyleMisc1Data {
+        flex_grow: Some(FlexGrow(4.0)),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let animated_properties: PropertyMask = [LonghandId::FlexGrow].into_iter().collect();
+
+    base_style.apply_interpolated_properties(
+      &from,
+      &to,
+      &animated_properties,
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(base_style.misc1_data.flex_grow, Some(FlexGrow(2.0)));
+  }
+
+  #[test]
+  fn apply_interpolated_properties_interpolates_flex_shrink_from_implicit_one() {
+    let mut base_style = ComputedStyle::default();
+    let from = ComputedStyle::default();
+    let to = ComputedStyle {
+      misc2_data: Rc::new(StyleMisc2Data {
+        flex_shrink: Some(FlexGrow(3.0)),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let animated_properties: PropertyMask = [LonghandId::FlexShrink].into_iter().collect();
+
+    base_style.apply_interpolated_properties(
+      &from,
+      &to,
+      &animated_properties,
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(base_style.misc2_data.flex_shrink, Some(FlexGrow(2.0)));
+  }
+
+  #[test]
+  fn apply_interpolated_properties_interpolates_text_stroke_width_from_implicit_zero() {
+    let mut base_style = ComputedStyle::default();
+    let from = ComputedStyle::default();
+    let to = ComputedStyle {
+      misc_inherited1_data: Rc::new(StyleMiscInherited1Data {
+        webkit_text_stroke_width: Some(Length::Px(6.0)),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let animated_properties: PropertyMask =
+      [LonghandId::WebkitTextStrokeWidth].into_iter().collect();
+
+    base_style.apply_interpolated_properties(
+      &from,
+      &to,
+      &animated_properties,
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      base_style.misc_inherited1_data.webkit_text_stroke_width,
+      Some(Length::Px(3.0))
+    );
+  }
+
+  #[test]
+  fn apply_interpolated_properties_interpolates_text_stroke_color_from_current_color() {
+    let mut base_style = ComputedStyle::default();
+    let from = ComputedStyle::default();
+    let to = ComputedStyle {
+      misc_inherited1_data: Rc::new(StyleMiscInherited1Data {
+        webkit_text_stroke_color: Some(ColorInput::Value(Color([110, 120, 130, 255]))),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let animated_properties: PropertyMask =
+      [LonghandId::WebkitTextStrokeColor].into_iter().collect();
+
+    base_style.apply_interpolated_properties(
+      &from,
+      &to,
+      &animated_properties,
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      base_style.misc_inherited1_data.webkit_text_stroke_color,
+      Some(ColorInput::Value(Color([60, 70, 80, 255])))
+    );
+  }
+
+  #[test]
+  fn apply_interpolated_properties_interpolates_text_fill_color_from_style_color() {
+    let mut base_style = ComputedStyle::default();
+    let from = ComputedStyle {
+      inherited_data: Rc::new(StyleInheritedData {
+        color: ColorInput::Value(Color([20, 40, 60, 255])),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let to = ComputedStyle {
+      inherited_data: Rc::new(StyleInheritedData {
+        color: ColorInput::Value(Color([20, 40, 60, 255])),
+        ..Default::default()
+      }),
+      misc_inherited1_data: Rc::new(StyleMiscInherited1Data {
+        webkit_text_fill_color: Some(ColorInput::Value(Color([120, 140, 160, 255]))),
+        ..Default::default()
+      }),
+      ..ComputedStyle::default()
+    };
+    let animated_properties: PropertyMask = [LonghandId::WebkitTextFillColor].into_iter().collect();
+
+    base_style.apply_interpolated_properties(
+      &from,
+      &to,
+      &animated_properties,
+      0.5,
+      &sizing(),
+      current_color(),
+    );
+
+    assert_eq!(
+      base_style.misc_inherited1_data.webkit_text_fill_color,
+      Some(ColorInput::Value(Color([70, 90, 110, 255])))
+    );
+  }
+
+  #[test]
+  fn text_indent_interpolates_amount_continuously() {
+    let mut target = TextIndent::default();
+    let from = TextIndent {
+      amount: Length::Px(10.0),
+      each_line: false,
+      hanging: false,
+    };
+    let to = TextIndent {
+      amount: Length::Px(30.0),
+      each_line: true,
+      hanging: true,
+    };
+
+    target.interpolate(&from, &to, 0.25, &sizing(), current_color());
+    assert_eq!(target.amount, Length::Px(15.0));
+    assert!(!target.each_line);
+    assert!(!target.hanging);
+
+    target.interpolate(&from, &to, 0.75, &sizing(), current_color());
+    assert_eq!(target.amount, Length::Px(25.0));
+    assert!(target.each_line);
+    assert!(target.hanging);
+  }
+}

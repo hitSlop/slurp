@@ -20,6 +20,7 @@ slurp sync ──► Worker (webrpc Archive.ListObjects) ──► signed GET li
 - **ProjectDO**: one per project. It owns the project's keys, buffers accepted batches durably, seals them into R2 archives on an alarm and keeps the manifest. A key names its project (`slurp_pk_<project id>_<random>`), so a request goes straight to that project's object: no global lookup, and a revoked key stops working on the next request. Nothing is stored until a project is created, so forged project ids cost nothing. Publishable keys are stored as they are (they are public by design and can be shown again); secret keys are stored only as a SHA-256.
 - **R2**: immutable archives `v1/projects/<project>/archives/<archive id>/events/<20-digit seq>-<sha256>.jsonl.gz`. The CLI never receives R2 credentials.
 - **CLI** (`crates/`): Rust. Downloads and verifies archives, imports into DuckDB idempotently, runs SQL and builds reports. `slurp-client` owns transport and archive validation, `slurp-document` sanitizes Markdown, `slurp-render` renders HTML/PNG/PDF.
+- **Report rendering**: the embedded Vega compiler measures labels through Takumi with the bundled Geist fonts. PNG renders inline SVG at 2× density; PDF retains vector chart graphics. `vendor/takumi-core` contains the pinned DPR correction and its provenance. Rebuild chart assets with `pnpm --dir report-assets build`; `pnpm --dir report-assets check` verifies source, bundle, versions and themes without writing files.
 - **SDKs** (`sdks/js`): durable queue, byte-identical retries, batching.
 
 ## Contracts

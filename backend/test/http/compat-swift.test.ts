@@ -23,6 +23,9 @@ before(async () => {
   }
 })
 async function setup() {
+  // analytics-swift is an Apple-platform SDK, and its iOS/macOS behaviour is what Slurp relies on. Linux runners have Swift too, but
+  // Foundation there reports network errors differently, so the test runs on macOS only (the compat-swift CI job).
+  if (process.platform !== 'darwin') { why = 'analytics-swift is tested on macOS only'; return }
   if (spawnSync('swift', ['--version'], { encoding: 'utf8' }).status !== 0) { why = 'swift is not available'; return }
   // --force-resolved-versions: build exactly what Package.resolved pins (analytics-swift and its two dependencies).
   const args = ['build', '-c', 'release', '--package-path', compat, '--force-resolved-versions']

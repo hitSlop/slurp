@@ -4,13 +4,13 @@
 //! `backend/src/api.gen.ts` with ts-rs: `cargo test -p slurp-client api_bindings` checks the file is current, and
 //! `SLURP_UPDATE_BINDINGS=1` rewrites it. Optional fields are omitted when absent, never `null`.
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use ts_rs::TS;
 
 // ---- Errors ----------------------------------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
+#[cfg_attr(test, ts(rename_all = "snake_case"))]
 pub enum ErrorCode {
     InvalidArgument,
     Unauthenticated,
@@ -34,23 +34,26 @@ impl ErrorCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
 }
 
 /// The body of every failed call: `{"error":{"code":"…","message":"…"}}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ApiErrorBody {
     pub error: ApiError,
 }
 
 // ---- Shared records --------------------------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct ProjectInfo {
     pub id: String,
     pub name: String,
@@ -59,27 +62,30 @@ pub struct ProjectInfo {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
+#[cfg_attr(test, ts(rename_all = "snake_case"))]
 pub enum KeyScope {
     Publishable,
     Secret,
 }
 
 /// What a token can do, as `Whoami` reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
+#[cfg_attr(test, ts(rename_all = "snake_case"))]
 pub enum TokenScope {
     Admin,
     Secret,
     Publishable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct ApiKey {
     pub key_id: String,
     pub project: String,
@@ -96,7 +102,8 @@ pub struct ApiKey {
     pub key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Webhook {
     pub provider: String,
@@ -107,9 +114,10 @@ pub struct Webhook {
     pub steps: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct Coverage {
     // The oldest retained sequence.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,7 +130,8 @@ pub struct Coverage {
     pub pending: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveInfo {
     pub seq: u64,
@@ -134,7 +143,8 @@ pub struct ArchiveInfo {
 }
 
 /// Archives that retention deleted before they were read: `from..=to`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Gap {
     pub from: u64,
@@ -143,13 +153,15 @@ pub struct Gap {
 
 // ---- Method requests and responses -----------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(type = "Record<string, never>")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, ts(type = "Record<string, never>"))]
 pub struct WhoamiRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct WhoamiResponse {
     pub scope: TokenScope,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,16 +173,18 @@ pub struct WhoamiResponse {
 }
 
 /// Idempotent by `name`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct CreateProjectRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CreateProjectResponse {
     pub project: ProjectInfo,
@@ -180,31 +194,36 @@ pub struct CreateProjectResponse {
     pub ingest_url: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GetProjectRequest {
     // Id or name.
     pub project: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GetProjectResponse {
     pub project: ProjectInfo,
     pub ingest_url: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(type = "Record<string, never>")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, ts(type = "Record<string, never>"))]
 pub struct ListProjectsRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ListProjectsResponse {
     pub projects: Vec<ProjectInfo>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SourceKeyRequest {
     pub project: String,
@@ -212,16 +231,18 @@ pub struct SourceKeyRequest {
 }
 
 /// The source's oldest live publishable key, created if there is none.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SourceKeyResponse {
     pub key: ApiKey,
 }
 
 /// A publishable key needs `source`; a secret key takes `name` (default `default`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct CreateKeyRequest {
     pub project: String,
     pub scope: KeyScope,
@@ -231,44 +252,50 @@ pub struct CreateKeyRequest {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CreateKeyResponse {
     pub key: ApiKey,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct ListKeysRequest {
     pub project: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<KeyScope>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ListKeysResponse {
     pub keys: Vec<ApiKey>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeKeyRequest {
     pub project: String,
     pub key_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeKeyResponse {
     pub key: ApiKey,
 }
 
 /// Idempotent. Stripe issues its own secret, so it is passed as `secret`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct ConnectWebhookRequest {
     pub project: String,
     pub provider: String,
@@ -277,9 +304,10 @@ pub struct ConnectWebhookRequest {
 }
 
 /// Without `after`, the listing starts at `coverage.first`. `limit` is 1..=5000 (default 1000).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct ListArchivesRequest {
     pub project: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -288,9 +316,10 @@ pub struct ListArchivesRequest {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
+#[cfg_attr(test, ts(optional_fields))]
 pub struct ListArchivesResponse {
     pub coverage: Coverage,
     pub archives: Vec<ArchiveInfo>,
@@ -301,13 +330,15 @@ pub struct ListArchivesResponse {
     pub gap: Option<Gap>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PublishRequest {
     pub project: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PublishResponse {
     pub coverage: Coverage,
@@ -318,8 +349,8 @@ pub struct PublishResponse {
 /// One control API method: its wire name and its request and response types.
 pub trait Method {
     const NAME: &'static str;
-    type Req: Serialize + TS + 'static;
-    type Res: DeserializeOwned + TS + 'static;
+    type Req: Serialize + 'static;
+    type Res: DeserializeOwned + 'static;
 }
 
 /// Declares every method once. Generates the `Method` marker structs, `METHODS`, and the TypeScript `Api` map.
@@ -339,19 +370,21 @@ macro_rules! api {
         pub const METHODS: &[&str] = &[$(stringify!($name)),*];
 
         /// Visits every request and response type, so the bindings carry exactly what the methods use.
+        #[cfg(test)]
         fn visit_method_types(v: &mut impl ts_rs::TypeVisitor) {
             $( v.visit::<$req>(); v.visit::<$res>(); )*
         }
 
         /// The TypeScript method map: `Api[M]['req']` and `Api[M]['res']`.
+        #[cfg(test)]
         fn ts_method_map(cfg: &ts_rs::Config) -> String {
             let mut out = String::from("export type Api = {\n");
             $(
                 out.push_str(&format!(
                     "  {}: {{ req: {}; res: {} }};\n",
                     stringify!($name),
-                    <$req as TS>::name(cfg),
-                    <$res as TS>::name(cfg),
+                    <$req as ts_rs::TS>::name(cfg),
+                    <$res as ts_rs::TS>::name(cfg),
                 ));
             )*
             out.push_str("};\n");
@@ -436,11 +469,13 @@ pub fn archive_path(project: &str, seq: u64) -> String {
 
 // ---- TypeScript bindings ---------------------------------------------------------------------------------------------
 
+#[cfg(test)]
 const BINDINGS_HEADER: &str = "// Generated by `cargo test -p slurp-client api_bindings`; do not edit.\n\
 // Source of truth: crates/slurp-client/src/api.rs. Regenerate with SLURP_UPDATE_BINDINGS=1.\n";
 
 /// The text of `backend/src/api.gen.ts`: every type reachable from a method (and the error body), sorted by name, then `Api`.
-pub fn typescript_bindings() -> String {
+#[cfg(test)]
+fn typescript_bindings() -> String {
     use std::collections::BTreeMap;
     use ts_rs::{Config, TS, TypeVisitor};
 

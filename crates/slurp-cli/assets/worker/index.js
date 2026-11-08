@@ -241,16 +241,15 @@ var Publisher = class {
   /** The time the alarm is set to, as far as this object knows. */
   armed = null;
   inflight = null;
-  /** Test hooks (DEBUG only). */
-  faults = { archive: false, afterPut: false, alarm: false };
+  /** Where archives are stored. A plain field, so a test can put a failing bucket in its place. */
+  archive;
   ctx;
-  env;
   db;
   cfg;
   project;
-  constructor(ctx, env, db, cfg, project) {
+  constructor(ctx, archive, db, cfg, project) {
     this.ctx = ctx;
-    this.env = env;
+    this.archive = archive;
     this.db = db;
     this.cfg = cfg;
     this.project = project;
@@ -299,10 +298,6 @@ var Publisher = class {
     }
   }
   async alarmWrite(write) {
-    if (this.faults.alarm) {
-      this.faults.alarm = false;
-      throw new Error("injected alarm failure");
-    }
     await write();
     this.db.alarmWrites++;
   }
@@ -350,13 +345,8 @@ var Publisher = class {
     const gz = await this.compress(chunks.map((c) => c.id));
     const sha256 = await sha256Hex(gz);
     await retry(async () => {
-      if (this.faults.archive) throw new Error("injected archive failure");
-      return this.env.ARCHIVE.put(archiveKey(this.project, seq), gz, { httpMetadata: { contentType: "application/gzip" } });
+      return this.archive.put(archiveKey(this.project, seq), gz, { httpMetadata: { contentType: "application/gzip" } });
     });
-    if (this.faults.afterPut) {
-      this.faults.afterPut = false;
-      throw new Error("injected failure after the R2 put");
-    }
     const events = chunks.reduce((n, c) => n + c.events, 0), bytes2 = chunks.reduce((n, c) => n + c.bytes, 0);
     this.ctx.storage.transactionSync(() => {
       this.db.rows("INSERT INTO manifest(seq, size, sha256, events, created_at) VALUES(?,?,?,?,?)", seq, gz.length, sha256, events, Date.now());
@@ -389,7 +379,7 @@ var Publisher = class {
     for (; ; ) {
       const old = this.db.rows("SELECT seq FROM manifest WHERE deleted_at IS NULL AND created_at<? ORDER BY seq LIMIT 1000", cutoff);
       if (!old.length) return;
-      await retry(() => this.env.ARCHIVE.delete(old.map((o) => archiveKey(this.project, o.seq))));
+      await retry(() => this.archive.delete(old.map((o) => archiveKey(this.project, o.seq))));
       this.db.rows("UPDATE manifest SET deleted_at=? WHERE seq<=? AND deleted_at IS NULL", Date.now(), old[old.length - 1].seq);
     }
   }
@@ -398,13 +388,13 @@ var Publisher = class {
    * that would. So a failure is caught and the retry is scheduled here (`retry_at`): it backs off from ARCHIVE_RETRY_MS up to the seal
    * interval, for ever. Retention does not wait for publication.
    */
-  async alarm(force) {
+  async alarm() {
     await this.syncAlarm();
     const now = Date.now();
     let failure = null;
     let published = false;
     const due = publicationWake(this.facts(), this.cfg, now);
-    if (force || due !== null && due <= now) {
+    if (due !== null && due <= now) {
       try {
         await this.publish();
         published = true;
@@ -469,7 +459,7 @@ var Publisher = class {
   /** Delete every archive object of this project (for purge). */
   async deleteArchives() {
     const live = this.db.rows("SELECT seq FROM manifest WHERE deleted_at IS NULL ORDER BY seq");
-    for (let i = 0; i < live.length; i += 1e3) await retry(() => this.env.ARCHIVE.delete(live.slice(i, i + 1e3).map((r) => archiveKey(this.project, r.seq))));
+    for (let i = 0; i < live.length; i += 1e3) await retry(() => this.archive.delete(live.slice(i, i + 1e3).map((r) => archiveKey(this.project, r.seq))));
     return live.length;
   }
 };
@@ -1220,51 +1210,6 @@ var configOf = /* @__PURE__ */ __name((env) => {
   return config;
 }, "configOf");
 
-// src/debug.ts
-async function debugRoute(req, env, auth) {
-  const url = new URL(req.url);
-  if (env.DEBUG !== "1" || auth?.kind !== "admin" || !url.pathname.startsWith("/__debug/")) return null;
-  const [, , op, id] = url.pathname.split("/");
-  const stub = projectStub(env, id);
-  const ok = /* @__PURE__ */ __name(() => Response.json({ ok: true }), "ok");
-  const stats = /* @__PURE__ */ __name(async () => Response.json(await stub.stats()), "stats");
-  const fault = /* @__PURE__ */ __name(async (which) => {
-    await stub.fault(which, url.searchParams.get("off") === null);
-    return ok();
-  }, "fault");
-  switch (op) {
-    case "flush":
-      await stub.flush();
-      return stats();
-    case "publish":
-      await stub.publish();
-      return stats();
-    // `?force=1` publishes even when nothing is due yet; without it this is the alarm exactly as the platform runs it.
-    case "alarm":
-      await stub.runAlarm(url.searchParams.get("force") !== null);
-      return stats();
-    case "sweep":
-      await stub.sweep();
-      return stats();
-    case "stats":
-      return stats();
-    case "fail-flush":
-      return fault("flush");
-    case "fail-archive":
-      return fault("archive");
-    case "fail-after-put":
-      return fault("after-put");
-    case "fail-alarm":
-      return fault("alarm");
-    case "heal-archive":
-      await stub.fault("archive", false);
-      return ok();
-    default:
-      return null;
-  }
-}
-__name(debugRoute, "debugRoute");
-
 // src/landing.ts
 var esc = /* @__PURE__ */ __name((s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]), "esc");
 function setupPage(origin, configured) {
@@ -1415,13 +1360,11 @@ var ProjectDO = class extends DurableObject2 {
   }
   db = new Db(this.ctx.storage.sql);
   cfg = configOf(this.env);
-  publisher = new Publisher(this.ctx, this.env, this.db, this.cfg, this.ctx.id.name ?? "");
+  publisher = new Publisher(this.ctx, this.env.ARCHIVE, this.db, this.cfg, this.ctx.id.name ?? "");
   ready = false;
   queue = [];
   queuedBytes = 0;
   timer = null;
-  /** Test hook (DEBUG only): make the next group commit fail once. */
-  failFlush = false;
   constructor(ctx, env) {
     super(ctx, env);
     this.ready = this.db.rows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='keys'").length > 0;
@@ -1550,10 +1493,6 @@ var ProjectDO = class extends DurableObject2 {
     this.queue = [];
     this.queuedBytes = 0;
     try {
-      if (this.failFlush) {
-        this.failFlush = false;
-        throw new Error("injected flush failure");
-      }
       const chunks = [];
       let cur;
       for (const item of q) {
@@ -1584,12 +1523,8 @@ var ProjectDO = class extends DurableObject2 {
   }
   // ---- archives ----
   async alarm() {
-    await this.runAlarm(false);
-  }
-  /** The alarm's work; `force` publishes even if nothing is due yet (tests). */
-  async runAlarm(force) {
     await this.flush();
-    await this.publisher.alarm(force);
+    await this.publisher.alarm();
   }
   /** Publish everything buffered now, then report where archives stand. Throws if R2 fails. */
   async publish() {
@@ -1633,37 +1568,6 @@ var ProjectDO = class extends DurableObject2 {
     this.publisher.armed = null;
     this.publisher.bufferedBytes = 0;
     return { archives };
-  }
-  // ---- test hooks (the DEBUG routes only) ----
-  async fault(which, on) {
-    if (which === "flush") this.failFlush = on;
-    else if (which === "archive") this.publisher.faults.archive = on;
-    else if (which === "alarm") this.publisher.faults.alarm = on;
-    else this.publisher.faults.afterPut = on;
-  }
-  async sweep() {
-    await this.publisher.sweep();
-    await this.publisher.rearm();
-  }
-  async stats() {
-    if (!this.ready) return { ready: false, pending: false, rowsWritten: this.db.rowsWritten, alarmWrites: this.db.alarmWrites };
-    const n = /* @__PURE__ */ __name((table, where = "1") => this.db.one(`SELECT COUNT(*) n FROM ${table} WHERE ${where}`).n, "n");
-    return {
-      ready: true,
-      pending: this.coverage().pending,
-      queued: this.queue.length,
-      bufferedBytes: this.publisher.bufferedBytes,
-      chunks: n("chunks"),
-      intent: this.db.one("SELECT seq, through_chunk FROM intent") ?? null,
-      manifest: n("manifest"),
-      live: n("manifest", "deleted_at IS NULL"),
-      alarm: await this.ctx.storage.getAlarm(),
-      armed: this.publisher.armed,
-      rowsWritten: this.db.rowsWritten,
-      alarmWrites: this.db.alarmWrites,
-      failures: Number(this.db.one("SELECT v FROM settings WHERE k='failures'")?.v ?? 0),
-      retryAt: this.db.one("SELECT v FROM settings WHERE k='retry_at'")?.v ?? null
-    };
   }
 };
 
@@ -1725,7 +1629,7 @@ var index_default = {
       return download(req, ctx, archive[1], archive[2]);
     }
     if (path === "/v1/admin/purge") return purge(req, env, ctx);
-    return await debugRoute(req, env, ctx.auth) ?? new Response("not found", { status: 404 });
+    return new Response("not found", { status: 404 });
   }
 };
 export {

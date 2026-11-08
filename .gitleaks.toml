@@ -7,3 +7,9 @@ useDefault = true
 description = "Slurp publishable keys are public by design"
 regexTarget = "match"
 regexes = ['''slurp_pk_[0-9a-f]{16}_[0-9a-f]{48}''']
+
+# Vendored third-party source (crates.io takumi-core 0.35.0 plus a reviewed patch, verified against the upstream archive SHA-256 in
+# vendor/README.md). Its tests use hex constants such as cache keys that the generic rule mistakes for API keys.
+[[allowlists]]
+description = "Vendored takumi-core source"
+paths = ['''^vendor/takumi-core/''']

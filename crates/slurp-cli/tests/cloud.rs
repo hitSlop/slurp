@@ -484,6 +484,26 @@ fn status_on_a_worker_without_the_report_says_to_upgrade() {
     );
 }
 
+/// `wrangler deploy` turns the workers.dev address off once a custom-domain route is set, so a receipt that has a domain is served at
+/// the domain whatever address it names.
+#[test]
+fn a_receipt_with_a_domain_is_checked_at_the_domain_not_workers_dev() {
+    let fake = deployed_fake();
+    let path = fake.path("home/cloud/slurp.json");
+    let mut receipt: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("receipt")).expect("json");
+    receipt["domain"] = "events.example.invalid".into();
+    receipt["url"] = "https://slurp.some-name.workers.dev".into();
+    std::fs::write(&path, serde_json::to_vec(&receipt).expect("json")).expect("write");
+    let (_, status) = status_json(&fake);
+    assert_eq!(status["url"], "https://events.example.invalid");
+    assert_eq!(status["domain"], "events.example.invalid");
+    assert_eq!(
+        status["reachable"], false,
+        "the .invalid host never answers"
+    );
+}
+
 #[test]
 fn status_survives_a_worker_that_fails_the_report() {
     let fake = deployed_fake();

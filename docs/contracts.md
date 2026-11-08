@@ -107,7 +107,7 @@ ProjectInfo  { id, name, title?, createdAt }
 ApiKey       { keyId, project, scope: "publishable"|"secret", source?, name?, createdAt, revokedAt?, key? }   // key: always for a publishable key; for a secret key only in the CreateKey response
 Webhook      { provider, url, secret, sender, steps: string[] }
 Coverage     { first?: u64, last?: u64, lastAt?: string, pending: bool }   // first = oldest retained seq
-ArchiveInfo  { seq: u64, size: u64, sha256, events: u64, createdAt }
+ArchiveInfo  { seq: u64, size: u64, sha256, events: u64, createdAt, format: u32 }
 ```
 
 | Method | Auth | Request | Response |
@@ -135,6 +135,7 @@ Method notes:
   - Without `after`, it starts at `coverage.first`.
   - When `after + 1 < coverage.first`, archives were deleted by retention before they were read. The response then carries `gap: {from: after + 1, to: first - 1}` and continues from `first`.
   - `pending` is true while accepted events are not yet in an archive.
+  - `format` is the archive's envelope format, `1` for every archive described here. The CLI refuses an archive whose format it doesn't know before downloading it ("upgrade slurp"). See "Versions and upgrades".
 - **`Publish`** archives everything buffered when it is called, up to the watermark taken at the start, so continuous traffic cannot keep it running. It shares the one in-flight publication with the alarm.
 
 ### Download: `GET` or `HEAD /v1/projects/<project id>/archives/<seq>`
@@ -150,7 +151,7 @@ Method notes:
 
 | Route | Use |
 |---|---|
-| `GET /v1/health` | `{ ok, apiVersion: 2, configured, build, geo }`, with no auth |
+| `GET /v1/health` | `{ ok, apiVersion: 2, release, configured, build, geo }`, with no auth. `release` is the Worker's version (`backend/src/version.ts`, equal to the CLI's) |
 | `GET /healthz` | `ok` |
 | `GET /` | The setup page |
 | `POST /v1/admin/purge` | Admin, with `{"confirm":"delete-all-data"}`. Unchanged |
@@ -174,12 +175,12 @@ Also: `ADMIN_TOKEN` (a secret) and `SLURP_BUILD`.
 
 ## Local import (CLI)
 
-These are fresh tables: there is no migration from earlier layouts.
+The schema below is version 1. Later versions are reached by migration steps (see "Versions and upgrades"). A database made by Slurp 0.1 has `_slurp.identity` and no `_slurp.meta`. It is refused with a message, not migrated.
 
 ```
 events(sender, id, type, event, timestamp, user_id, anonymous_id, session_id, data JSON, context JSON, geo JSON,
        received_at, archive_seq, line, raw JSON, fingerprint, PRIMARY KEY(sender, id))
-_slurp.identity(version, backend, project)   -- the binding of this database to one project on one Worker
+_slurp.meta(schema, backend, project)        -- the schema version, and the binding of this database to one project on one Worker
 _slurp.deliveries(project, sequence, sha256, bytes, imported_at, PRIMARY KEY(project, sequence))
 _slurp.problems(kind 'conflict'|'invalid'|'gap', sender, id, archive_seq, line, record, detail, seen_at,
                 PRIMARY KEY(kind, archive_seq, line))   -- a gap row uses archive_seq = from, line = 0, record = {"from":n,"to":m}
@@ -245,3 +246,32 @@ Every SDK implements this. `sdks/conformance/delivery.json` holds the executable
   - A new `anonymousId` and `sessionId` come with `reset()`, or when `identify` switches to a different user.
   - A new session starts after `sessionTimeoutMs` (default 30 min) of inactivity, using `>=`.
   - An event name's length is counted in code points.
+
+## Versions and upgrades
+
+From 0.2 on, upgrading Slurp never loses data and never needs a hand migration.
+- **Every store has a version.**
+- **A newer reader upgrades an older store** by itself.
+- **An older reader refuses a newer store**, with a message saying what to upgrade. It never reads or writes data it doesn't understand.
+
+The release steps that check these rules are in [releasing.md](releasing.md).
+
+| Store | Version kept in | When it is older than the code | When it is newer than the code |
+|---|---|---|---|
+| A project's Durable Object (SQLite) | `_schema(version)` | An object that already has storage applies the missing steps when it starts, each in one transaction with its version bump. An empty object stays empty (no tables) until the authorized create, so a forged key never creates storage | The object answers 503: "this Worker's data is newer than its code; deploy the newer Worker". It writes nothing |
+| The registry Durable Object (SQLite) | `_schema(version)` | The same | The same |
+| The local database (DuckDB) | `_slurp.meta.schema` | One DuckDB process, holding DuckDB's write lock throughout, copies the database to `<database>.schema<N>-<utc time>.bak`, then applies the missing steps in one transaction. A failed step leaves the database as it was, and the next command tries again | "this database was made by a newer Slurp; upgrade the CLI" |
+| The Worker's code | `/v1/health` `release` | `slurp cloud upgrade` deploys the newer bundle, then waits for the new `build` and calls `ListProjects` to check storage | `slurp cloud upgrade` refuses (no downgrades). An unreachable Worker is also refused unless `--force` is passed |
+| The control API | `/v1/health` `apiVersion` | The CLI works with any Worker in its supported range and says when `slurp cloud upgrade` would help | "upgrade the CLI" |
+| Archives (envelopes) | `format` on each `ListArchives` entry | Readers ignore fields they don't know; a format only ever gains fields | The CLI refuses that archive before downloading it: "upgrade slurp" |
+| SDK saved state | the namespace in the storage key (`@hitslop/slurp-sdk:v1:…`) | A format only ever gains fields | An incompatible format uses a new namespace (`:v2:`), so an older SDK never reads or overwrites it |
+| `slurp/slurp.toml`, `~/.slurp` files, cloud receipts | `version` | The reader upgrades the file in place | "made by a newer Slurp; upgrade the CLI" |
+
+Rules for changing any of them:
+
+1. **Version numbers move only for incompatible changes.** A new optional field doesn't bump anything. `apiVersion`, the schema versions, `format` and the SDK namespace are independent of each other and of package versions.
+2. **Migration steps are append-only.** Step `i` takes version `i` to `i + 1`. A shipped step is never edited, and each new step comes with a test that loads data at the previous version and checks that it survives.
+3. **Forward only.** There are no down migrations. A failed step rolls back by itself. A step that succeeded but exposed broken code is fixed by a corrective release. The local backup is there for a manual restore.
+4. **The ingest contract stays stable.** Cached web pages and shipped apps keep sending to upgraded Workers. So `POST /v1/events`, the compatibility endpoints, the webhook URLs and the key formats only gain features.
+5. **Mixed versions during a deploy.** Cloudflare can keep a Durable Object on the old code for a short while after the Worker's code changes. Calls from the Worker to an object therefore change additively across one release: add a method or optional field, and remove the old one in a later release.
+6. **0.1 is not upgraded.** Slurp 0.1's Workers, folders (`.slurp/`) and databases are refused with a message saying to start fresh. There is no migration from 0.1.

@@ -243,7 +243,7 @@ SLURP_TEST_DUCKDB=$HOME/.slurp/bin/duckdb cargo test --workspace   # includes a 
 SLURP_UPDATE_BINDINGS=1 cargo test -p slurp-client api_bindings   # regenerate backend/src/api.gen.ts after changing crates/slurp-client/src/api.rs
 ```
 
-The control API types are defined once, in Rust (`crates/slurp-client/src/api.rs`), and exported to TypeScript. The wire contracts are in [docs/contracts.md](docs/contracts.md).
+The control API types are defined once, in Rust (`crates/slurp-client/src/api.rs`), and exported to TypeScript. The wire contracts, including how stored data is versioned and upgraded, are in [docs/contracts.md](docs/contracts.md). Releases follow [docs/releasing.md](docs/releasing.md).
 
 The native CLI tests need a DuckDB 2 executable in `SLURP_TEST_DUCKDB`: on a developer machine they are skipped without it, and in CI (`CI` is set) a missing one fails the run. The CLI contract test in `backend/test/http` needs `cargo build -p slurp-cli` and `SLURP_DUCKDB` (default `~/.slurp/bin/duckdb`); it skips cleanly without them.
 

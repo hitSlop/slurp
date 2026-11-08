@@ -12,5 +12,6 @@
 | [CLI](cli.md) | Setup, per-app init, storage, credentials, SQL, reports and agents |
 | [Live walkthrough](live-walkthrough.md) | Send six events, publish them, sync and report |
 | [Architecture](architecture.md) | Data flow, contracts and the durability design |
-| [Wire contracts](contracts.md) | What the Worker, the CLI and the SDKs agree on: keys, the record and envelope formats, the control API, import rules, SDK delivery |
+| [Wire contracts](contracts.md) | What the Worker, the CLI and the SDKs agree on: keys, the record and envelope formats, the control API, import rules, SDK delivery, versions and upgrades |
+| [Releasing](releasing.md) | For maintainers: cutting a release of the CLI, the Worker and the SDKs, checking it, and recovering from a bad one |
 | [Agent skills](../crates/slurp-cli/skills/slurp/SKILL.md) | Instrumentation, SQL analysis and the product learning loop |

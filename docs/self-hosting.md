@@ -107,7 +107,12 @@ Measure your own: `SLURP_TOKEN=<admin token> node backend/scripts/load.mjs https
 
 - **Health:** `curl https://YOUR-WORKER/v1/health` answers `{ok, apiVersion, configured, build, geo}` with no credentials.
 - **Logs and CPU:** `npx wrangler tail` (observability is enabled).
-- **Upgrade:** `slurp cloud upgrade` (or, by hand, pull the repository and `cd backend && npx wrangler deploy`). Durable Object migrations are declared in `wrangler.jsonc`; existing data is kept.
+- **Upgrade:** run `slurp cloud upgrade` (or, by hand, pull the repository and `cd backend && npx wrangler deploy`).
+  - Data, the secret and settings are kept. Each project's storage upgrades itself the next time it's used.
+  - After deploying, the command waits for the new build and checks storage.
+  - It refuses to install an older Worker than the one deployed. It also refuses a Worker it can't reach, unless you pass `--force` (for a Worker that is down).
+  - A Worker deployed by Slurp 0.1 can't be upgraded: deploy a new one with `slurp cloud init --worker NEW`.
+  - See [contracts.md, "Versions and upgrades"](contracts.md#versions-and-upgrades).
 - **Back up:** archives are plain gzip NDJSON in R2 and are already on your machine after `slurp sync`.
 - **Remove everything:** `slurp cloud destroy`. By hand: `POST /v1/admin/purge` with `{"confirm":"delete-all-data"}` and the admin token empties all data, then `npx wrangler delete` and delete the bucket.
 

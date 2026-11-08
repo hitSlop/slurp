@@ -19,6 +19,13 @@ function utf8Encode(text: string): Uint8Array {
 }
 export const encoder: { encode(text: string): Uint8Array } = typeof TextEncoder === 'function' ? new TextEncoder() : { encode: utf8Encode }
 
+export const bytes = (text: string): number => encoder.encode(text).byteLength
+
+/** What the Worker accepts as a track event name: 1 to 200 Unicode code points, well-formed UTF-16 (a lone surrogate makes the Worker reject the line). */
+export function validEventName(name: unknown): name is string {
+  return typeof name === 'string' && name.length > 0 && !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(name) && [...name].length <= 200
+}
+
 /** Cryptographic randomness where the runtime has it; ids only need to be unique, so Math.random is the fallback. */
 function randomBytes(length: number): Uint8Array {
   const crypto = (globalThis as { crypto?: { getRandomValues?: (bytes: Uint8Array) => Uint8Array } }).crypto

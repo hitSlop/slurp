@@ -6,7 +6,7 @@ import { createClient, flush, init, memoryStorage, track, type StorageAdapter } 
 // Replacing a client (init twice, or a restart) must not lose what the first one had queued, and two senders sharing one
 // storage must never send each other's events.
 const endpoint = 'https://worker.example/v1/events'
-const keyFor = (project: string, random: string) => `slurp_pk_${project.repeat(16)}_${random.repeat(48)}`
+const keyFor = (project: string, random: string, source = 'web') => `slurp_pk_${project.repeat(16)}_${source}_${random.repeat(48)}`
 const names = (body: string) => body.trim().split('\n').map(line => JSON.parse(line).event as string)
 
 function server(status = 200) {
@@ -69,7 +69,7 @@ test('a client replaced while its storage is slow hands its queue to the next on
 
 test('two senders of one project sharing a storage never send each other\'s events', async () => {
   const storage = memoryStorage()
-  const web = keyFor('a', '1'), widget = keyFor('a', '2')
+  const web = keyFor('a', '1'), widget = keyFor('a', '2', 'widget')
   const offline = createClient({ key: widget, endpoint, storage, flushIntervalMs: 3_600_000, fetch: (async () => { throw new TypeError('offline') }) as any })
   offline.track('from-widget')
   await offline.close()
@@ -86,17 +86,31 @@ test('two senders of one project sharing a storage never send each other\'s even
   await widgetAgain.close()
 })
 
-test('a replacement key starts clean: it does not inherit the refused key\'s stopped state', async () => {
+const offline = (key: string, storage: StorageAdapter) =>
+  createClient({ key, endpoint, storage, fetch: (async () => { throw new TypeError('offline') }) as any, flushIntervalMs: 3_600_000 })
+
+test('rotating a key keeps its queue and identity: the same source under another key is the same sender', async () => {
   const storage = memoryStorage()
-  const refused = createClient({ key: keyFor('a', '1'), endpoint, storage, fetch: server(401).fetch, flushIntervalMs: 3_600_000 })
-  refused.track('lost')
-  assert.equal((await refused.flush()).stopped, true)
-  await refused.close()
+  const before = offline(keyFor('a', '1'), storage)
+  before.track('queued_under_old_key')
+  await before.close()
   const s = server()
-  const replacement = createClient({ key: keyFor('a', '2'), endpoint, storage, fetch: s.fetch, flushIntervalMs: 3_600_000 })
-  replacement.track('works')
-  const result = await replacement.flush()
-  assert.equal(result.stopped, false)
-  assert.deepEqual(s.all(), ['works'])
-  await replacement.close()
+  const rotated = createClient({ key: keyFor('a', '2'), endpoint, storage, fetch: s.fetch, flushIntervalMs: 3_600_000 })
+  rotated.track('under_new_key')
+  await rotated.flush()
+  assert.deepEqual(s.sent, [{ key: keyFor('a', '2'), events: ['queued_under_old_key', 'under_new_key'] }])
+  await rotated.close()
+})
+
+test('another project with the same source does not share a queue', async () => {
+  const storage = memoryStorage()
+  const first = offline(keyFor('a', '1'), storage)
+  first.track('project_a')
+  await first.close()
+  const s = server()
+  const other = createClient({ key: keyFor('b', '1'), endpoint, storage, fetch: s.fetch, flushIntervalMs: 3_600_000 })
+  other.track('project_b')
+  await other.flush()
+  assert.deepEqual(s.all(), ['project_b'])
+  await other.close()
 })

@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
-- **Feedback widget**: a small "Powered by Slurp" link under the form, opening slurp.run in a new tab without telling it which site it came from. `poweredBy: false` hides it. The Send button also keeps its accent colour in dark mode. (`@hitslop/slurp-sdk` 0.1.2)
+- **The agent skill and the setup page cover every way to send events.** `slurp agent setup` now teaches an agent where the endpoint and key come from (`slurp init` creates the project and its first publishable key; `slurp project setup` shows them again), the web feedback widget, the Segment and Sentry SDKs in Python, and the GitHub, RevenueCat, Stripe and generic webhooks with the `releases` and `revenue` views. A test keeps it that way.
+- **Feedback widget** (`@hitslop/slurp-sdk` 0.1.2): a small "Powered by Slurp" link under the form, which opens slurp.run in a new tab without telling it which site it came from. `poweredBy: false` hides it. The Send button also keeps its accent colour in dark mode.
 
 ## 0.1.1
 

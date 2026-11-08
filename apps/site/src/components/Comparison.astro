@@ -15,6 +15,9 @@ const a=assumptions;
 .compare thead th:first-child{text-align:left}
 .compare td.muted{color:var(--muted);font-size:13px}
 .compare tr.self{background:var(--rail)}
+/* On a phone the table scrolls sideways: the product name stays put, and the shadows at the edges say there is more. */
+.table-scroll{background:linear-gradient(to right,#fff 30%,#fff0),linear-gradient(to left,#fff 30%,#fff0) 100% 0,radial-gradient(farthest-side at 0 50%,#17191c1f,#17191c00),radial-gradient(farthest-side at 100% 50%,#17191c1f,#17191c00) 100% 0;background-repeat:no-repeat;background-size:36px 100%,36px 100%,14px 100%,14px 100%;background-attachment:local,local,scroll,scroll}
+@media(max-width:700px){.compare th,.compare td{padding:11px 12px}.compare tbody th,.compare thead th:first-child{position:sticky;left:0;background:#fff;box-shadow:1px 0 0 var(--rule)}.compare tr.self th{background:var(--rail)}}
 .compare tr.self td{font-weight:650}
 .compare td.range{font-weight:650;color:var(--red)}
 </style>

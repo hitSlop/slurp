@@ -44,7 +44,8 @@ if(location.hash==='#deploy')open('deploy');
 </script>
 <style>
 .deploy-actions{display:inline-flex;align-items:center;gap:8px 18px;flex-wrap:wrap}
-.deploy-official{display:inline-block;line-height:0;border-radius:6px}
+.deploy-official{display:inline-block;line-height:0;border-radius:6px;position:relative}
+.deploy-official::after{content:'';position:absolute;inset:-3px 0}
 .deploy-official img{display:block;width:184px;height:39px}
 .deploy-cli{border:0;background:none;padding:6px 2px;font:550 13px var(--body);color:var(--muted);text-decoration:underline;text-underline-offset:4px;cursor:pointer}
 .deploy-cli:hover{color:var(--ink)}

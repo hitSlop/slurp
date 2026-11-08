@@ -14,11 +14,25 @@ if (slurpKey) {
     const click = clickEvent(target);
     if (click) track(click.event, click.properties);
   }, true);
-  // The widget is not needed to read the page, so it loads after it.
-  void import('@hitslop/slurp-sdk/feedback').then(({ mountFeedback }) => mountFeedback({
-    accent: '#e8002a',
-    title: 'Send feedback about Slurp',
-    placeholder: 'What is confusing, missing or broken?',
-    data: () => ({ path: location.pathname }),
-  }));
+  // The widget is not needed to read the page, so it loads after it. On a phone its floating button would sit on top of the text, so
+  // there it is hidden and the "Feedback" entry in the header opens the same form.
+  const compact = matchMedia('(max-width: 900px)');
+  let widget: { open(): void; destroy(): void } | undefined;
+  const mount = () => import('@hitslop/slurp-sdk/feedback').then(({ mountFeedback }) => {
+    widget?.destroy();
+    widget = mountFeedback({
+      accent: '#e8002a',
+      theme: 'light', // the site is always light, whatever the visitor's system setting
+      title: 'Send feedback about Slurp',
+      placeholder: 'What is confusing, missing or broken?',
+      data: () => ({ path: location.pathname }),
+      button: !compact.matches,
+    });
+    for (const entry of document.querySelectorAll<HTMLElement>('[data-feedback-open]')) entry.hidden = !compact.matches;
+  });
+  void mount();
+  compact.addEventListener('change', () => void mount());
+  document.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('[data-feedback-open]')) widget?.open();
+  });
 }

@@ -2,7 +2,10 @@
 use crate::terminal::Terminal;
 use anyhow::{Result, bail};
 use slurp_app::error::{ErrorCode, Failure};
-use slurp_client::{connection, rpc};
+use slurp_client::{
+    api::{self, CallError, TokenScope},
+    connection,
+};
 
 pub use slurp_client::connection::environment_token;
 
@@ -13,12 +16,24 @@ pub fn token(backend: &str) -> Result<String> {
 }
 
 /// Ask the Worker what a token is (admin, or a project's secret or publishable key). An `Err` carries the Worker's error code
-/// (1000 or 1001 for a token it does not accept) so callers can tell "rejected" from "could not reach".
-pub async fn whoami(backend: &str, token: &str) -> Result<rpc::WhoamiResponse, rpc::Error> {
-    let http = slurp_client::http_client().map_err(|e| rpc::Error::Transport(e.to_string()))?;
-    rpc::AuthClient::new(backend, http, Some(token.to_owned()))
-        .whoami(&rpc::WhoamiRequest {})
-        .await
+/// (`unauthenticated` or `forbidden` for a token it does not accept; see [`slurp_app::project_setup::is_rejected`]) so callers can
+/// tell "rejected" from "could not reach".
+pub async fn whoami(backend: &str, token: &str) -> Result<api::WhoamiResponse, CallError> {
+    let http = slurp_client::http_client().map_err(|e| CallError::Api {
+        status: 0,
+        code: None,
+        message: e.to_string(),
+    })?;
+    api::call::<api::Whoami>(&http, backend, token, &api::WhoamiRequest {}).await
+}
+
+/// How a token scope reads in messages.
+pub fn scope_name(scope: TokenScope) -> &'static str {
+    match scope {
+        TokenScope::Admin => "admin",
+        TokenScope::Secret => "secret",
+        TokenScope::Publishable => "publishable",
+    }
 }
 
 /// Make sure this computer is connected to a Worker and return `(backend, token)`.
@@ -31,7 +46,7 @@ pub async fn ensure(backend: &str, ui: &Terminal, no_open: bool) -> Result<(Stri
         Ok(token) => {
             let environment = environment_token().is_some();
             match whoami(backend, &token).await {
-                Ok(who) if who.scope == "admin" => {
+                Ok(who) if who.scope == TokenScope::Admin => {
                     ui.note(
                         "Worker connected",
                         &format!(
@@ -49,11 +64,11 @@ pub async fn ensure(backend: &str, ui: &Terminal, no_open: bool) -> Result<(Stri
                     if environment {
                         bail!(
                             "SLURP_TOKEN is a {} key for {backend}; this needs the Worker's admin token",
-                            who.scope
+                            scope_name(who.scope)
                         );
                     }
                 }
-                Err(error) if matches!(error.code(), Some(1000 | 1001)) => {
+                Err(error) if slurp_app::project_setup::is_rejected(&error) => {
                     if environment {
                         bail!(
                             "SLURP_TOKEN was rejected by {backend}; use the Worker's admin token"

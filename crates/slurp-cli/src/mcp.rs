@@ -18,6 +18,9 @@ use std::{
 };
 
 const SERVER_NAME: &str = "slurp";
+/// How the send tools run the CLI: as the source `mcp`, so its events carry `sender = "mcp"` and are never mistaken for a
+/// real user's activity.
+const SEND: [&str; 4] = ["send", "--stdin", "--source", "mcp"];
 /// The protocol versions this server implements, newest first. A client that asks for another version is answered with the
 /// newest one here and decides for itself whether it can work with that (MCP's version negotiation).
 const SUPPORTED_PROTOCOLS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -151,8 +154,8 @@ impl Server {
             ),
             tool(
                 "sync",
-                "Download new archives from your Worker into the local database. Events become readable about 10 minutes after they are sent.",
-                json!({"type": "object", "properties": {}}),
+                "Download new archives from your Worker into the local database. Events become readable about 10 minutes after they are sent; pass now to ask the Worker to publish what it has buffered first (needs the admin token).",
+                json!({"type": "object", "properties": {"now": {"type": "boolean", "description": "Publish buffered events first, so events sent a moment ago are included. Needs the admin token. Default false."}}}),
             ),
             tool(
                 "health",
@@ -178,7 +181,7 @@ impl Server {
         if self.allow_send {
             tools.push(tool(
                 "send_event",
-                "Send one event to the real event stream (the project's publishable key). Records are marked context.source = \"mcp\". Only send events the user asked for.",
+                "Send one event to the real event stream (the project's publishable key). Events carry sender = \"mcp\". Only send events the user asked for.",
                 json!({"type": "object", "properties": {
                     "event": {"type": "string", "description": "Event name, 1 to 200 characters."},
                     "data": {"type": "object", "description": "Event properties as a JSON object."},
@@ -188,7 +191,7 @@ impl Server {
             ));
             tools.push(tool(
                 "identify",
-                "Link a user to their traits. Records are marked context.source = \"mcp\". Only send what the user asked for.",
+                "Link a user to their traits. Events carry sender = \"mcp\". Only send what the user asked for.",
                 json!({"type": "object", "properties": {
                     "user_id": {"type": "string"},
                     "traits": {"type": "object", "description": "User traits as a JSON object."},
@@ -228,7 +231,11 @@ impl Server {
                 let query = string_arg(args, "query")?;
                 w.query(query.trim().trim_end_matches(';'))
             }
-            "sync" => self.run_cli(&["sync"], None),
+            "sync" => {
+                let now = args.get("now").and_then(Value::as_bool).unwrap_or(false);
+                let command: &[&str] = if now { &["sync", "--now"] } else { &["sync"] };
+                self.run_cli(command, None)
+            }
             "health" => health::run(w),
             "report_check" => self.report_check(&path_arg(args, "file")?),
             "report_build" => self.report_build(args),
@@ -237,12 +244,12 @@ impl Server {
             }
             "send_event" => {
                 let line = record("track", Some(string_arg(args, "event")?), args, "data")?;
-                self.run_cli(&["send", "--stdin"], Some(format!("{line}\n")))?;
+                self.run_cli(&SEND, Some(format!("{line}\n")))?;
                 Ok(json!({"sent": true, "record": serde_json::from_str::<Value>(&line)?}))
             }
             "identify" => {
                 let line = record("identify", None, args, "traits")?;
-                self.run_cli(&["send", "--stdin"], Some(format!("{line}\n")))?;
+                self.run_cli(&SEND, Some(format!("{line}\n")))?;
                 Ok(json!({"sent": true, "record": serde_json::from_str::<Value>(&line)?}))
             }
             other => bail!("unknown tool: {other}"),
@@ -357,14 +364,13 @@ fn describe_schema(w: &Workspace) -> Result<Value> {
     }))
 }
 
-/// One event or identify record, marked as coming from MCP so it is never mistaken for a real user's activity.
+/// One event or identify record. The source is not in the record: `slurp send --source mcp` sends it with the `mcp` key.
 fn record(kind: &str, event: Option<String>, args: &Value, data_key: &str) -> Result<String> {
     let mut record = json!({
         "id": uuid::Uuid::now_v7().to_string(),
         "type": kind,
         "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "data": match args.get(data_key) { Some(v) if v.is_object() => v.clone(), None | Some(Value::Null) => json!({}), _ => bail!("{data_key} must be a JSON object") },
-        "context": {"source": "mcp"},
     });
     if let Some(event) = event {
         record["event"] = json!(event);

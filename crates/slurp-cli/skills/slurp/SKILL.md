@@ -2,7 +2,7 @@
 name: slurp
 description: Sync self-hosted events, query local DuckDB and author reports.
 ---
-Use slurp status and slurp describe before analysis, and slurp health to see data problems (spelling variants, wrong clocks, double tracking, bots) before trusting a number. For people use events_with_person and its person_id instead of user_id alone (it joins anonymous visitors to their identified user); calendar(), biz_date(), pct() and session_start() are available in every query. Run slurp sync to fetch published archives. The Worker seals new archives about every 10 minutes by default; accepted events may not yet be visible. Send and sync may return optional project-level publication estimates; these are not delivery guarantees. Use --json for full structured query results and publication metadata. Credentials belong in the private machine store or environment, never reports or source control. The default machine store is ~/.slurp/credentials.json with owner-only permissions; ordinary sync/send must not invoke Keychain. SLURP_TOKEN / SLURP_READ_KEY override the saved Worker connection.
+Use slurp status and slurp describe before analysis, and slurp health to see data problems (spelling variants, wrong clocks, double tracking, bots) before trusting a number. For people use events_with_person and its person_id instead of user_id alone (it joins anonymous visitors to their identified user); calendar(), biz_date(), pct() and session_start() are available in every query. Run slurp sync to fetch published archives. The Worker seals new archives about every 10 minutes by default; accepted events may not yet be visible. `slurp sync --now` (admin token) first asks the Worker to publish what it has buffered, so events sent a moment ago are included; a secret key cannot do that. Sync never stops on a bad line: events set aside while importing (an id reused with different content, a line of the wrong shape, archives retention deleted) are counted in its output and listed in `_slurp.problems` and by `slurp health`. Use --json for full structured query results. Credentials belong in the private machine store or environment, never reports or source control. The default machine store is ~/.slurp/credentials.json with owner-only permissions; ordinary sync/send must not invoke Keychain. SLURP_TOKEN / SLURP_READ_KEY override the saved Worker connection.
 Query events using slurp sql 'SELECT ...' or duckdb -readonly .slurp/data/events.duckdb. Payload properties remain JSON in data. Do not modify events or _slurp tables. Save business logic as SQL files, not importer changes.
 Reports contain Markdown, named ```sql NAME fences and YAML chart, metric, table fences with query: NAME. Chart spec is Vega-Lite without external data. Aggregate in SQL; metric queries return one row. Build with slurp report build FILE --out NEW_DIRECTORY --png --pdf. Add `purpose:` (one line) to the front matter, and `width: half` or `width: third` to a block to place two or three side by side. Choose colors with --theme ID or --dark, or write a theme .json; run `slurp report show list` for ids. A custom page template is a .css file (--style FILE; start from `slurp report show style grid`). Run `slurp report check FILE` before building: it lists every mistake with its line (unknown keys, queries or columns, bad SQL or chart specs), and `build` refuses a report that fails it. Metrics take `decimals`, `prefix`, `suffix` and `compact`, tables take `limit` and `formats`; blocks must not be nested in lists or quotes. PNG/PDF cannot draw CJK, Arabic or emoji (the build warns); the HTML can. For retention, funnels and sessions use DuckDB's behavioral functions (retention(), window_funnel(), sessionize(), sequence_match()): add `extensions: [behavioral]` to a report's front matter, or pass `--extension behavioral` to slurp sql. The first use downloads the extension, so it needs a network connection once. Inspect outputs before delivering. Reports contain selected query results, so review before sharing.
 
@@ -14,7 +14,7 @@ Use DuckDB 2.x. Run saved queries with `slurp sql --file query.sql`. Preserve me
 
 ## First-run commands
 
-Inside an initialized app or its subfolders, use `slurp send EVENT` and `slurp identify USER_ID`. The nearest parent project supplies the project and (via your saved Worker connection) its publishable key; no database is needed to send. Every event carries the name of the key that sent it as `sender`. `--project` selects an exact project folder; `--to PROJECT` sends to a project by id or name instead. Never guess a project from the global registry.
+Inside an initialized app or its subfolders, use `slurp send EVENT` and `slurp identify USER_ID`. The nearest parent project supplies the project and (via your saved Worker connection) the publishable key of the source `cli`; no database is needed to send. `--source NAME` sends as another source. Every event carries the source of the key that sent it as `sender`. `--project` selects an exact project folder; `--to PROJECT` sends to a project by id or name instead. Never guess a project from the global registry.
 
 To bring in GitHub releases and deploys, Stripe events or RevenueCat purchases, an owner runs `slurp project webhook PROJECT github` (or `stripe`, `revenuecat`, `generic`) and pastes the URL and secret into the provider; the events then carry `sender = 'github'` (or the provider's name), the `releases` view lists releases and deployments so a metric change can be lined up with the release that caused it, and the `revenue` view lists RevenueCat purchases, renewals and refunds (filter `environment = 'PRODUCTION'`). Never put the printed secret in a skill or in Git.
 
@@ -26,13 +26,13 @@ For noninteractive work, use explicit `init --connect PROJECT` with a supplied r
 
 ## Collection limits
 
-HTTP 429 and 503 are retryable: honor `Retry-After` and back off. HTTP 401 and 403 are terminal for that key; surface them to the owner instead of creating another key. If the Worker hits Cloudflare's daily request cap on the Free plan, ingestion pauses and the SDK retries; ask the owner before upgrading the Cloudflare plan. `slurp status` shows archive coverage and pending publication. Read keys cannot create projects or keys.
+HTTP 429 and 503 are retryable: honor `Retry-After` and back off. HTTP 401 and 403 are terminal for that key; surface them to the owner instead of creating another key. If the Worker hits Cloudflare's daily request cap on the Free plan, ingestion pauses and the SDK retries; ask the owner before upgrading the Cloudflare plan. `slurp status` shows the local event count, the last archive imported and any problems set aside. Read keys cannot create projects or keys.
 
 <!-- onboarding:generated -->
 
 ## Instrument and connect
 
-Install the SDK with npm install @hitslop/slurp-sdk. Replace placeholders with the setup values of your project: `slurp init` creates the project and its first publishable key and prints the ingest URL and that key (`slurp project setup PROJECT` prints them again). An app sends events with exactly those two values; the key itself says which project and which sender it is for. To collect what users say, mount the feedback widget (below); to keep a Segment or Sentry SDK the app already uses, change its host or DSN; to bring in GitHub, Stripe or RevenueCat, use a webhook. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup HTML is private.
+Install the SDK with npm install @hitslop/slurp-sdk. Replace placeholders with the setup values of your project: `slurp init` creates the project and its first publishable key and prints the ingest URL and that key (`slurp project setup PROJECT` prints them again). An app sends events with exactly those two values; the key itself says which project and which source it is for. To collect what users say, mount the feedback widget (below); to keep a Segment or Sentry SDK the app already uses, change its host or DSN; to bring in GitHub, Stripe or RevenueCat, use a webhook. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup HTML is private.
 
 ### sdk
 
@@ -52,10 +52,10 @@ await flush(); // Node: flush before exiting
 
 ```sh
 # slurp init creates your project and its first publishable key, and prints the ingest URL and that key.
-# Print them again, and make one key per sender (web, ios, github): its name is stamped on every event as `sender`.
+# Print them again, and make one key per source (web, ios, github): the source is stamped on every event as `sender`. Rotating a key means creating another for the same source and revoking the old one.
 slurp project setup YOUR_PROJECT_ID
 slurp project key list YOUR_PROJECT_ID --scope publishable
-slurp project key create YOUR_PROJECT_ID --scope publishable --name ios
+slurp project key create YOUR_PROJECT_ID --scope publishable --source ios
 ```
 
 ### feedback
@@ -94,7 +94,7 @@ slurp sync
 ### key
 
 ```sh
-slurp --backend YOUR_BACKEND project key create YOUR_PROJECT_ID --scope secret --name grok
+slurp --backend YOUR_BACKEND project key create YOUR_PROJECT_ID --scope secret --name grok   # --name labels a secret key
 ```
 
 ### hosting
@@ -177,7 +177,8 @@ sentry_sdk.init(dsn='https://YOUR_PUBLISHABLE_KEY@YOUR_HOST/1')
 
 ```sh
 # An owner runs one of these; each prints a URL and a secret to paste into the provider. Never put the secret in Git.
-# Events carry sender = the provider name. GitHub: releases and deployments -> the `releases` view.
+# Events carry sender = the provider name. The Worker prints the provider's setup steps. To rotate a secret, revoke the webhook's key
+# (slurp project key revoke) and run the command again for a new URL and secret. GitHub: releases and deployments -> the `releases` view.
 # RevenueCat: purchases and renewals -> the `revenue` view (filter environment = 'PRODUCTION').
 slurp project webhook YOUR_PROJECT_ID github
 slurp project webhook YOUR_PROJECT_ID revenuecat    # paste the secret as RevenueCat's Authorization header value

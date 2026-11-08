@@ -61,13 +61,13 @@ fn fake_worker(purges: Arc<Mutex<Vec<String>>>) -> u16 {
             let text = String::from_utf8_lossy(&buffer).into_owned();
             let request_line = text.lines().next().unwrap_or_default().to_owned();
             let body = if request_line.contains("/v1/health") {
-                r#"{"ok":true,"apiVersion":"v0.6.0","configured":true,"build":"fakebuild"}"#
-            } else if request_line.contains("/rpc/Auth/Whoami") {
+                r#"{"ok":true,"apiVersion":2,"configured":true,"build":"fakebuild"}"#
+            } else if request_line.contains("/v1/rpc/Whoami") {
                 r#"{"scope":"admin"}"#
             } else if request_line.contains("/v1/admin/purge") {
                 purges.lock().expect("lock").push(text.clone());
                 r#"{"ok":true,"projects":0,"archives":0,"strays":0}"#
-            } else if request_line.contains("/rpc/Source/ListSources") {
+            } else if request_line.contains("/v1/rpc/ListProjects") {
                 r#"{"projects":[]}"#
             } else {
                 r#"{}"#

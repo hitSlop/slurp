@@ -11,7 +11,7 @@ use slurp_app::{
     setup::{self, PageContext},
     storage, system,
 };
-use slurp_client::{config, rpc};
+use slurp_client::{api, config};
 use std::path::{Path, PathBuf};
 
 #[derive(Args, Default)]
@@ -49,6 +49,9 @@ pub struct Options {
     #[arg(long)]
     no_agent_notes: bool,
 }
+
+/// The source of the key `slurp init` hands to an app's SDK.
+const DEFAULT_SOURCE: &str = "default";
 
 fn validate_database(root: &Path, database: &Path) -> Result<()> {
     ensure!(
@@ -214,14 +217,10 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
         if !offline_binding {
             let (backend, access) =
                 runtime.block_on(login::ensure(&backend, &ui, options.no_open))?;
-            let projects = rpc::ProjectClient::new(
-                &backend,
-                slurp_client::http_client()?,
-                Some(access.clone()),
-            );
+            let projects = project_setup::Api::new(&backend, &access)?;
             if let Some(reference) = &project {
                 let found = runtime
-                    .block_on(projects.get_project(&rpc::GetProjectRequest {
+                    .block_on(projects.call::<api::GetProject>(&api::GetProjectRequest {
                         project: reference.clone(),
                     }))
                     .map_err(project_setup::service_error)?;
@@ -229,7 +228,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                 ingest_url = Some(found.ingest_url);
             } else {
                 let available = runtime
-                    .block_on(projects.list_projects(&rpc::ListProjectsRequest {}))
+                    .block_on(projects.call::<api::ListProjects>(&api::ListProjectsRequest {}))
                     .map_err(project_setup::service_error)?
                     .projects;
                 if title.is_none() && !ui.interactive {
@@ -254,7 +253,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                     if choice != "new" {
                         let found = available[choice.parse::<usize>()?].clone();
                         let info = runtime
-                            .block_on(projects.get_project(&rpc::GetProjectRequest {
+                            .block_on(projects.call::<api::GetProject>(&api::GetProjectRequest {
                                 project: found.id.clone(),
                             }))
                             .map_err(project_setup::service_error)?;
@@ -336,13 +335,15 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
             // Creating is idempotent by name, so a retry or a second machine gets the same project and the same key.
             let name = title.as_deref().context("project name")?;
             let created = runtime
-                .block_on(client.as_ref().context("project client")?.create_project(
-                    &rpc::CreateProjectRequest {
-                        name: project_setup::alias(name),
-                        title: Some(name.into()),
-                        geo_enabled: Some(true),
-                    },
-                ))
+                .block_on(
+                    client
+                        .as_ref()
+                        .context("project client")?
+                        .call::<api::CreateProject>(&api::CreateProjectRequest {
+                            name: project_setup::alias(name),
+                            title: Some(name.into()),
+                        }),
+                )
                 .map_err(project_setup::service_error)?;
             if !created.created {
                 ui.note(
@@ -355,12 +356,14 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
             }
             project = Some(created.project.id);
             ingest_url = Some(created.ingest_url);
+            // The key `CreateProject` returns is for the source `default`.
             sdk_key = Some(created.publishable_key);
         } else if let Some(client) = &client {
             sdk_key = runtime
-                .block_on(project_setup::publishable_key(
+                .block_on(project_setup::source_key(
                     client,
                     project.as_deref().context("project")?,
+                    DEFAULT_SOURCE,
                 ))
                 .ok();
         }
@@ -514,9 +517,13 @@ fn finish(
     Ok(result)
 }
 
-/// The project's first active publishable key, read from the Worker with this machine's saved connection.
+/// The project's publishable key for source `default`, read from the Worker with this machine's saved connection.
 fn fetch_key(backend: &str, project: &str) -> Result<String> {
     let token = login::token(backend)?;
-    let client = rpc::ProjectClient::new(backend, slurp_client::http_client()?, Some(token));
-    tokio::runtime::Runtime::new()?.block_on(project_setup::publishable_key(&client, project))
+    let client = project_setup::Api::new(backend, &token)?;
+    tokio::runtime::Runtime::new()?.block_on(project_setup::source_key(
+        &client,
+        project,
+        DEFAULT_SOURCE,
+    ))
 }

@@ -1,5 +1,5 @@
 {
- "description": "Per-record validation vectors. line is the exact UTF-8 text (or line_b64 for bytes that are not valid UTF-8).",
+ "description": "Per-record validation vectors (docs/contracts.md, \"Each record\"). line is the exact UTF-8 text (or line_b64 for bytes that are not valid UTF-8); valid says whether a line of that text is accepted as a record. The Worker and the CLI both run these.",
  "records": [
   {
    "name": "base track with wide number and CJK text",
@@ -22,9 +22,9 @@
    "valid": false
   },
   {
-   "name": "duplicate key via escape at depth 2",
+   "name": "duplicate key via escape at depth 2 is valid (JSON.parse accepts it)",
    "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\":{\"wide\":1,\"\\u0077ide\":2,\"text\":\"雪\"}}",
-   "valid": false
+   "valid": true
   },
   {
    "name": "missing required fields",
@@ -52,29 +52,14 @@
    "valid": false
   },
   {
-   "name": "reserved received_at",
-   "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"received_at\":\"fake\",\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "valid": false
-  },
-  {
-   "name": "reserved received_seq",
-   "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"received_seq\":\"1\",\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "valid": false
-  },
-  {
-   "name": "client supplied context.geo",
-   "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"context\":{\"geo\":null},\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "valid": false
-  },
-  {
-   "name": "duplicate top-level id",
+   "name": "duplicate top-level id is valid (JSON.parse accepts it)",
    "line": "{\"id\":\"other\",\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "valid": false
+   "valid": true
   },
   {
-   "name": "duplicate key at depth 2",
+   "name": "duplicate key at depth 2 is valid (JSON.parse accepts it)",
    "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\":{\"wide\":1,\"wide\":2,\"text\":\"雪\"}}",
-   "valid": false
+   "valid": true
   },
   {
    "name": "null data",
@@ -189,6 +174,146 @@
   {
    "name": "invalid UTF-8 byte 0xFF in a string",
    "line_b64": "eyJpZCI6Im9uZSIsInR5cGUiOiJ0cmFjayIsImV2ZW50IjoicHVyY2hhc2UiLCJ0aW1lc3RhbXAiOiIyMDI2LTExLTAzVDAwOjAwOjAwWiIsImRhdGEiOnsid2lkZSI6OTAwNzE5OTI1NDc0MDk5MzEyMzQ1Njc4OSwidGV4dCI6Iv8ifX0=",
+   "valid": false
+  },
+  {
+   "name": "minimal track",
+   "line": "{\"event\":\"x\"}",
+   "valid": true
+  },
+  {
+   "name": "minimal identify",
+   "line": "{\"type\":\"identify\",\"user_id\":\"u\"}",
+   "valid": true
+  },
+  {
+   "name": "explicit track type only needs event",
+   "line": "{\"type\":\"track\",\"event\":\"x\"}",
+   "valid": true
+  },
+  {
+   "name": "surrounding whitespace is trimmed",
+   "line": "  \t{\"event\":\"x\"}\r",
+   "valid": true
+  },
+  {
+   "name": "fields the server owns are just fields",
+   "line": "{\"event\":\"x\",\"received_at\":\"fake\",\"sender\":\"someone\",\"geo\":{\"country\":\"ZZ\"},\"record\":1,\"context\":{\"geo\":{\"city\":\"nowhere\"}}}",
+   "valid": true
+  },
+  {
+   "name": "any other field is kept",
+   "line": "{\"event\":\"x\",\"plan\":null,\"n\":9007199254740993123456789}",
+   "valid": true
+  },
+  {
+   "name": "track without event",
+   "line": "{\"data\":{\"a\":1}}",
+   "valid": false
+  },
+  {
+   "name": "track with explicit type but no event",
+   "line": "{\"type\":\"track\",\"user_id\":\"u\"}",
+   "valid": false
+  },
+  {
+   "name": "identify with event but no user_id",
+   "line": "{\"type\":\"identify\",\"event\":\"x\"}",
+   "valid": false
+  },
+  {
+   "name": "explicit null id",
+   "line": "{\"event\":\"x\",\"user_id\":\"u\",\"id\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null type",
+   "line": "{\"event\":\"x\",\"user_id\":\"u\",\"type\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null timestamp",
+   "line": "{\"event\":\"x\",\"user_id\":\"u\",\"timestamp\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null data",
+   "line": "{\"event\":\"x\",\"user_id\":\"u\",\"data\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null context",
+   "line": "{\"event\":\"x\",\"user_id\":\"u\",\"context\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null user_id",
+   "line": "{\"event\":\"x\",\"user_id\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null anonymous_id",
+   "line": "{\"event\":\"x\",\"user_id\":\"u\",\"anonymous_id\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null session_id",
+   "line": "{\"event\":\"x\",\"user_id\":\"u\",\"session_id\":null}",
+   "valid": false
+  },
+  {
+   "name": "explicit null event",
+   "line": "{\"event\":null,\"user_id\":\"u\"}",
+   "valid": false
+  },
+  {
+   "name": "empty session_id",
+   "line": "{\"event\":\"x\",\"session_id\":\"\"}",
+   "valid": false
+  },
+  {
+   "name": "empty id",
+   "line": "{\"event\":\"x\",\"id\":\"\"}",
+   "valid": false
+  },
+  {
+   "name": "id is a number",
+   "line": "{\"event\":\"x\",\"id\":7}",
+   "valid": false
+  },
+  {
+   "name": "event is a number",
+   "line": "{\"event\":7}",
+   "valid": false
+  },
+  {
+   "name": "data is a string",
+   "line": "{\"event\":\"x\",\"data\":\"s\"}",
+   "valid": false
+  },
+  {
+   "name": "lone surrogate in a key",
+   "line": "{\"event\":\"x\",\"data\":{\"\\ud800\":1}}",
+   "valid": false
+  },
+  {
+   "name": "lone surrogate in a nested string",
+   "line": "{\"event\":\"x\",\"data\":{\"a\":[{\"b\":\"\\udc00\"}]}}",
+   "valid": false
+  },
+  {
+   "name": "lone surrogate in event",
+   "line": "{\"event\":\"\\ud800\"}",
+   "valid": false
+  },
+  {
+   "name": "empty object",
+   "line": "{}",
+   "valid": false
+  },
+  {
+   "name": "null root",
+   "line": "null",
    "valid": false
   }
  ]

@@ -1,5 +1,5 @@
 {
- "description": "Geo enrichment. normalize: input is request.cf. Rules (trusted ingress only; country uppercased and must be 2 letters, XX and T1 dropped; values <= 256 chars; provider/basis added). splice: geo is added to context without changing any other byte; the Go test requires wide numbers to survive.",
+ "description": "Geo from request.cf (docs/contracts.md, \"Archives\"): city, country and region, sorted by key. Values are trimmed and at most 256 characters; the country is uppercased and must be two letters, never XX or T1. Nothing else is added.",
  "normalize": [
   {
    "name": "full",
@@ -9,10 +9,8 @@
     "city": "Regina"
    },
    "geo": {
-    "basis": "request_ip",
     "city": "Regina",
     "country": "CA",
-    "provider": "cloudflare",
     "region": "Saskatchewan"
    }
   },
@@ -22,9 +20,7 @@
     "country": "ca"
    },
    "geo": {
-    "basis": "request_ip",
-    "country": "CA",
-    "provider": "cloudflare"
+    "country": "CA"
    }
   },
   {
@@ -34,9 +30,7 @@
     "city": "Nowhere"
    },
    "geo": {
-    "basis": "request_ip",
-    "city": "Nowhere",
-    "provider": "cloudflare"
+    "city": "Nowhere"
    }
   },
   {
@@ -59,9 +53,7 @@
     "city": "  Regina  "
    },
    "geo": {
-    "basis": "request_ip",
-    "city": "Regina",
-    "provider": "cloudflare"
+    "city": "Regina"
    }
   },
   {
@@ -71,9 +63,7 @@
     "country": "US"
    },
    "geo": {
-    "basis": "request_ip",
-    "country": "US",
-    "provider": "cloudflare"
+    "country": "US"
    }
   },
   {
@@ -88,40 +78,6 @@
    "name": "no cf at all",
    "cf": null,
    "geo": null
-  }
- ],
- "splice": [
-  {
-   "name": "no context: appended",
-   "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "geo": {
-    "country": "CA"
-   },
-   "expected": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"},\"context\":{\"geo\":{\"country\":\"CA\"}}}"
-  },
-  {
-   "name": "existing context: geo added, app preserved",
-   "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"context\":{\"app\":{\"version\":\"before\"}},\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "geo": {
-    "country": "CA"
-   },
-   "expected": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"context\":{\"app\":{\"version\":\"before\"},\"geo\":{\"country\":\"CA\"}},\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}"
-  },
-  {
-   "name": "empty context",
-   "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"context\":{},\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "geo": {
-    "country": "CA"
-   },
-   "expected": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"context\":{\"geo\":{\"country\":\"CA\"}},\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}"
-  },
-  {
-   "name": "whitespace inside context preserved",
-   "line": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"context\": { \"a\" : 1 } ,\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}",
-   "geo": {
-    "country": "CA"
-   },
-   "expected": "{\"id\":\"one\",\"type\":\"track\",\"event\":\"purchase\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"context\": { \"a\" : 1 ,\"geo\":{\"country\":\"CA\"}} ,\"data\":{\"wide\":9007199254740993123456789,\"text\":\"雪\"}}"
   }
  ]
 }

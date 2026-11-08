@@ -1,11 +1,13 @@
 {
- "description": "A batch is validated as a whole; one bad line rejects everything and names the line.",
+ "description": "A body is validated as a whole: any bad line rejects everything, and every bad line (up to 100) is listed by its 1-based line number, which counts blank lines. Blank lines are skipped; a trailing \\r is trimmed.",
  "cases": [
   {
    "name": "second line invalid",
    "body": "{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}\n{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud800\"}}",
    "ok": false,
-   "line": 2
+   "rejected": [
+    2
+   ]
   },
   {
    "name": "valid batch with trailing newline",
@@ -20,16 +22,35 @@
    "lines": 2
   },
   {
-   "name": "blank line in the middle is rejected",
-   "body": "{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}\n\n{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}",
+   "name": "blank lines are skipped but still counted",
+   "body": "{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}\n\n{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud800\"}}\n   \n{\"event\":1}",
    "ok": false,
-   "line": 2
+   "rejected": [
+    3,
+    5
+   ]
   },
   {
-   "name": "empty body is a no-op ack (Go: TrimRight then len==0)",
+   "name": "every bad line is listed",
+   "body": "{}\n{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}\nnot json\n[]\n{\"id\":\"two\",\"type\":\"identify\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"user_id\":\"alice\",\"data\":{\"plan\":null}}",
+   "ok": false,
+   "rejected": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "name": "empty body is accepted with nothing in it",
    "body": "\n",
    "ok": true,
    "lines": 0
+  },
+  {
+   "name": "a single object is a one-line body",
+   "body": "{\"event\":\"x\"}",
+   "ok": true,
+   "lines": 1
   }
  ]
 }

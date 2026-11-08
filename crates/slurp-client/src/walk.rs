@@ -31,6 +31,9 @@ enum Queued {
 }
 
 /// A cursor over the archives after `after`, up to the newest one published when the walk first listed.
+///
+/// The head is captured once, from the first listing. Archives published while the walk runs are left for the next walk, even
+/// when a later page lists them.
 pub struct Walk<'a> {
     remote: &'a dyn Remote,
     after: Option<u64>,
@@ -114,8 +117,8 @@ impl<'a> Walk<'a> {
     /// List the next page and queue what it holds.
     async fn list_page(&mut self) -> Result<()> {
         let page = self.remote.list(self.after, self.page_size).await?;
-        let head = page.coverage.last.unwrap_or(0);
-        self.head = Some(head);
+        // The head is fixed by the first listing. Later pages never raise it, so a busy stream cannot keep a sync running.
+        let head = *self.head.get_or_insert(page.coverage.last.unwrap_or(0));
         // A fresh walk starts at the oldest retained archive: nothing before it was ever expected.
         let after = *self
             .after
@@ -144,6 +147,9 @@ mod tests {
     use std::path::Path;
 
     struct Fake {
+        /// When set, `coverage.last` is this on the first call to `list` and one higher on every later call, as if archives
+        /// were published meanwhile (the archives themselves are all listed).
+        growing_head: Option<(u64, std::sync::atomic::AtomicU64)>,
         /// (info, body) for every archive still on the Worker, in order.
         archives: Vec<(api::ArchiveInfo, Vec<u8>)>,
         corrupt: bool,
@@ -165,6 +171,7 @@ mod tests {
     /// Archives `first..=last` are retained.
     fn fake(first: u64, last: u64) -> Fake {
         Fake {
+            growing_head: None,
             archives: (first..=last).map(archive).collect(),
             corrupt: false,
             missing_on_download: None,
@@ -179,6 +186,12 @@ mod tests {
         ) -> Result<api::ListArchivesResponse, RemoteError> {
             let first = self.archives.first().map(|(a, _)| a.seq);
             let last = self.archives.last().map(|(a, _)| a.seq);
+            let last = match &self.growing_head {
+                Some((head, calls)) => {
+                    Some(head + calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+                }
+                None => last,
+            };
             let start = after.unwrap_or(first.unwrap_or(1).saturating_sub(1));
             let gap = first
                 .filter(|first| after.is_some_and(|after| after + 1 < *first))
@@ -328,5 +341,17 @@ mod tests {
         remote.corrupt = true;
         let mut walk = Walk::new(&remote, None, 10);
         assert!(message(drain(&mut walk).await).contains("verification"));
+    }
+
+    #[tokio::test]
+    async fn the_walk_ends_at_the_head_it_first_saw_even_as_newer_archives_are_published() {
+        let mut remote = fake(1, 10);
+        remote.growing_head = Some((3, std::sync::atomic::AtomicU64::new(0)));
+        let mut walk = Walk::new(&remote, None, 2);
+        assert_eq!(
+            drain(&mut walk).await.unwrap(),
+            ["archive 1", "archive 2", "archive 3"]
+        );
+        assert_eq!(walk.position(), Some(3));
     }
 }

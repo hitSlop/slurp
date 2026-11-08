@@ -27,7 +27,7 @@ struct Cli {
     #[arg(short = 'o', long, global = true, value_parser = ["auto", "text", "json"], default_value = "auto")]
     output: String,
     /// Select an exact project folder instead of finding the nearest parent project.
-    #[arg(long = "project", global = true)]
+    #[arg(long = "project", value_name = "PATH", global = true)]
     workspace: Option<PathBuf>,
     #[command(subcommand)]
     command: Operation,

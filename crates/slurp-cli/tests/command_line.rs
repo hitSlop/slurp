@@ -36,6 +36,7 @@ fn help_lists_local_and_worker_commands_in_one_place() {
         );
     }
     assert!(help.contains("--backend"), "{help}");
+    assert!(slurp(&["send", "--help"]).stdout.windows(14).any(|w| w == b"--project <PAT"), "the folder option is documented as a PATH");
 }
 
 #[test]

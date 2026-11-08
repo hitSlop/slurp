@@ -27,6 +27,7 @@ fs2.workspace = true
 futures = "0.3"
 async-trait = "0.1"
 flate2 = "1"
+ts-rs = "12"
 
 keyring = { version = "3", features = ["apple-native", "linux-native", "crypto-rust"] }
 libc = "0.2"

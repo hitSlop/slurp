@@ -3,6 +3,7 @@
 #[path = "slurp.gen.rs"]
 pub mod rpc;
 
+pub mod api;
 pub mod connection;
 
 mod http;

@@ -3,8 +3,8 @@ import type { Config } from '../config.ts'
 import type { IngestResult } from '../project.ts'
 import { type Bad, type Geo, type Line, MAX_REJECTED, normalizeGeo, recordError } from '../record.ts'
 
-/** A publishable key resolved: its project and the source it sends as (taken from the stored key). */
-export interface Sender { project: string; source: string }
+/** Who is sending: the project and the key as presented. The project object checks the key again when it enqueues, and takes the source from the stored key. */
+export interface Sender { project: string; token: string }
 
 /** What the adapters need from the Worker: key lookup, the ingest path and webhook secrets. */
 export interface Host {
@@ -30,10 +30,10 @@ export const json = (status: number, body: unknown, extra: Record<string, string
 export const preflight = (methods: string, allowHeaders: string) =>
   new Response(null, { status: 204, headers: { ...CORS, 'access-control-allow-methods': methods, 'access-control-allow-headers': allowHeaders, 'access-control-max-age': '86400' } })
 
-/** The publishable key behind a token (any other kind of credential is null). */
-export async function publishable(host: Host, token: string | null | undefined): Promise<Sender | null> {
+/** The publishable key behind a token (any other kind of credential is null): an early check, so a bad key is refused before its body is read. */
+export async function publishable(host: Host, token: string | null | undefined): Promise<(Sender & { source: string }) | null> {
   const auth = token?.startsWith('slurp_pk_') ? await host.authenticate(token) : null
-  return auth?.kind === 'key' && auth.scope === 'publishable' ? { project: auth.project, source: auth.source! } : null
+  return auth?.kind === 'key' && auth.scope === 'publishable' ? { project: auth.project, token: token!, source: auth.source! } : null
 }
 
 /** Request location from Cloudflare's own metadata, never from client-supplied headers. The project's GEO setting decides whether it is stored. */
@@ -77,7 +77,8 @@ export const ingestFailure = (res: Extract<IngestResult, { ok: false }>) =>
 /**
  * The one way events enter: validate every line, then store the valid ones. With `invalid: 'fail'` any bad line rejects the whole request
  * (400 listing every bad line). With `'skip'` bad lines are dropped and reported, because Segment and Sentry SDKs drop a whole request on a
- * 400. Returns a Response for a failure, or what was stored (nothing is stored when no line is valid).
+ * 400. Returns a Response for a failure, or what was stored (nothing is stored when no line is valid). The key is checked by the
+ * project object even when nothing is valid, so a refused key is never answered 200.
  */
 export async function submit(host: Host, sender: Sender, lines: Line[], opts: { invalid: 'skip' | 'fail'; geo: Geo | null }): Promise<Response | { accepted: number; rejected: Bad[] }> {
   const valid: string[] = []
@@ -89,7 +90,6 @@ export async function submit(host: Host, sender: Sender, lines: Line[], opts: { 
     else if (opts.invalid === 'fail') break
   }
   if (rejected.length && opts.invalid === 'fail') return json(400, { error: 'invalid records', rejected })
-  if (valid.length === 0) return { accepted: 0, rejected }
   const result = await host.ingest(sender, valid, opts.geo)
   return result.ok ? { accepted: result.accepted, rejected } : ingestFailure(result)
 }

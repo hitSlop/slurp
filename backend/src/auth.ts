@@ -27,13 +27,18 @@ export function presentedToken(req: Request, allowQueryKey = false): string | nu
   return token
 }
 
+/** The project a key names (from its text only: whether the key is live is the project's to say), or null for anything that is not a key. */
+export const projectOfKey = (token: string): string | null => {
+  const hex = PUBLISHABLE_KEY.exec(token)?.[1] ?? SECRET_KEY.exec(token)?.[1]
+  return hex ? 'prj_' + hex : null
+}
+
 /** The principal for a token, or null. The source and label come from the stored key, never from the text of the token. */
 export async function authenticate(env: Env, token: string | null | undefined): Promise<Auth | null> {
   if (!token) return null
   if (isAdmin(token, env)) return { kind: 'admin' }
-  const hex = PUBLISHABLE_KEY.exec(token)?.[1] ?? SECRET_KEY.exec(token)?.[1]
-  if (!hex) return null
-  const project = 'prj_' + hex
+  const project = projectOfKey(token)
+  if (!project) return null
   const principal = await env.PROJECT.get(env.PROJECT.idFromName(project)).authorize(token)
   return principal ? { kind: 'key', project, ...principal } : null
 }

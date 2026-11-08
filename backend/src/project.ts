@@ -10,7 +10,7 @@ import { type Env, randomHex, sha256Hex } from './util.ts'
 /** What a presented key may do: its scope, and the source it sends as (publishable) or the label it carries (secret). */
 export type Principal = { scope: 'publishable' | 'secret'; keyId: string; source?: string; name?: string }
 export type KeyRow = { key_id: string; scope: 'publishable' | 'secret'; source: string | null; name: string | null; plain: string | null; created_at: string; revoked_at: string | null }
-export type IngestResult = { ok: true; accepted: number } | { ok: false; status: 429 | 503; reason: string; retryAfter: number }
+export type IngestResult = { ok: true; accepted: number } | { ok: false; status: 401 | 403 | 429 | 503; reason: string; retryAfter: number }
 
 export const SOURCE = /^[a-z][a-z0-9_]{0,31}$/
 /** One stored chunk is at most this many bytes. */
@@ -134,9 +134,15 @@ export class ProjectDO extends DurableObject<Env> {
 
   // ---- ingest ----
 
-  /** Accept validated record lines from `source`: wrap each in an envelope, commit them, and answer once they are durable. */
-  async ingest(source: string, lines: string[], geo: Geo | null): Promise<IngestResult> {
-    if (!this.ready) return { ok: false, status: 503, reason: 'unavailable', retryAfter: 5 }
+  /**
+   * The only way events enter: check the presented key here, at enqueue (so a key revoked while its body was uploading gets nothing
+   * stored), take the source from the stored key, wrap each line in an envelope, commit them, and answer once they are durable.
+   */
+  async ingest(token: string, lines: string[], geo: Geo | null): Promise<IngestResult> {
+    const principal = await this.authorize(token)
+    if (!principal) return { ok: false, status: 401, reason: 'invalid key', retryAfter: 0 }
+    if (principal.scope !== 'publishable') return { ok: false, status: 403, reason: 'publishable key required', retryAfter: 0 }
+    const source = principal.source!
     if (lines.length === 0) return { ok: true, accepted: 0 }
     const atMs = Date.now()
     const geoJson = this.cfg.geo && geo ? JSON.stringify(geo) : null

@@ -18,7 +18,7 @@ const ADAPTERS: Adapter<any>[] = [native, segment, sentry, hooks]
 const makeHost = (env: Env): Host => ({
   cfg: configOf(env),
   authenticate: token => authenticate(env, token),
-  ingest: (sender, lines, geo) => projectStub(env, sender.project).ingest(sender.source, lines, geo),
+  ingest: (sender, lines, geo) => projectStub(env, sender.project).ingest(sender.token, lines, geo),
   webhookSecret: (project, provider) => Promise.resolve(projectStub(env, project).webhookSecret(provider)),
 })
 

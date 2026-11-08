@@ -2,7 +2,7 @@
 // project's archives) and a publishable key (sends events for one source). There are no signed links: downloads use a bearer too.
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
-import { ADMIN_TOKEN, admin, evt, newProject, post, publish, randomName as name, startWorker, type Worker } from './harness.ts'
+import { ADMIN_TOKEN, admin, call, evt, newProject, post, publish, randomName as name, startWorker, stats, type Worker } from './harness.ts'
 
 let w: Worker
 before(async () => { w = await startWorker() })
@@ -62,6 +62,27 @@ test('events are accepted only for a publishable key, whichever way it is presen
   assert.equal((await segment(k.a.pk)).status, 200); assert.equal((await segment(k.a.sk)).status, 401); assert.equal((await segment(null)).status, 401)
   const sentry = (key: string | null) => fetch(`${w.base}/api/1/envelope/${key ? `?sentry_key=${key}` : ''}`, { method: 'POST', body: '{"event_id":"' + 'a'.repeat(32) + '"}\n' })
   assert.equal((await sentry(k.a.pk)).status, 200); assert.equal((await sentry(k.a.sk)).status, 403); assert.equal((await sentry(null)).status, 403)
+})
+
+test('a key revoked while its body is still uploading stores nothing: the project object checks the key at enqueue', async () => {
+  const p = await newProject(w.base, name('authz_race'))
+  const keys = (await call(w.base, ADMIN_TOKEN, 'ListKeys', { project: p.id, scope: 'publishable' })).keys
+  const keyId = keys.find((k: any) => k.key === p.pk)!.keyId as string
+  const enc = new TextEncoder()
+  let release!: () => void
+  const second = new Promise<void>(resolve => { release = resolve })
+  const body = new ReadableStream<Uint8Array>({
+    async start(c) { c.enqueue(enc.encode(evt('race-1') + '\n')); await second; c.enqueue(enc.encode(evt('race-2') + '\n')); c.close() },
+  })
+  const sending = fetch(`${w.base}/v1/events`, { method: 'POST', headers: { Authorization: `Bearer ${p.pk}` }, body, duplex: 'half' } as RequestInit)
+  await new Promise(r => setTimeout(r, 300)) // the Worker has the first half and is waiting for the rest
+  await call(w.base, ADMIN_TOKEN, 'RevokeKey', { project: p.id, keyId })
+  release()
+  const response = await sending
+  assert.equal(response.status, 401)
+  const st = await stats(w.base, p.id)
+  assert.deepEqual([st.chunks, st.queued, st.bufferedBytes], [0, 0, 0], 'nothing was stored')
+  assert.equal((await post(w.base, p.pk, evt('after'))).status, 401, 'and the key stays refused')
 })
 
 test('archive downloads: the admin or that project\'s secret key, and nothing else', async () => {

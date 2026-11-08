@@ -32,7 +32,7 @@ fn skill_installation_is_complete_repeatable_and_preserves_edits() {
 }
 
 /// An agent that reads only the skill must be able to set up every way events arrive: where the key comes from, the feedback
-/// widget, the Segment and Sentry SDKs (Python included), the mobile SDKs and each webhook provider.
+/// widget, the Segment and Sentry SDKs (Python included), Swift through analytics-swift, plain HTTP and each webhook provider.
 #[test]
 fn the_skill_teaches_every_way_to_send_events() {
     let temp = tempfile::tempdir().expect("skill root");
@@ -48,7 +48,10 @@ fn the_skill_teaches_every_way_to_send_events() {
         "segment-analytics-python",
         "sentry_sdk.init",
         "@hitslop/slurp-react-native",
-        "SlurpClient.configure",
+        "segmentio/analytics-swift",
+        ".cdnHost(",
+        "?key=YOUR_PUBLISHABLE_KEY",
+        "slurp sync --now",
         "slurp project webhook YOUR_PROJECT_ID github",
         "slurp project webhook YOUR_PROJECT_ID revenuecat",
         "slurp project webhook YOUR_PROJECT_ID stripe",

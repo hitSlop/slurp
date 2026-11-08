@@ -20,34 +20,6 @@ pub fn open_jsonl(path: &Path) -> Result<Box<dyn Read>> {
     Ok(Box::new(flate2::read::MultiGzDecoder::new(file)))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Key {
-    pub sequence: i64,
-    pub sha256: String,
-    pub name: String,
-}
-
-pub fn parse_key(name: &str) -> Option<Key> {
-    let (seq, rest) = name.split_once('-')?;
-    let (sha, ext) = rest.split_once('.')?;
-    if ext != "jsonl.gz" {
-        return None;
-    }
-    let valid_sha = sha.len() == 64 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    if seq.len() != 20 || !seq.bytes().all(|b| b.is_ascii_digit()) || !valid_sha {
-        return None;
-    }
-    let sequence = seq.parse().ok()?;
-    if sequence < 1 {
-        return None;
-    }
-    Some(Key {
-        sequence,
-        sha256: sha.into(),
-        name: name.into(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,19 +46,5 @@ mod tests {
         let empty = dir.path().join("empty");
         std::fs::write(&empty, b"").unwrap();
         assert!(open_jsonl(&empty).is_err());
-    }
-
-    #[test]
-    fn parse_key_accepts_only_gzip_archive_names() {
-        let sha = "a".repeat(64);
-        let key = parse_key(&format!("{:020}-{sha}.jsonl.gz", 7)).unwrap();
-        assert_eq!(key.sequence, 7);
-        for other in ["jsonl.zst", "parquet", "jsonl"] {
-            assert!(
-                parse_key(&format!("{:020}-{sha}.{other}", 7)).is_none(),
-                "{other}"
-            );
-        }
-        assert!(parse_key(&format!("{:020}-{sha}.jsonl.gz", 0)).is_none());
     }
 }

@@ -206,23 +206,6 @@ pub struct ListProjectsResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
-pub struct UpdateProjectRequest {
-    pub project: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateProjectResponse {
-    pub project: ProjectInfo,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
 pub struct SourceKeyRequest {
     pub project: String,
     pub source: String,
@@ -291,13 +274,6 @@ pub struct ConnectWebhookRequest {
     pub provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct RotateWebhookSecretRequest {
-    pub project: String,
-    pub provider: String,
 }
 
 /// Without `after`, the listing starts at `coverage.first`. `limit` is 1..=5000 (default 1000).
@@ -389,13 +365,11 @@ api! {
     CreateProject(CreateProjectRequest) -> CreateProjectResponse;
     GetProject(GetProjectRequest) -> GetProjectResponse;
     ListProjects(ListProjectsRequest) -> ListProjectsResponse;
-    UpdateProject(UpdateProjectRequest) -> UpdateProjectResponse;
     SourceKey(SourceKeyRequest) -> SourceKeyResponse;
     CreateKey(CreateKeyRequest) -> CreateKeyResponse;
     ListKeys(ListKeysRequest) -> ListKeysResponse;
     RevokeKey(RevokeKeyRequest) -> RevokeKeyResponse;
     ConnectWebhook(ConnectWebhookRequest) -> Webhook;
-    RotateWebhookSecret(RotateWebhookSecretRequest) -> Webhook;
     ListArchives(ListArchivesRequest) -> ListArchivesResponse;
     Publish(PublishRequest) -> PublishResponse;
 }
@@ -551,7 +525,7 @@ mod tests {
             serde_json::from_str(r#"{"error":{"code":"already_exists","message":"x"}}"#).unwrap();
         assert_eq!(body.error.code, ErrorCode::AlreadyExists);
         assert_eq!(body.error.code.status(), 409);
-        assert_eq!(METHODS.len(), 13);
+        assert_eq!(METHODS.len(), 11);
         assert_eq!(archive_path("prj_a", 7), "/v1/projects/prj_a/archives/7");
     }
 }

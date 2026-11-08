@@ -192,3 +192,16 @@ test('a webhook redelivered later syncs cleanly: the same delivery without a tim
   assert.equal(again.status, 0, again.text) // used to stop with conflicting_event_id
   assert.equal(run(['sql', "SELECT count(*) FROM events WHERE id = 'github:redeliver-1'", '--project', ws, '--json']).json.rows[0][0], 1)
 })
+
+test('a pretty-printed webhook payload imports as one event, with no invalid line', { skip }, async () => {
+  const project = run(['status', '--project', ws, '--json']).json.project as string
+  const hook = run(['project', 'webhook', project, 'github', '--json']).json
+  const body = readFileSync(join(root, 'backend/fixtures/webhooks/github-release-pretty.json'), 'utf8').trim()
+  assert.ok(body.includes('\n'), 'the fixture spans many lines')
+  const sent = await fetch(hook.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'release', 'x-github-delivery': 'pretty-1', 'x-hub-signature-256': `sha256=${createHmac('sha256', hook.secret).update(body).digest('hex')}` } })
+  assert.equal(sent.status, 200)
+  const sync = run(['sync', '--now', '--project', ws, '--json'])
+  assert.equal(sync.status, 0, sync.text)
+  assert.equal(run(['sql', "SELECT count(*) FROM events WHERE id = 'github:pretty-1'", '--project', ws, '--json']).json.rows[0][0], 1, 'imported')
+  assert.equal(run(['sql', "SELECT count(*) FROM _slurp.problems WHERE kind = 'invalid'", '--project', ws, '--json']).json.rows[0][0], 0, 'no invalid line')
+})

@@ -64,6 +64,22 @@ test('envelopes keep the record byte for byte, and put it last', () => {
     assert.equal(envelope(c.receivedAtMs, c.sender, c.geo ? JSON.stringify(c.geo) : null, c.line), c.expected, c.name)
 })
 
+test('an envelope is always exactly one line, however the record was spaced', () => {
+  const pretty = readFileSync(join(here, '../fixtures/webhooks/github-release-pretty.json'), 'utf8')
+  const crlf = '{\r\n  "event": "a",\r\n  "n": 12345678901234567890,\r\n  "s": "keeps \\n and \\r escapes"\r\n}'
+  for (const record of [pretty.trim(), crlf, '{"event":"a"}']) {
+    for (const geoJson of [null, '{"country":"NZ"}']) {
+      const line = envelope(1_700_000_000_000, 'github', geoJson, record)
+      assert.equal(line.indexOf('\n'), line.length - 1, 'one newline, at the end')
+      assert.ok(!line.slice(0, -1).includes('\r'))
+      assert.deepEqual(JSON.parse(line).record, JSON.parse(record), 'the same record')
+    }
+  }
+  const line = envelope(0, 's', null, crlf)
+  assert.ok(line.includes('"n": 12345678901234567890,'), 'numbers are untouched')
+  assert.ok(line.includes('keeps \\n and \\r escapes'), 'escapes inside strings are untouched')
+})
+
 test('geo normalization', () => {
   for (const c of fixture('geo').normalize) assert.deepEqual(normalizeGeo(c.cf), c.geo, c.name)
 })

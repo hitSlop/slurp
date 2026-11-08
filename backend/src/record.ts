@@ -126,6 +126,10 @@ export function normalizeGeo(cf: { country?: unknown; region?: unknown; city?: u
   return Object.keys(geo).length === 0 ? null : geo
 }
 
-/** One stored line: the server's facts, then the client's record untouched (`record` is always last). `geo` is already JSON. */
+/**
+ * One stored line: the server's facts, then the client's record as sent (`record` is always last). `geo` is already JSON. An archive
+ * line is one envelope, so raw line breaks in the record, which in valid JSON can only be whitespace between tokens, become spaces
+ * (a pretty-printed webhook payload would otherwise span several lines). Numbers and string escapes are not touched.
+ */
 export const envelope = (receivedAtMs: number, sender: string, geoJson: string | null, record: string): string =>
-  `{"received_at":"${new Date(receivedAtMs).toISOString()}","sender":${JSON.stringify(sender)}${geoJson ? `,"geo":${geoJson}` : ''},"record":${record}}\n`
+  `{"received_at":"${new Date(receivedAtMs).toISOString()}","sender":${JSON.stringify(sender)}${geoJson ? `,"geo":${geoJson}` : ''},"record":${record.replace(/[\r\n]/g, ' ')}}\n`

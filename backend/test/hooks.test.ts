@@ -95,6 +95,23 @@ test('a signed GitHub release is stored whole, as the github sender; a redeliver
   assert.ok(!('geo' in lines[0]), 'the caller is the provider\'s server: no geo')
 })
 
+test('a pretty-printed payload is one archive line per delivery, and still the whole payload', async () => {
+  const { p, hook, url } = await setup('github')
+  const body = fixture('github-release-pretty.json')
+  assert.ok(body.split('\n').length > 10, 'the fixture is multi-line')
+  const headers = github(body, hook.secret, 'release', 'aaaa0000-1111-2222-3333-444455556666')
+  for (let i = 0; i < 2; i++) assert.equal((await fetch(url, { method: 'POST', headers, body })).status, 200)
+  const raw = await rawOf(p)
+  const lines = raw.split('\n').filter(l => l !== '')
+  assert.equal(lines.length, 2, 'one line per delivery')
+  assert.ok(raw.endsWith('\n') && !raw.includes('\r'))
+  for (const l of lines) {
+    const { record } = JSON.parse(l)
+    assert.equal(record.data.release.tag_name, 'v1.4.0')
+    assert.ok(l.includes('12345678901234567890'), 'a number beyond double precision survives')
+  }
+})
+
 test('GitHub: missing and wrong signatures, ping, and a body that is not JSON are refused or ignored', async () => {
   const { p, hook, url } = await setup('github')
   const body = fixture('github-workflow-run.json')

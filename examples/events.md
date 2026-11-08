@@ -1,6 +1,6 @@
 # Product events
 
-This report reads the locally synchronized events. Your Worker seals archives about every 10 minutes.
+This report reads the locally synchronized events. Your Worker publishes an archive about every 10 minutes.
 
 ```sql totals
 SELECT count(*) AS events FROM events

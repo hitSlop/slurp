@@ -1,6 +1,6 @@
 # Slurp CLI
 
-Capture application events with the Slurp SDK, sync them into a local DuckDB file, and let your coding agent analyze them and author reports. Each project is one event stream on your own Worker (a website, an app and a webhook can all send into it) bound to one local database. No desktop, daemon, DuckLake, or bundled analytical engine.
+Capture application events with the Slurp SDK, sync them into a local DuckDB file, and let your coding agent analyze them and author reports. Each project is one event stream on your own Worker (a website, an app and a webhook can all send into it, each as its own source) bound to one local database. No desktop, daemon, DuckLake, or bundled analytical engine.
 
 ## Install and start
 
@@ -11,13 +11,13 @@ curl -LsSf https://slurp.run/install | sh
 # or: npm install -g @hitslop/slurp
 ```
 
-To build from source instead you need Rust stable (and Go 1.27.1 for backend development): `cargo build -p slurp-cli && export PATH="$PWD/target/debug:$PATH"`. Slurp uses the DuckDB CLI; **2.0.0** is the tested release, and it uses JSON and SQL without DuckLake extensions. `slurp setup` finds DuckDB or installs it for you.
+To build from source instead you need Rust stable (and Go 1.27.1 for backend development): `cargo build -p slurp-cli && export PATH="$PWD/target/debug:$PATH"`. Slurp uses the DuckDB CLI; **2.0.0** is the tested release, and it uses JSON and SQL without DuckLake extensions. `slurp setup` finds DuckDB or installs it for you; the download is checked against a pinned SHA-256 for the release before anything is installed.
 
 ```sh
 slurp setup
 cd /path/to/your/app
 slurp init
-slurp sync
+slurp sync --now
 slurp describe
 slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 slurp duckdb
@@ -28,13 +28,13 @@ slurp report open .slurp/output/first
 
 `setup` runs once per computer: choose a default event library, prepare DuckDB, and connect your Worker. It creates no project. `init` runs inside each app: create or select a named project, choose its data folder, and open its personalized quickstart. Running `init` first guides you through missing machine setup.
 
-For a complete live test, follow the [six-event walkthrough](live-walkthrough.md), including waiting for the next archive seal, syncing and building a local report.
+For a complete live test, follow the [six-event walkthrough](live-walkthrough.md), including publishing the events (or waiting for the next archive), syncing and building a local report.
 
-`setup` finds DuckDB or asks before downloading an official binary into `~/.slurp/bin/duckdb`. It changes no shell configuration. Alternatively pass `init --duckdb /absolute/path/to/duckdb`. Service operations do not require DuckDB. Local reports and SQL do not require cloud login.
+`setup` finds DuckDB or asks before downloading an official binary into `~/.slurp/bin/duckdb`, after verifying its SHA-256 against the digest pinned in the CLI. It changes no shell configuration. Alternatively pass `init --duckdb /absolute/path/to/duckdb`. Service operations do not require DuckDB. Local reports and SQL do not require cloud login.
 
 Once configured, `slurp setup` opens a short menu: Done, Change the default library, Compare / buy an SSD, and Check setup. Done leaves settings untouched. `slurp --json setup` returns a read-only availability summary, including disconnected storage, without accessing credentials or starting login. The default library change applies only to future projects; physical migration is not included.
 
-Worker commands include `cloud init|status|doctor|upgrade|destroy` (deploy and operate your Worker, see [self-hosting](self-hosting.md)), `connect`, `whoami`, `project create/list/show/setup/update`, `project key create/list/revoke`, `project webhook PROJECT github|stripe|generic` (the URL and signing secret for a provider; see [webhooks](webhooks.md)), `send`, and `identify`. Run `slurp connect https://your-worker.workers.dev --token-stdin < admin-token.txt` once per computer: it verifies the Worker and its admin token, then saves both (see [self-hosting](self-hosting.md)). Without a saved backend the CLI targets the local `wrangler dev` Worker at `http://127.0.0.1:8787`. Backend selection uses `--backend` / `SLURP_BACKEND`, then the saved project binding, then system settings, then the backend saved by `slurp connect`, and finally the local `wrangler dev` default. Local commands accept `--project DIRECTORY`. Init saves the resolved binding in `.slurp/project.toml`; existing databases retain their original backend and source. Use a fresh workspace when changing servers.
+Worker commands include `cloud init|status|doctor|upgrade|destroy` (deploy and operate your Worker, see [self-hosting](self-hosting.md)), `connect`, `whoami`, `project create/list/show/setup`, `project key create/list/revoke`, `project webhook PROJECT github|stripe|revenuecat|generic` (the URL and signing secret for a provider; see [webhooks](webhooks.md)), `send`, `identify` and `read`. A project is created once and not edited afterwards; a key belongs to one source, so `project key create PROJECT --scope publishable --source ios` makes the key for `ios` and `--scope secret --name bot` makes a read key. Run `slurp connect https://your-worker.workers.dev --token-stdin < admin-token.txt` once per computer: it verifies the Worker and its admin token, then saves both (see [self-hosting](self-hosting.md)). Without a saved backend the CLI targets the local `wrangler dev` Worker at `http://127.0.0.1:8787`. Backend selection uses `--backend` / `SLURP_BACKEND`, then the saved project binding, then system settings, then the backend saved by `slurp connect`, and finally the local `wrangler dev` default. Local commands accept `--project DIRECTORY`. Init saves the resolved binding in `.slurp/project.toml`; existing databases retain their original backend and project. Use a fresh workspace when changing servers.
 
 ## Bot access
 
@@ -45,7 +45,7 @@ slurp project key create prj_ID --scope secret --name muse
 slurp agent setup --out .agents/skills/slurp
 ```
 
-Transfer the returned key through your bot's secret store. On its machine set `SLURP_TOKEN` to that key, initialize a workspace using `init --connect PROJECT_ID` and the backend, then run `slurp sync`. Bots never sign in; they only need the key (`slurp whoami` with `SLURP_TOKEN` set shows its scope, project and key name). Keys and signed download URLs never belong in project files. The saved connection and SDK keys use the private machine credential file by default; headless bots can override with environment credentials.
+Transfer the returned key through your bot's secret store. On its machine set `SLURP_TOKEN` to that key, initialize a workspace using `init --connect PROJECT_ID` and the backend, then run `slurp sync`. Bots never sign in; they only need the key (`slurp whoami` with `SLURP_TOKEN` set shows its scope, project and key name). Keys never belong in project files. The saved connection and SDK keys use the private machine credential file by default; headless bots can override with environment credentials.
 
 ## Credentials without prompts
 
@@ -58,29 +58,32 @@ Native storage is available by setting `credential_store = "keychain"` in `~/.sl
 ```sh
 slurp send signed_up --user-id demo_alice --data '{"plan":"pro"}'
 slurp identify demo_alice --data '{"plan":"pro"}'
-# Canonical NDJSON from a file or pipeline:
+# NDJSON records from a file or pipeline (give each an "id"):
 slurp send --stdin < events.ndjson
-# Explicit project outside an initialized project:
+# Another source, or a project outside an initialized folder:
+slurp send signed_up --source web --data '{}'
 slurp send signed_up --to prj_ID --backend https://YOUR_API --data '{}'
 ```
 
-These commands send to the folder's project with its first publishable key, which the Worker supplies (nothing is kept on your computer), so the events carry that key's name as `sender`. To send as another sender, set `SLURP_PUBLISHABLE_KEY` to that key's value. Sending does not require DuckDB or a connected data drive; it needs `slurp connect` (or `SLURP_PUBLISHABLE_KEY`).
+These commands send to the folder's project as the source `cli` (or `--source NAME`): the Worker supplies that source's publishable key, so nothing is kept on your computer and the events carry `sender = 'cli'`. That needs the saved admin connection from `slurp connect`. To send without the admin token, set `SLURP_PUBLISHABLE_KEY`; the key's own source is then the sender, and `--source` is not used. Sending does not require DuckDB or a connected data drive.
+
+`send EVENT` and `identify` always add an `id` (a UUID) and a `timestamp`, so a retry cannot double count. `--stdin` sends your lines as they are: only `event` is required in a record, but a record without an `id` is a new event every time, so add one. Output is `{"accepted":true,"events":N}`, and a bad record is refused before it is sent with the reason. The MCP send tools use the source `mcp`.
 
 Project-aware commands find the nearest `.slurp/project.toml` in the current folder or its parents. This includes send, identify, sync, SQL, status, doctor, describe, and report builds. `--project PATH` selects an exact initialized folder. A malformed nearest configuration fails instead of falling through to a different project. Init still targets the exact current or selected folder, allowing nested projects; setup and the registry are machine-wide. File arguments remain relative to the calling folder.
 
-In project mode, environment key/endpoint overrides require both `SLURP_PROJECT_ID` and `SLURP_BACKEND` to match the selected binding. Unrelated environment values cannot redirect that project's events, including a backend left over from another app. Explicit `--to` accepts environment credentials, or asks the Worker for the project's first publishable key. Publishable keys only send events; `SLURP_TOKEN` read keys remain separate for sync.
+In project mode, environment key/endpoint overrides require both `SLURP_PROJECT_ID` and `SLURP_BACKEND` to match the selected binding. Unrelated environment values cannot redirect that project's events, including a backend left over from another app. Explicit `--to` accepts environment credentials, or asks the Worker for the key of the source. Publishable keys only send events; `SLURP_TOKEN` read keys remain separate for sync.
 
 ## Data contract
 
 - `.slurp/project.toml`: non-secret project binding and engine/database paths.
 - `<library>/<project-folder>/events.duckdb`: default database. Explicit scripted project bindings without a library use `.slurp/data/events.duckdb`, ignored by Git. `init --data-dir DIRECTORY` selects another project data folder; `--database FILE` selects an exact database path.
-- `events`: canonical track/identify envelope fields, JSON `data` and `context`, complete `raw_record`, and producer fingerprint.
-- `_slurp.identity` and `_slurp.deliveries`: versioned binding and committed delivery receipts. Do not edit these or `events` manually.
+- `events`: one row per event, with the primary key `(sender, id)`. Columns: `sender`, `id`, `type`, `event`, `timestamp`, `user_id`, `anonymous_id`, `session_id`, JSON `data`, `context` and `geo`, `received_at`, `archive_seq`, `line`, the complete record as sent in `raw`, and a `fingerprint` (the SHA-256 of the record's exact bytes). `sender` is the source of the key that sent it. A record without an `id` gets `slurp:<archive_seq>:<line>`, without a `timestamp` its `received_at`, without `type` `track`, without `data` `{}`.
+- `_slurp.identity`, `_slurp.deliveries` and `_slurp.problems`: the versioned binding, the receipts of imported archives, and what the import set aside. Do not edit these or `events` manually.
 - Reports are ordinary Markdown files. Generated output directories are ignored; choose a fresh `--out` for each successful build.
 
-Sync verifies immutable compressed objects and loads JSONL through installed DuckDB. It commits events and their archive receipt together. Identical IDs with identical producer content are skipped; conflicting IDs roll back that archive. Backend receive timestamps and geo stamps do not turn a retry into a conflict. There is no business-data cleaning, schema inference, or automatic identity stitching.
+Sync verifies each archive's size and SHA-256, reads its lines in Rust and loads them through installed DuckDB. It commits events and the archive receipt together, and replaying an archive changes nothing. **Sync never stops on content.** For a `(sender, id)` that is already stored, a copy with the same fingerprint is skipped (and counted as a duplicate), and a copy with different content is a `conflict`: the first copy is kept and the other becomes a row in `_slurp.problems`. A line of the wrong shape is an `invalid` row, and archives that retention deleted before they were read are a `gap` row. `slurp sync` prints the counts (`downloaded`, `imported`, `duplicates`, `conflicts`, `invalid`, `gaps`), and `slurp health` reports them with the latest rows; `SELECT * FROM _slurp.problems` shows them all. Only integrity failures stop a sync: a download that fails after retries, a size or SHA-256 mismatch, a truncated archive, a receipt for a different project or a skipped archive number. There is no business-data cleaning, schema inference, or automatic identity stitching.
 
-Your Worker seals buffered events into an archive about every 10 minutes by default (`SEAL_INTERVAL_MS`), or sooner when a batch reaches 8 MB. Send and sync display the Worker's estimate of the next seal when available. An estimate describes the project buffer, not whether an individual event is published. Accepted events may not yet be available to sync. Local sync is independent of cloud retention: committed local rows remain. Retention gaps and archive resets require a new workspace; existing data is preserved. Sync and external database readers must take turns. Close open DuckDB sessions before syncing.
+Your Worker publishes buffered events as an archive about 10 minutes after the oldest was committed by default (`SEAL_INTERVAL_MS`), or sooner when 8 MB are buffered. Accepted events may not yet be available to sync: sync prints a note when the Worker still holds unpublished events, and `slurp sync --now` first asks the Worker to publish them (admin token; a secret key gets a clear error). Local sync is independent of cloud retention: committed local rows remain. A project reset (a different project in the receipts) requires a new workspace; existing data is preserved. Sync and external database readers must take turns. Close open DuckDB sessions before syncing.
 
 Queries return columns, exact JSON values, up to 1,000 rows, and an explicit truncation flag. DuckDB subprocesses have a 60-second timeout and a 32 MiB output bound. Arbitrary local SQL is trusted code, not a filesystem sandbox.
 
@@ -102,7 +105,7 @@ SELECT biz_date(timestamp) AS day, count(DISTINCT person_id) AS people
 FROM events_with_person GROUP BY 1 ORDER BY 1
 ```
 
-`slurp health` runs four exact checks and prints only what needs attention: event names spelled more than one way, events stamped in the future (a wrong client clock), the same event tracked twice under different ids, and ids far busier than everyone else (bots, test accounts). It suggests fixes and changes nothing; `--json` includes the evidence.
+`slurp health` runs five exact checks and prints only what needs attention: event names spelled more than one way, events stamped in the future (a wrong client clock), the same event tracked twice under different ids, ids far busier than everyone else (bots, test accounts), and anything the import set aside in `_slurp.problems`. It suggests fixes and changes nothing; `--json` includes the evidence.
 
 ## Behavioral SQL: retention, funnels, sessions
 
@@ -170,17 +173,16 @@ Choose colors with `--theme` (a built-in id, or your own `.json` file) or `--dar
 
 ```sh
 cargo fmt --all --check
-cargo clippy --project --all-targets --all-features -- -D warnings
-SLURP_TEST_DUCKDB=/path/to/duckdb cargo test --project
-cargo doc --project --no-deps
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+SLURP_TEST_DUCKDB=/path/to/duckdb cargo test --workspace
+cargo doc --workspace --no-deps
 (cd backend && npm install && npm run typecheck && npm test)
 (cd sdks/js && node --test test/*.test.ts)
-backend/api/generate.sh --check
 SLURP_TEST_DUCKDB=/path/to/duckdb python3 scripts/e2e.py
 SLURP_TEST_DUCKDB=/path/to/duckdb python3 scripts/test-setup-terminal.py
 ```
 
-Native DuckDB tests require `SLURP_TEST_DUCKDB`; they report their omission when unset. The CLI contract test (`backend/test/cli.e2e.test.ts`) runs this binary against the real Worker under `wrangler dev` with local R2 and Durable Objects, and does not contact Cloudflare. Private environment values are excluded from releases and source control.
+Native DuckDB tests need `SLURP_TEST_DUCKDB`: on a developer machine they are skipped when it is unset, and in CI (`CI` is set) a missing one fails the run. `cargo test --workspace` also checks that `backend/src/api.gen.ts`, the TypeScript export of the control API types in `crates/slurp-client/src/api.rs`, is current. The CLI contract test (`backend/test/cli.e2e.test.ts`) runs this binary against the real Worker under `wrangler dev` with local R2 and Durable Objects, and does not contact Cloudflare. Private environment values are excluded from releases and source control.
 
 ## Local setup dashboard
 
@@ -207,7 +209,7 @@ Before running activation, retention or frequency recipes, copy the SQL into you
 
 Commands return JSON when piped, readable text on a terminal, and accept `--json` or `--output text|json|auto`. SQL renders a table with a row-count/timing footer; long cells may be clipped to fit the terminal, while JSON preserves the full returned values. Query row limits are always reported. Init prints a short connection summary and actionable warnings. A reused session is identified during account verification; file credentials work without Keychain prompts. Keychain is optional.
 
-Send output confirms acceptance and includes an optional `publication` object; the earlier hard-coded `published: false` field is removed. Sync always returns downloaded/imported/duplicate counts, `has_published_archives`, and optional `publication` metadata. The object contains `state`, `observedAt`, `intervalSeconds`, and optional `estimatedAt`; states are idle, pending, publishing, retrying, or blocked. Countdown text uses server timestamps. Missing metadata is represented as null, never an invented countdown.
+Send output is `{"accepted":true,"events":N}`: the events are durable on the Worker, and the text says they can be synced after its next archive. Sync returns the downloaded, imported, duplicate, conflict, invalid and gap counts, the checkpoint (the last archive sequence imported), `has_published_archives`, and `pending`, which is true while the Worker holds accepted events that are not yet in an archive. The CLI shows no countdown, because the Worker does not promise a time.
 
 ## Public website and shared design
 
@@ -237,7 +239,7 @@ local sections. On narrow screens the section index becomes a disclosure.
 
 Storage choices are external SSD, internal disk (`~/SlurpLibrary`), or a custom library folder. External drives use `<drive>/SlurpLibrary`. Discovery is read-only and shows available space, with Rescan after connecting a drive. The optional offline buying guide includes the US$50–100 tier and larger options with dated USD reference prices; buying a drive is optional. Open it separately with `slurp setup --storage-guide`.
 
-`slurp init` runs in your app's folder. It suggests the folder name as the app name, creates a new cloud project or selects an existing one by name, and proposes `<library>/<folder>/events.duckdb`. Project IDs are handled internally, and a name that already exists joins that project instead of failing. You can edit the data folder before review. Every project starts with one publishable key named `default`; add one per sender with `slurp project key create PROJECT --scope publishable --name ios`. Read-only connections can analyze events without issuing new keys.
+`slurp init` runs in your app's folder. It suggests the folder name as the app name, creates a new cloud project or selects an existing one by name, and proposes `<library>/<folder>/events.duckdb`. Project IDs are handled internally, and a name that already exists joins that project instead of failing. You can edit the data folder before review. Every project starts with one publishable key for the source `default`; add one per source with `slurp project key create PROJECT --scope publishable --source ios`. Read-only connections can analyze events without issuing new keys.
 
 ```sh
 # Normal interactive flow:

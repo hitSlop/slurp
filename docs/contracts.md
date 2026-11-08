@@ -103,7 +103,7 @@ The types are defined once, as serde structs in `crates/slurp-client/src/api.rs`
 
 ```
 ProjectInfo  { id, name, title?, createdAt }
-ApiKey       { keyId, project, scope: "publishable"|"secret", source?, name?, createdAt, revokedAt?, key? }   // key: publishable only
+ApiKey       { keyId, project, scope: "publishable"|"secret", source?, name?, createdAt, revokedAt?, key? }   // key: always for a publishable key; for a secret key only in the CreateKey response
 Webhook      { provider, url, secret, sender, steps: string[] }
 Coverage     { first?: u64, last?: u64, lastAt?: string, pending: bool }   // first = oldest retained seq
 ArchiveInfo  { seq: u64, size: u64, sha256, events: u64, createdAt }
@@ -143,7 +143,7 @@ Method notes:
   - `200`: gzip bytes, with `content-type: application/gzip`, `content-length` and `etag`
   - `404`: the archive does not exist or was deleted by retention
   - `401` / `403`
-- There are no signed URLs.
+- A download URL grants nothing by itself: the bearer token is the only credential.
 
 ### Other routes
 
@@ -178,6 +178,7 @@ These are fresh tables: there is no migration from earlier layouts.
 ```
 events(sender, id, type, event, timestamp, user_id, anonymous_id, session_id, data JSON, context JSON, geo JSON,
        received_at, archive_seq, line, raw JSON, fingerprint, PRIMARY KEY(sender, id))
+_slurp.identity(version, backend, project)   -- the binding of this database to one project on one Worker
 _slurp.deliveries(project, sequence, sha256, bytes, imported_at, PRIMARY KEY(project, sequence))
 _slurp.problems(kind 'conflict'|'invalid'|'gap', sender, id, archive_seq, line, record, detail, seen_at,
                 PRIMARY KEY(kind, archive_seq, line))   -- a gap row uses archive_seq = from, line = 0

@@ -115,23 +115,20 @@ ArchiveInfo  { seq: u64, size: u64, sha256, events: u64, createdAt }
 | `CreateProject` | admin | `{ name, title? }` (idempotent by name) | `{ project, created, publishableKey, ingestUrl }`, where the key is for source `default` |
 | `GetProject` | admin | `{ project }` (id or name) | `{ project, ingestUrl }` |
 | `ListProjects` | admin | `{}` | `{ projects }` |
-| `UpdateProject` | admin | `{ project, name?, title? }` | `{ project }` |
 | `SourceKey` | admin | `{ project, source }` | `{ key: ApiKey }`: the source's oldest live publishable key, created if there is none |
 | `CreateKey` | admin | `{ project, scope, source? , name? }` | `{ key: ApiKey }`. Publishable needs `source`; secret takes `name` (default `default`) |
 | `ListKeys` | admin | `{ project, scope? }` | `{ keys }` |
 | `RevokeKey` | admin | `{ project, keyId }` | `{ key }` |
 | `ConnectWebhook` | admin | `{ project, provider, secret? }` | `Webhook` |
-| `RotateWebhookSecret` | admin | `{ project, provider }` | `Webhook` |
 | `ListArchives` | admin, or that project's secret key | `{ project, after?: u64, limit?: 1..5000 (default 1000) }` | `{ coverage: Coverage, archives: ArchiveInfo[], next?: u64, gap?: { from: u64, to: u64 } }` |
 | `Publish` | admin | `{ project }` | `{ coverage: Coverage }` |
 
 Method notes:
 - **`ConnectWebhook`** is idempotent.
   - The provider's source is the provider name, so its events carry `sender = "github"`.
-  - Generated-secret providers (`github`, `revenuecat`, `generic`) get a random secret that is stored and shown again.
-  - Stripe issues its own secret, so it must be passed as `secret` (`whsec_…`). It is `""` until then, and passing it again replaces it.
-  - `RotateWebhookSecret` applies to generated-secret providers only.
-  - If the connection's key was revoked, connecting again creates a new key, so the URL changes.
+  - The webhook's secret is tied to its key. When there is no connection, or its key has been revoked, connecting creates a new key and, for generated-secret providers (`github`, `revenuecat`, `generic`), a new random secret. Both are stored and shown again.
+  - **Rotating** means revoking that key with `RevokeKey` and connecting again. The URL and the secret both change.
+  - Stripe issues its own secret, so it is passed as `secret` (`whsec_…`). It is `""` until then, and passing it again replaces it.
   - `steps` are the setup instructions to show the user. They come from the Worker's provider registry, so a new provider needs no CLI change.
 - **`ListArchives`**:
   - Without `after`, it starts at `coverage.first`.

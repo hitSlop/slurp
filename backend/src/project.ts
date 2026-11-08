@@ -6,6 +6,7 @@ import { SchemaTooNew, migrate } from './migrate.ts'
 import { Publisher } from './publisher.ts'
 import { type Geo, envelope } from './record.ts'
 import type { Result } from './registry.ts'
+import type { ProjectHealth } from './status.ts'
 import { type Env, randomHex, sha256Hex } from './util.ts'
 
 /** What a presented key may do: its scope, and the source it sends as (publishable) or the label it carries (secret). */
@@ -248,6 +249,14 @@ export class ProjectDO extends DurableObject<Env> {
     }
     await this.publisher.rearm()
     return { ok: true, value: this.coverage() }
+  }
+
+  /** For the status view: null when the project was never set up. Reads only, so it neither writes a row nor wakes an alarm. */
+  health(): Result<ProjectHealth | null> {
+    if (this.blocked !== null) return this.unavailable()!
+    if (!this.ready) return { ok: true, value: null }
+    const sources = this.db.rows<{ source: string }>("SELECT DISTINCT source FROM keys WHERE scope='publishable' AND revoked_at IS NULL ORDER BY source").map(r => r.source)
+    return { ok: true, value: { ...this.publisher.health(), coverage: this.coverage(), sources } }
   }
 
   coverage(): Coverage { return this.ready ? this.publisher.coverage(this.queue.length > 0) : { pending: false } }

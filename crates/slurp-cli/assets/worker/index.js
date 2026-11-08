@@ -429,6 +429,12 @@ var Publisher = class {
   clearFailures() {
     if (this.setting("retry_at") !== null || this.setting("failures") !== null) this.db.rows("DELETE FROM settings WHERE k IN ('failures','retry_at')");
   }
+  /** What the status view needs beyond `coverage`: the failure streak, the buffer, and what is stored. Reads only. */
+  health() {
+    const f = this.facts();
+    const kept = this.db.one("SELECT COUNT(*) n, COALESCE(SUM(events), 0) events, COALESCE(SUM(size), 0) bytes FROM manifest WHERE deleted_at IS NULL");
+    return { failures: Number(this.setting("failures") ?? 0), retryAt: f.retryAt, bufferedBytes: f.bufferedBytes, oldestBufferedAt: f.oldestChunkAt, archives: kept?.n ?? 0, events: kept?.events ?? 0, bytes: kept?.bytes ?? 0 };
+  }
   /** The archives' state for a listing: the oldest kept, the newest, and whether accepted events are still waiting for an archive. */
   coverage(queued) {
     const first = this.db.one("SELECT seq FROM manifest WHERE deleted_at IS NULL ORDER BY seq LIMIT 1")?.seq;
@@ -640,7 +646,7 @@ async function rpc(req, c, method) {
 }
 __name(rpc, "rpc");
 async function download(req, c, project, seq) {
-  const plain = /* @__PURE__ */ __name((status, message) => new Response(message, { status }), "plain");
+  const plain = /* @__PURE__ */ __name((status2, message) => new Response(message, { status: status2 }), "plain");
   try {
     needRead(c, project);
   } catch (e) {
@@ -779,7 +785,7 @@ var envelope = /* @__PURE__ */ __name((receivedAtMs, sender, geoJson, record) =>
 
 // src/compat/common.ts
 var CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Retry-After" };
-var json = /* @__PURE__ */ __name((status, body, extra = {}) => Response.json(body, { status, headers: { ...CORS, ...extra } }), "json");
+var json = /* @__PURE__ */ __name((status2, body, extra = {}) => Response.json(body, { status: status2, headers: { ...CORS, ...extra } }), "json");
 var preflight = /* @__PURE__ */ __name((methods, allowHeaders) => new Response(null, { status: 204, headers: { ...CORS, "access-control-allow-methods": methods, "access-control-allow-headers": allowHeaders, "access-control-max-age": "86400" } }), "preflight");
 async function publishable(host, token) {
   const auth = token?.startsWith("slurp_pk_") ? await host.authenticate(token) : null;
@@ -839,7 +845,7 @@ __name(submit, "submit");
 // src/compat/hooks.ts
 var encoder4 = new TextEncoder();
 var decoder2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-var fail = /* @__PURE__ */ __name((status, error) => json(status, { error }), "fail");
+var fail = /* @__PURE__ */ __name((status2, error) => json(status2, { error }), "fail");
 var hooks = {
   name: "webhook",
   match(_method, url) {
@@ -1146,7 +1152,7 @@ function translateItem(item, header, itemHash) {
 __name(translateItem, "translateItem");
 async function ingest2(req, route, host) {
   if (req.method === "OPTIONS") return preflight("POST, GET, OPTIONS", ALLOW_HEADERS2);
-  const reply = /* @__PURE__ */ __name((status, body, extra = {}) => json(status, body, { ...EXPOSE, ...extra }), "reply");
+  const reply = /* @__PURE__ */ __name((status2, body, extra = {}) => json(status2, body, { ...EXPOSE, ...extra }), "reply");
   if (req.method !== "POST") return reply(405, { detail: "method not allowed" }, { Allow: "POST, OPTIONS" });
   let bytes2;
   try {
@@ -1221,6 +1227,120 @@ var configOf = /* @__PURE__ */ __name((env) => {
   return config;
 }, "configOf");
 
+// src/dashboard.ts
+var SCRIPT = `
+const KEY = 'slurp_admin_token'
+const $ = id => document.getElementById(id)
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e }
+const get = () => { try { return sessionStorage.getItem(KEY) } catch { return null } }
+const put = t => { try { t ? sessionStorage.setItem(KEY, t) : sessionStorage.removeItem(KEY) } catch {} }
+const bytes = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB'
+const ago = iso => {
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000)
+  return s < 60 ? 'just now' : s < 3600 ? Math.floor(s / 60) + ' min ago' : s < 86400 ? Math.floor(s / 3600) + ' h ago' : Math.floor(s / 86400) + ' d ago'
+}
+let timer = null
+
+function show(signedIn, message) {
+  $('login').hidden = signedIn
+  $('view').hidden = !signedIn
+  $('error').textContent = message || ''
+  $('error').hidden = !message
+  if (!signedIn && timer) { clearInterval(timer); timer = null }
+}
+
+function render(r) {
+  const bad = r.summary.errors + r.summary.warnings
+  $('dot').className = 'dot ' + (r.summary.errors ? 'error' : r.summary.warnings ? 'warn' : 'ok')
+  $('headline').textContent = bad === 0 ? 'Everything is working' : r.summary.errors + ' problem' + (r.summary.errors === 1 ? '' : 's') + (r.summary.warnings ? ', ' + r.summary.warnings + ' to watch' : '')
+  $('meta').textContent = 'Release ' + r.release + (r.build ? ' \xB7 build ' + r.build.slice(0, 8) : '') + ' \xB7 updated ' + new Date(r.generatedAt).toLocaleTimeString()
+  const issues = $('issues'); issues.replaceChildren()
+  for (const i of r.issues) {
+    const li = el('li', 'issue ' + i.level)
+    li.append(el('strong', '', i.project), el('span', '', ' ' + i.message))
+    issues.append(li)
+  }
+  issues.hidden = r.issues.length === 0
+  const body = $('rows'); body.replaceChildren()
+  for (const p of r.projects) {
+    const tr = el('tr')
+    const name = el('td'); name.append(el('span', 'dot ' + p.status), el('strong', '', p.name))
+    if (p.title) name.append(el('div', 'sub', p.title))
+    tr.append(name,
+      el('td', '', p.sources.join(', ') || '\u2014'),
+      el('td', '', p.lastArchiveAt ? ago(p.lastArchiveAt) : (p.pending ? 'waiting' : 'none yet')),
+      el('td', 'num', p.archives + ' \xB7 ' + p.events.toLocaleString() + ' events \xB7 ' + bytes(p.bytes)),
+      el('td', 'num', p.bufferedBytes ? bytes(p.bufferedBytes) : '\u2014'))
+    body.append(tr)
+  }
+  $('empty').hidden = r.projects.length > 0
+  $('table').hidden = r.projects.length === 0
+}
+
+async function load() {
+  const token = get()
+  if (!token) return show(false)
+  let res
+  try { res = await fetch('/v1/admin/status', { headers: { authorization: 'Bearer ' + token }, cache: 'no-store' }) }
+  catch { return show(true, 'Could not reach the Worker. Retrying\u2026') }
+  if (res.status === 401 || res.status === 403) { put(null); return show(false, 'That token was not accepted.') }
+  if (!res.ok) return show(true, 'The Worker answered ' + res.status + '. Retrying\u2026')
+  show(true)
+  render(await res.json())
+  if (!timer) timer = setInterval(load, 30000)
+}
+
+$('form').addEventListener('submit', e => { e.preventDefault(); const t = $('token').value.trim(); $('token').value = ''; if (t) { put(t); load() } })
+$('refresh').addEventListener('click', load)
+$('signout').addEventListener('click', () => { put(null); show(false) })
+load()
+`;
+function dashboardPage(nonce) {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Slurp dashboard</title>
+<style>
+:root{--bg:#fff;--fg:#17191c;--muted:#535c66;--rule:#e4e7eb;--code:#f6f9fc;--accent:#e8002a;--ok:#1a9d5c;--warn:#c98200;--error:#d6291f}
+@media(prefers-color-scheme:dark){:root{--bg:#101215;--fg:#eceff2;--muted:#9aa4af;--rule:#262b31;--code:#171b20;--warn:#e8a000;--error:#ff5b50}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}
+main{max-width:920px;margin:0 auto;padding:40px 20px}
+h1{font-size:26px;margin:0}p{color:var(--muted)}a{color:var(--accent)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:10px;background:var(--muted)}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.error{background:var(--error)}
+.bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:6px 0 24px}.bar .grow{flex:1}
+.meta{color:var(--muted);font-size:14px}
+button,input{font:inherit;color:var(--fg);background:var(--code);border:1px solid var(--rule);border-radius:6px;padding:7px 12px}
+button{cursor:pointer}input{min-width:260px}
+#error{border:1px solid var(--rule);border-left:3px solid var(--error);padding:10px 14px;border-radius:4px}
+ul.issues{list-style:none;padding:0;margin:0 0 28px}
+.issue{border:1px solid var(--rule);border-left:3px solid var(--warn);padding:10px 14px;border-radius:4px;margin:8px 0}
+.issue.error{border-left-color:var(--error)}.issue span{color:var(--muted)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{color:var(--muted);font-weight:600}.num{font-variant-numeric:tabular-nums}
+.sub{color:var(--muted);font-size:13px;margin-left:20px}
+[hidden]{display:none!important}
+</style></head><body><main>
+<h1>Slurp dashboard</h1>
+<div id="error" role="alert" hidden></div>
+<section id="login" hidden>
+<p>Enter the <code>ADMIN_TOKEN</code> for this Worker. It stays in this tab only and is sent to this Worker and nowhere else.</p>
+<form id="form"><input id="token" type="password" autocomplete="off" placeholder="Admin token" aria-label="Admin token"> <button type="submit">Sign in</button></form>
+</section>
+<section id="view" hidden>
+<div class="bar"><span id="dot" class="dot"></span><strong id="headline"></strong><span class="grow"></span><button id="refresh" type="button">Refresh</button><button id="signout" type="button">Sign out</button></div>
+<p class="meta" id="meta"></p>
+<ul class="issues" id="issues" hidden></ul>
+<h2>Projects</h2>
+<p id="empty" hidden>No projects yet. Run <code>slurp init --name "My app"</code> in your app's folder.</p>
+<div class="scroll"><table id="table" hidden><thead><tr><th>Project</th><th>Sources</th><th>Last archive</th><th>Archived</th><th>Buffered</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+<p class="meta"><a href="/">Setup</a> \xB7 <a href="/v1/health">Health</a></p>
+</main><script nonce="${nonce}">${SCRIPT}<\/script></body></html>`;
+}
+__name(dashboardPage, "dashboardPage");
+
 // src/landing.ts
 var esc = /* @__PURE__ */ __name((s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]), "esc");
 function setupPage(origin, configured) {
@@ -1254,7 +1374,7 @@ ${setup}
 slurp init --name "My app"</code></pre></li>
 </ol>
 <p>Your SDK sends events to <code>${o}/v1/events</code> with a publishable key. <code>slurp init</code> prints both for you.</p>
-<p><a href="https://github.com/hitSlop/slurp/blob/main/docs/self-hosting.md">Self-hosting guide</a> \xB7 <a href="${o}/v1/health">Health</a></p>
+<p><a href="https://github.com/hitSlop/slurp/blob/main/docs/self-hosting.md">Self-hosting guide</a> \xB7 <a href="${o}/dashboard">Dashboard</a> \xB7 <a href="${o}/v1/health">Health</a></p>
 </main></body></html>`;
 }
 __name(setupPage, "setupPage");
@@ -1282,6 +1402,77 @@ var native = {
     return result instanceof Response ? result : json(200, { ok: true, accepted: result.accepted });
   }
 };
+
+// src/status.ts
+var BUFFER_WARN = 0.8;
+var mb = /* @__PURE__ */ __name((n) => `${(n / 1048576).toFixed(n >= 10485760 ? 0 : 1)} MB`, "mb");
+function issuesOf(outcome, cfg) {
+  if (outcome.kind === "unreachable") return [{ level: "error", message: "The project did not answer. Try again; if it keeps happening, check the Worker logs." }];
+  if (outcome.kind === "blocked") return [{ level: "error", message: `${outcome.message}.` }];
+  if (outcome.kind === "unset") return [{ level: "warn", message: "Created but never set up. Run `slurp init` for it again to finish." }];
+  const h = outcome.health;
+  const issues = [];
+  if (h.failures > 0) {
+    const retry2 = h.retryAt === null ? "" : `, next try ${new Date(h.retryAt).toISOString()}`;
+    issues.push({ level: "error", message: `Archiving has failed ${h.failures} time${h.failures === 1 ? "" : "s"} in a row${retry2}. Events are kept and will be archived once R2 answers.` });
+  }
+  if (h.bufferedBytes >= cfg.bufferCapBytes) issues.push({ level: "error", message: `The buffer is full (${mb(h.bufferedBytes)}), so new events are being refused with 429 until it is archived.` });
+  else if (h.bufferedBytes >= cfg.bufferCapBytes * BUFFER_WARN) issues.push({ level: "warn", message: `The buffer is ${Math.round(h.bufferedBytes / cfg.bufferCapBytes * 100)}% full (${mb(h.bufferedBytes)} of ${mb(cfg.bufferCapBytes)}).` });
+  return issues;
+}
+__name(issuesOf, "issuesOf");
+var worst = /* @__PURE__ */ __name((issues) => issues.some((i) => i.level === "error") ? "error" : issues.length > 0 ? "warn" : "ok", "worst");
+var RANK = { error: 0, warn: 1, ok: 2 };
+function projectStatus(row, outcome, cfg) {
+  const issues = issuesOf(outcome, cfg);
+  const h = outcome.kind === "ok" ? outcome.health : null;
+  return {
+    id: row.id,
+    name: row.name,
+    ...row.title ? { title: row.title } : {},
+    createdAt: row.created_at,
+    status: worst(issues),
+    issues,
+    sources: h?.sources ?? [],
+    archives: h?.archives ?? 0,
+    events: h?.events ?? 0,
+    bytes: h?.bytes ?? 0,
+    bufferedBytes: h?.bufferedBytes ?? 0,
+    ...h?.coverage.lastAt ? { lastArchiveAt: h.coverage.lastAt } : {},
+    pending: h?.coverage.pending ?? false
+  };
+}
+__name(projectStatus, "projectStatus");
+function buildReport(projects, meta) {
+  const sorted = [...projects].sort((a, b) => RANK[a.status] - RANK[b.status] || a.name.localeCompare(b.name));
+  const issues = sorted.flatMap((p) => p.issues.map((i) => ({ ...i, project: p.name }))).sort((a, b) => RANK[a.level] - RANK[b.level]);
+  return {
+    generatedAt: meta.now.toISOString(),
+    release: meta.release,
+    build: meta.build,
+    summary: { projects: projects.length, errors: issues.filter((i) => i.level === "error").length, warnings: issues.filter((i) => i.level === "warn").length },
+    issues,
+    projects: sorted
+  };
+}
+__name(buildReport, "buildReport");
+async function collectStatus(env, cfg, meta) {
+  const registry2 = env.REGISTRY.get(env.REGISTRY.idFromName("registry"));
+  const rows = await registry2.list();
+  const projects = await Promise.all(rows.map(async (row) => {
+    let outcome;
+    try {
+      const r = await projectStub(env, row.id).health();
+      outcome = !r.ok ? { kind: "blocked", message: r.message } : r.value === null ? { kind: "unset" } : { kind: "ok", health: r.value };
+    } catch (e) {
+      console.error(`status: project ${row.id} did not answer`, e);
+      outcome = { kind: "unreachable" };
+    }
+    return projectStatus(row, outcome, cfg);
+  }));
+  return buildReport(projects, { ...meta, now: /* @__PURE__ */ new Date() });
+}
+__name(collectStatus, "collectStatus");
 
 // src/version.ts
 var RELEASE = "0.2.1";
@@ -1622,6 +1813,13 @@ var ProjectDO = class extends DurableObject2 {
     await this.publisher.rearm();
     return { ok: true, value: this.coverage() };
   }
+  /** For the status view: null when the project was never set up. Reads only, so it neither writes a row nor wakes an alarm. */
+  health() {
+    if (this.blocked !== null) return this.unavailable();
+    if (!this.ready) return { ok: true, value: null };
+    const sources = this.db.rows("SELECT DISTINCT source FROM keys WHERE scope='publishable' AND revoked_at IS NULL ORDER BY source").map((r) => r.source);
+    return { ok: true, value: { ...this.publisher.health(), coverage: this.coverage(), sources } };
+  }
   coverage() {
     return this.ready ? this.publisher.coverage(this.queue.length > 0) : { pending: false };
   }
@@ -1687,6 +1885,17 @@ async function purge(req, env, ctx) {
   return Response.json({ ok: true, projects: projects.length, archives, strays });
 }
 __name(purge, "purge");
+async function status(req, env, ctx, cfg) {
+  if (req.method !== "GET") return Response.json({ error: "method not allowed" }, { status: 405, headers: { Allow: "GET" } });
+  if (ctx.auth?.kind !== "admin") return Response.json({ error: ctx.auth ? "admin token required" : "invalid token" }, { status: ctx.auth ? 403 : 401 });
+  try {
+    return Response.json(await collectStatus(env, cfg, { release: RELEASE, build: env.SLURP_BUILD ?? null }), { headers: { "cache-control": "no-store" } });
+  } catch (e) {
+    console.error("status failed", e);
+    return Response.json({ error: "storage is unavailable" }, { status: 503, headers: { "Retry-After": "5" } });
+  }
+}
+__name(status, "status");
 var index_default = {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -1707,6 +1916,12 @@ var index_default = {
       return new Response(req.method === "HEAD" ? null : setupPage(url.origin, adminConfigured(env)), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", "x-content-type-options": "nosniff" }
       });
+    if (path === "/dashboard" && (req.method === "GET" || req.method === "HEAD")) {
+      const nonce = btoa(crypto.randomUUID());
+      return new Response(req.method === "HEAD" ? null : dashboardPage(nonce), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, "x-content-type-options": "nosniff" }
+      });
+    }
     if (path === "/v1/health") return Response.json({ ok: true, apiVersion: 2, release: RELEASE, configured: adminConfigured(env), build: env.SLURP_BUILD ?? null, geo: host.cfg.geo });
     let auth;
     try {
@@ -1724,6 +1939,7 @@ var index_default = {
       return download(req, ctx, archive[1], archive[2]);
     }
     if (path === "/v1/admin/purge") return purge(req, env, ctx);
+    if (path === "/v1/admin/status") return status(req, env, ctx, host.cfg);
     return new Response("not found", { status: 404 });
   }
 };

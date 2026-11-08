@@ -20,7 +20,7 @@ Day to day:
 
 | Command | What it does |
 |---|---|
-| `slurp cloud status` | Reachability, deployed version, projects and how far each has published |
+| `slurp cloud status` | Reachability, deployed version, and every project with what is wrong with it (archiving failing, ingest buffer full or nearly full, never set up). Exits 1 when any project has an error, so a script or cron job can act on it. The same report is at `/dashboard` on your Worker, behind the admin token |
 | `slurp cloud doctor` | Checks wrangler, your Cloudflare login, the Worker, its token and your saved connection, with a fix for each problem |
 | `slurp cloud upgrade` | Redeploys the Worker bundled with this CLI; data, secret and settings are kept |
 | `slurp cloud destroy` | Empties and deletes the Worker and bucket (you type the Worker name; `--yes` skips the prompt). Synced DuckDB files are untouched |

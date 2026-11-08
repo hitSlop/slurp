@@ -37,6 +37,6 @@ ${setup}
 slurp init --name "My app"</code></pre></li>
 </ol>
 <p>Your SDK sends events to <code>${o}/v1/events</code> with a publishable key. <code>slurp init</code> prints both for you.</p>
-<p><a href="https://github.com/hitSlop/slurp/blob/main/docs/self-hosting.md">Self-hosting guide</a> · <a href="${o}/v1/health">Health</a></p>
+<p><a href="https://github.com/hitSlop/slurp/blob/main/docs/self-hosting.md">Self-hosting guide</a> · <a href="${o}/dashboard">Dashboard</a> · <a href="${o}/v1/health">Health</a></p>
 </main></body></html>`
 }

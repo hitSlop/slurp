@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The Worker has a dashboard at `/dashboard` that lists your projects and what is wrong with them: failing archive publication, a full ingest buffer, a project that was never set up. The page holds no data and asks for the `ADMIN_TOKEN`; the same report is at `GET /v1/admin/status` (admin token only).
+- `slurp cloud status` lists every project with its issues in one request, and exits 1 when a project has an error. Run `slurp cloud upgrade` first: an older Worker is reported as not checked. Its project lines now show each project's state, sources and last archive (they always read "none yet" before).
+
 ## 0.2.1
 
 - Discover built-in SQL macro signatures and examples with `slurp functions [NAME]` or MCP.

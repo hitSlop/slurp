@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+**Upgrade:** run `slurp cloud upgrade`. `slurp cloud status` needs the new Worker to report issues, and its `--json` output changed (below).
 
 - The Worker has a dashboard at `/dashboard` that lists your projects and what is wrong with them: failing archive publication, a full ingest buffer, a project that was never set up. The page holds no data and asks for the `ADMIN_TOKEN`; the same report is at `GET /v1/admin/status` (admin token only).
-- `slurp cloud status` lists every project with its issues in one request, and exits 1 when a project has an error. Run `slurp cloud upgrade` first: an older Worker is reported as not checked. Its project lines now show each project's state, sources and last archive (they always read "none yet" before).
+- `slurp cloud status` lists every project with its issues in one request, and exits 1 when a project has an error. Run `slurp cloud upgrade` first: an older Worker is reported as not checked. Its project lines now show each project's state, sources and last archive (they always read "none yet" before). In `--json`, each project now has `status`, `issues`, `sources`, `archives`, `events`, `buffered_bytes`, `pending` and `last_archive_at` instead of `latest_published`, and `issues`, `summary` and `issues_note` are added at the top level.
 
 ## 0.2.1
 

@@ -221,3 +221,75 @@ fn moving_unsupported_config_aside_allows_setup_to_recover() {
             .contains("version = 1")
     );
 }
+
+#[test]
+fn offline_setup_reports_credentials_without_contacting_the_worker() {
+    let Some(engine) = common::duckdb() else {
+        return;
+    };
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let backend = format!("http://{}", listener.local_addr().unwrap());
+    let credentials = home.join("credentials.json");
+    std::fs::write(
+        &credentials,
+        serde_json::to_vec(
+            &serde_json::json!({"version":1,"entries":{backend.clone():"saved-offline-token"}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let run = |offline: bool| {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_slurp"));
+        cmd.args(["setup", "--no-open", "--json"])
+            .env("SLURP_HOME", &home)
+            .env_remove("SLURP_TOKEN")
+            .env_remove("SLURP_READ_KEY")
+            .env_remove("SLURP_BACKEND")
+            .stdin(std::process::Stdio::null());
+        if offline {
+            cmd.args(["--no-connect", "--backend", &backend, "--library"])
+                .arg(root.path().join("library"))
+                .arg("--duckdb")
+                .arg(&engine);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    for result in [run(true), run(false)] {
+        assert_eq!(result["connected"], false);
+        assert_eq!(result["connection_checked"], false);
+        assert_eq!(result["credentials_present"], true);
+        assert_eq!(result["missing"], serde_json::json!([]));
+        assert!(
+            result["next_steps"]
+                .as_str()
+                .unwrap()
+                .contains("not checked")
+        );
+    }
+    std::fs::remove_file(credentials).unwrap();
+    let result = run(true);
+    assert_eq!(result["credentials_present"], false);
+    assert_eq!(result["missing"], serde_json::json!(["login"]));
+    assert!(
+        result["next_steps"]
+            .as_str()
+            .unwrap()
+            .contains("slurp connect")
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}

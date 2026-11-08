@@ -1,6 +1,6 @@
 # Live walkthrough
 
-Send six events to your own Worker, wait for the next archive, sync them into DuckDB and open a local report. It assumes you have deployed the Worker ([self-hosting](self-hosting.md)).
+Send six events to your own Worker, publish them (or wait for the next archive), sync them into DuckDB and open a local report. It assumes you have deployed the Worker ([self-hosting](self-hosting.md)).
 
 ## 1. Connect this computer
 
@@ -20,7 +20,7 @@ cd ~/slurp-walkthrough
 slurp init --name "Slurp live walkthrough"
 ```
 
-Review and accept the proposed data folder. Init opens a local quickstart page with your SDK snippet and saves the project binding for the commands below. There is no project ID or key to copy.
+Review and accept the proposed data folder. Init opens a local quickstart page with your SDK snippet and saves the project binding for the commands below. There is no project ID or key to copy: the commands below ask your Worker for the project's `cli` key, and their events carry `sender = 'cli'`.
 
 ## 3. Send six synthetic events
 
@@ -41,28 +41,28 @@ slurp send report_built --user-id demo_alice --data "$SLURP_DEMO_DATA"
 slurp sync
 ```
 
-Successful sends report `Accepted 1 event.` (`accepted: true` in JSON) and your Worker's estimate of its next archive seal. That is a project-level estimate, not confirmation that an individual event is published. An immediate sync may import zero rows. Do not resend events to make them appear.
+Successful sends report `Accepted 1 event.` (`{"accepted":true,"events":1}` in JSON): the event is durable on your Worker, but not yet in an archive. An immediate `slurp sync` may import zero rows. Do not resend events to make them appear: wait for the next archive, or use `slurp sync --now` (step 4).
 
-## 4. Pull after the next seal
+## 4. Publish, then pull
 
-Your Worker seals archives about every 10 minutes by default (sooner when a batch reaches 8 MB). Return after the estimated time. This block also works in a new terminal:
+Your Worker publishes an archive about every 10 minutes by default (sooner when 8 MB are buffered). To skip the wait, `slurp sync --now` asks the Worker to publish what it has buffered and then imports it (it needs the admin token that `slurp cloud init` or `slurp connect` saved). This block also works in a new terminal:
 
 ```sh
 cd ~/slurp-walkthrough
 SLURP_DEMO_RUN="$(cat .slurp/walkthrough-run)"
 
-slurp sync
+slurp sync --now
 slurp sql "
-SELECT event, count(*) AS n, any_value(context->>'\$.geo.country') AS country
+SELECT event, count(*) AS n, any_value(geo->>'country') AS country
 FROM events
 WHERE json_extract_string(data, '$.demo_run') = '$SLURP_DEMO_RUN'
 GROUP BY event
 ORDER BY n DESC
 "
-slurp sync
+slurp health
 ```
 
-Expected totals: `signed_up = 3`, `project_created = 2`, `report_built = 1`. `country` is filled from Cloudflare's request metadata when the project allows geo enrichment. If the archive is not sealed yet, retry **sync** later. The final sync imports nothing when nothing new was sealed.
+Expected totals: `signed_up = 3`, `project_created = 2`, `report_built = 1`. `country` is filled from Cloudflare's request metadata while the Worker's `GEO` setting is `on` (the default). `slurp health` should find no problems; anything the import set aside (a reused id with different content, a malformed line, an archive that retention deleted) is listed there and in `_slurp.problems`, and never stops a sync. Syncing again imports nothing when nothing new was published.
 
 ## 5. Open a local report
 

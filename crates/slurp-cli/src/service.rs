@@ -1,7 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Value, json};
-use slurp_client::rpc;
+use slurp_app::project_setup::{Api, service_error};
+use slurp_client::api::{self, KeyScope};
 use std::{io::BufRead, path::PathBuf, process::ExitCode, time::Duration};
 
 /// The options every command accepts, parsed once by the root command in `main.rs`.
@@ -34,6 +35,9 @@ pub(crate) enum Command {
         /// Send to this project (id or name) instead of the project of this folder.
         #[arg(long)]
         to: Option<String>,
+        /// Send as this source (default: cli). Its events carry it as `sender`; the Worker supplies the source's key.
+        #[arg(long)]
+        source: Option<String>,
         #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
         event: Option<String>,
         #[arg(long, default_value = "{}")]
@@ -48,27 +52,29 @@ pub(crate) enum Command {
         /// Send to this project (id or name) instead of the project of this folder.
         #[arg(long)]
         to: Option<String>,
+        /// Send as this source (default: cli). Its events carry it as `sender`; the Worker supplies the source's key.
+        #[arg(long)]
+        source: Option<String>,
         #[arg(long)]
         anonymous_id: Option<String>,
         #[arg(long, default_value = "{}")]
         data: String,
     },
-    /// Print a project's published events as NDJSON (what `slurp sync` would import).
+    /// Print a project's published events as NDJSON envelopes (what `slurp sync` would import).
     Read {
         /// The project's id or name.
         project: String,
-        /// Keep waiting for newly published batches.
+        /// Keep waiting for newly published archives.
         #[arg(long)]
         follow: bool,
+        /// Start after this archive sequence (default: the oldest retained archive).
         #[arg(long)]
-        archive: Option<String>,
-        #[arg(long)]
-        after: Option<i64>,
+        after: Option<u64>,
     },
 }
 #[derive(Subcommand)]
 pub(crate) enum Project {
-    /// Manage the keys of a project. One publishable key per sender (ios, web, github) tells their events apart.
+    /// Manage the keys of a project. A publishable key belongs to one source (ios, web, github), which tells their events apart.
     #[command(subcommand)]
     Key(KeyCommand),
     /// Create a project, or return the existing one with this name.
@@ -76,21 +82,17 @@ pub(crate) enum Project {
         name: String,
         #[arg(long)]
         title: Option<String>,
-        #[arg(long)]
-        no_geo: bool,
     },
     List,
     Show {
         project: String,
     },
-    /// The URL and signing secret to give a provider so it can send webhooks into this project. Safe to repeat.
+    /// Connect a webhook provider: prints the URL and secret to give it, and the provider's setup steps. Safe to repeat.
+    /// To rotate the secret, revoke the webhook's key (slurp project key revoke), then run this again for a new URL and secret.
     Webhook {
         project: String,
-        #[arg(value_parser = ["github", "stripe", "revenuecat", "generic"])]
+        /// The provider, for example github, stripe, revenuecat or generic. The Worker says which it supports.
         provider: String,
-        /// Change this project's derived webhook secrets (github, revenuecat and generic). The URL stays the same.
-        #[arg(long)]
-        rotate: bool,
         /// The signing secret the provider issued (Stripe's whsec_...). Stripe chooses its own, so it is given to Slurp.
         #[arg(long)]
         secret: Option<String>,
@@ -99,24 +101,20 @@ pub(crate) enum Project {
     Setup {
         project: String,
     },
-    Update {
-        project: String,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        geo: Option<bool>,
-    },
 }
 
 #[derive(Subcommand)]
 pub(crate) enum KeyCommand {
-    /// Create a key. Name it for what sends with it; every event it sends is stamped with that name as `sender`.
+    /// Create a key. A publishable key needs --source (every event it sends carries that source as `sender`); a secret key
+    /// (read access to one project's archives) takes a label with --name.
     Create {
         project: String,
         #[arg(long,value_parser=["publishable","secret"])]
         scope: String,
+        /// The source of a publishable key, such as web or ios.
+        #[arg(long, conflicts_with = "name")]
+        source: Option<String>,
+        /// The label of a secret key.
         #[arg(long)]
         name: Option<String>,
     },
@@ -149,13 +147,12 @@ pub(crate) fn home() -> Result<PathBuf> {
     slurp_client::config::home()
 }
 pub(crate) use crate::output::configure as configure_output;
-use slurp_app::project_setup::service_error;
 pub(crate) fn emit(value: &impl serde::Serialize) -> Result<()> {
     crate::output::emit(crate::output::Kind::General, value)
 }
-async fn resolve(client: &rpc::ProjectClient, project: &str) -> Result<rpc::ProjectInfo> {
+async fn resolve(client: &Api, project: &str) -> Result<api::ProjectInfo> {
     client
-        .get_project(&rpc::GetProjectRequest {
+        .call::<api::GetProject>(&api::GetProjectRequest {
             project: project.into(),
         })
         .await
@@ -163,9 +160,60 @@ async fn resolve(client: &rpc::ProjectClient, project: &str) -> Result<rpc::Proj
         .map_err(service_error)
 }
 
+fn key_scope(scope: &str) -> KeyScope {
+    if scope == "secret" {
+        KeyScope::Secret
+    } else {
+        KeyScope::Publishable
+    }
+}
+
+/// The request for `slurp project key create`: a publishable key needs a source, a secret key takes a label.
+fn create_key_request(
+    project: String,
+    scope: &str,
+    source: Option<String>,
+    name: Option<String>,
+) -> Result<api::CreateKeyRequest> {
+    let scope = key_scope(scope);
+    match scope {
+        KeyScope::Publishable => {
+            let source = source.ok_or_else(|| {
+                anyhow!("a publishable key needs --source NAME (web, ios, ...): the source its events carry as `sender`")
+            })?;
+            if name.is_some() {
+                bail!("--name labels a secret key; a publishable key is named by its --source");
+            }
+            if !slurp_app::project_setup::valid_source(&source) {
+                bail!(
+                    "a source is a lowercase name of 1 to 32 characters (letters, digits, underscore) starting with a letter, such as web or ios"
+                );
+            }
+            Ok(api::CreateKeyRequest {
+                project,
+                scope,
+                source: Some(source),
+                name: None,
+            })
+        }
+        KeyScope::Secret => {
+            if source.is_some() {
+                bail!("--source names the source of a publishable key; a secret key takes --name");
+            }
+            Ok(api::CreateKeyRequest {
+                project,
+                scope,
+                source: None,
+                name,
+            })
+        }
+    }
+}
+
 async fn run(cli: Global, command: Command) -> Result<u8> {
     if let Command::Send {
         to,
+        source,
         event,
         data,
         user_id,
@@ -183,6 +231,7 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
             cli.workspace.as_deref(),
             cli.backend.as_deref(),
             to.as_deref(),
+            source.as_deref(),
         )
         .await?;
         let http = slurp_client::http_client()?;
@@ -201,6 +250,7 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
     }
     if let Command::Identify {
         to,
+        source,
         user_id,
         anonymous_id,
         data,
@@ -212,6 +262,7 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
             cli.workspace.as_deref(),
             cli.backend.as_deref(),
             to.as_deref(),
+            source.as_deref(),
         )
         .await?;
         send(
@@ -234,7 +285,6 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
     let backend =
         crate::backend::resolve_with_environment(&root, &home()?, cli.backend.as_deref())?;
     let backend = backend.as_str();
-    let http = slurp_client::http_client()?;
     let backend = slurp_client::config::normalize_backend(backend)?;
     let backend = backend.as_str();
     if matches!(command, Command::Logout) {
@@ -243,19 +293,19 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
         return Ok(0);
     }
     let auth = crate::login::token(backend)?;
-    let projects = rpc::ProjectClient::new(backend, http.clone(), Some(auth.clone()));
+    let projects = Api::new(backend, &auth)?;
     match command {
         Command::Whoami => {
             let who = crate::login::whoami(backend, &auth)
                 .await
                 .map_err(service_error)?;
             emit(
-                &json!({"backend": backend, "scope": who.scope, "project": who.project, "name": who.name}),
+                &json!({"backend": backend, "scope": who.scope, "project": who.project, "source": who.source, "name": who.name}),
             )?
         }
         Command::Project(Project::List) => emit(
             &projects
-                .list_projects(&rpc::ListProjectsRequest {})
+                .call::<api::ListProjects>(&api::ListProjectsRequest {})
                 .await
                 .map_err(service_error)?
                 .projects,
@@ -264,16 +314,14 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
             KeyCommand::Create {
                 project,
                 scope,
+                source,
                 name,
             } => {
                 let project = resolve(&projects, &project).await?.id;
+                let request = create_key_request(project, &scope, source, name)?;
                 emit(
                     &projects
-                        .create_key(&rpc::CreateKeyRequest {
-                            project,
-                            scope,
-                            name,
-                        })
+                        .call::<api::CreateKey>(&request)
                         .await
                         .map_err(service_error)?,
                 )?;
@@ -282,7 +330,10 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
                 let project = resolve(&projects, &project).await?.id;
                 emit(
                     &projects
-                        .list_keys(&rpc::ListKeysRequest { project, scope })
+                        .call::<api::ListKeys>(&api::ListKeysRequest {
+                            project,
+                            scope: scope.as_deref().map(key_scope),
+                        })
                         .await
                         .map_err(service_error)?,
                 )?;
@@ -291,104 +342,51 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
                 let project = resolve(&projects, &project).await?.id;
                 emit(
                     &projects
-                        .revoke_key(&rpc::RevokeKeyRequest { project, key_id })
+                        .call::<api::RevokeKey>(&api::RevokeKeyRequest { project, key_id })
                         .await
                         .map_err(service_error)?,
                 )?;
             }
         },
         Command::Project(Project::Show { project }) => emit(&resolve(&projects, &project).await?)?,
-        Command::Project(Project::Create {
-            name,
-            title,
-            no_geo,
-        }) => emit(
+        Command::Project(Project::Create { name, title }) => emit(
             &projects
-                .create_project(&rpc::CreateProjectRequest {
-                    name,
-                    title,
-                    geo_enabled: Some(!no_geo),
-                })
+                .call::<api::CreateProject>(&api::CreateProjectRequest { name, title })
                 .await
                 .map_err(service_error)?,
-        )?,
-        Command::Project(Project::Update {
-            project,
-            name,
-            title,
-            geo,
-        }) => emit(
-            &projects
-                .update_project(&rpc::UpdateProjectRequest {
-                    project,
-                    name,
-                    title,
-                    geo_enabled: geo,
-                })
-                .await
-                .map_err(service_error)?
-                .project,
         )?,
         Command::Project(Project::Webhook {
             project,
             provider,
-            rotate,
             secret,
         }) => {
+            let project = resolve(&projects, &project).await?.id;
             let hook = projects
-                .get_webhook(&rpc::GetWebhookRequest {
+                .call::<api::ConnectWebhook>(&api::ConnectWebhookRequest {
                     project,
-                    provider: provider.clone(),
-                    rotate: rotate.then_some(true),
+                    provider,
                     secret,
                 })
                 .await
                 .map_err(service_error)?;
-            let steps: &[&str] = match provider.as_str() {
-                "github" => &[
-                    "In the repository: Settings > Webhooks > Add webhook.",
-                    "Payload URL: the url above. Content type: application/json.",
-                    "Secret: the secret above.",
-                    "Choose the events to send (Releases, Workflow runs, Deployment statuses are the useful ones), then Add webhook.",
-                ],
-                "stripe" => &[
-                    "In the Stripe Dashboard: Developers > Webhooks > Add endpoint.",
-                    "Endpoint URL: the url above.",
-                    "Select the events to send (invoice.paid, customer.subscription.*, checkout.session.completed).",
-                    "Stripe chooses the signing secret. Reveal it on the endpoint (whsec_...) and give it to Slurp: slurp project webhook PROJECT stripe --secret whsec_...",
-                    "Until then the endpoint refuses deliveries.",
-                ],
-                "revenuecat" => &[
-                    "In RevenueCat: Project settings > Integrations > Webhooks > New.",
-                    "Webhook URL: the url above.",
-                    "Authorization header value: the secret above, pasted exactly. RevenueCat sends it on every delivery.",
-                    "Choose the environment (send both Sandbox and Production if you want test purchases too) and the apps, then use Send test event.",
-                    "Query the revenue view: SELECT * FROM revenue WHERE environment = 'PRODUCTION'.",
-                ],
-                _ => &[
-                    "POST any body to the url above. Name the event with ?event=NAME (or a `type` or `event` field in a JSON body).",
-                    "Send an Idempotency-Key header so a retry of the same POST is one event; without one, each POST is its own event unless the body has a `timestamp`.",
-                    "Optional: sign the body with HMAC-SHA256 using the secret and send X-Slurp-Signature: sha256=<hex>; a wrong signature is refused.",
-                ],
-            };
             emit(&json!({
                 "provider": hook.provider,
                 "url": hook.url,
                 "secret": hook.secret,
-                "sender": hook.key_name,
-                "steps": steps,
-                "note": "Every event from this provider carries sender = the key's name. Run slurp project webhook ... --rotate to change the secret."
+                "sender": hook.sender,
+                "steps": hook.steps,
+                "note": format!("Every event from this provider carries sender = {}.", hook.sender)
             }))?;
         }
         Command::Project(Project::Setup { project }) => {
             let setup = projects
-                .get_project(&rpc::GetProjectRequest { project })
+                .call::<api::GetProject>(&api::GetProjectRequest { project })
                 .await
                 .map_err(service_error)?;
             let keys = projects
-                .list_keys(&rpc::ListKeysRequest {
+                .call::<api::ListKeys>(&api::ListKeysRequest {
                     project: setup.project.id.clone(),
-                    scope: Some("publishable".into()),
+                    scope: Some(KeyScope::Publishable),
                 })
                 .await
                 .map_err(service_error)?
@@ -396,23 +394,27 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
                 .into_iter()
                 .filter(|key| key.revoked_at.is_none())
                 .collect::<Vec<_>>();
-            let Some(first) = keys.first().and_then(|key| key.key.clone()) else {
+            let Some(first) = keys
+                .iter()
+                .find(|key| key.source.as_deref() == Some("default"))
+                .or(keys.first())
+                .and_then(|key| key.key.clone())
+            else {
                 bail!(
-                    "this project has no active publishable key; create one with slurp project key create {} --scope publishable --name <sender>",
+                    "this project has no active publishable key; create one with slurp project key create {} --scope publishable --source <source>",
                     setup.project.id
                 );
             };
             emit(&json!({
                 "project": setup.project.id,
-                "keys": keys.iter().map(|key| json!({"name": key.name, "key": key.key})).collect::<Vec<_>>(),
+                "keys": keys.iter().map(|key| json!({"source": key.source, "key": key.key})).collect::<Vec<_>>(),
                 "environment": {"SLURP_BACKEND": backend, "SLURP_PUBLISHABLE_KEY": first, "SLURP_PROJECT_ID": setup.project.id, "SLURP_PROJECT_NAME": setup.project.name, "SLURP_INGEST_URL": setup.ingest_url},
-                "note": "Each publishable key is one sender: events it sends carry its name as `sender`. Events are accepted durably, then published on the service schedule."
+                "note": "Each publishable key is one source: events it sends carry its source as `sender`. Events are accepted durably, then published on the Worker's schedule."
             }))?;
         }
         Command::Read {
             project,
             follow,
-            archive,
             after,
         } => {
             let project = if project.starts_with("prj_") {
@@ -423,13 +425,13 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
             let remote = slurp_client::HttpRemote::new(backend, &project, &auth)?;
             if follow {
                 eprintln!(
-                    "Following published batches; new events may take up to an hour to appear."
+                    "Following published archives; new events may take several minutes to appear."
                 );
             }
             slurp_client::reader::read_published(
                 &remote,
                 &mut std::io::stdout().lock(),
-                archive,
+                &mut std::io::stderr().lock(),
                 after,
                 follow,
             )
@@ -498,64 +500,99 @@ fn record(
 /// Largest single record the Worker accepts. Records are stored whole, never truncated.
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 
+/// A courtesy check of the minimal record in `docs/contracts.md` ("Sending events"), so a mistake shows before a round trip.
+/// The Worker is the authority: it also checks nesting depth and lone surrogates, which this does not.
 fn validate_record(line: &str) -> Result<()> {
     if line.len() > MAX_RECORD_BYTES {
         bail!("record exceeds 1 MiB");
     }
     let record: Value = serde_json::from_str(line)?;
-    if record
-        .get("id")
-        .and_then(Value::as_str)
-        .is_none_or(|v| v.is_empty() || v.len() > 256)
-        || !record.get("data").is_some_and(Value::is_object)
+    let object = record
+        .as_object()
+        .ok_or_else(|| anyhow!("a record is one JSON object"))?;
+    // Optional fields are type-checked when present; an explicit null is invalid.
+    let text = |name: &str| -> Result<Option<&str>> {
+        match object.get(name) {
+            None => Ok(None),
+            Some(Value::String(value)) => Ok(Some(value)),
+            Some(_) => bail!("{name} must be a string"),
+        }
+    };
+    let kind = text("type")?.unwrap_or("track");
+    if kind != "track" && kind != "identify" {
+        bail!("type must be \"track\" or \"identify\"");
+    }
+    if let Some(id) = text("id")?
+        && !(1..=256).contains(&id.len())
     {
-        bail!("records require an id of 1 to 256 bytes and object data");
+        bail!("id must be 1 to 256 bytes");
     }
-    let timestamp = record
-        .get("timestamp")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("record timestamp is required"))?;
-    chrono::DateTime::parse_from_rfc3339(timestamp)?;
-    // RFC 3339 allows a lowercase `t` between date and time; the Worker wants the usual capital.
-    if timestamp.as_bytes().get(10) != Some(&b'T') {
-        bail!("record timestamp must be RFC 3339 with a capital T");
+    if let Some(timestamp) = text("timestamp")? {
+        // Upper-case T and Z only, like the Worker: DuckDB cannot read the lower-case forms RFC 3339 also allows.
+        anyhow::ensure!(
+            !timestamp.contains(['t', 'z']),
+            "timestamp must be RFC 3339"
+        );
+        chrono::DateTime::parse_from_rfc3339(timestamp)
+            .map_err(|_| anyhow!("timestamp must be RFC 3339"))?;
     }
-    match record.get("type").and_then(Value::as_str) {
-        Some("track")
-            if record
-                .get("event")
-                .and_then(Value::as_str)
-                .is_some_and(|v| !v.trim().is_empty() && v.chars().count() <= 200) => {}
-        Some("identify")
-            if record
-                .get("user_id")
-                .and_then(Value::as_str)
-                .is_some_and(|v| !v.is_empty()) => {}
-        _ => bail!("track records require an event; identify records require a user_id"),
-    }
-    for field in ["user_id", "anonymous_id", "session_id"] {
-        if record
-            .get(field)
-            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
-        {
-            bail!("identity fields must be nonempty strings when provided");
+    for field in ["data", "context"] {
+        if object.get(field).is_some_and(|value| !value.is_object()) {
+            bail!("{field} must be an object");
         }
     }
-    if record
-        .get("context")
-        .is_some_and(|value| !value.is_object())
-    {
-        bail!("context must be an object");
+    for field in ["user_id", "anonymous_id", "session_id"] {
+        if text(field)?.is_some_and(str::is_empty) {
+            bail!("{field} must be a non-empty string when provided");
+        }
     }
-    if record.get("received_at").is_some()
-        || record.get("received_seq").is_some()
-        || record.get("sender").is_some()
-        || record.pointer("/context/geo").is_some()
-    {
-        bail!("server annotation fields are reserved");
+    let event = text("event")?;
+    if event.is_some_and(|name| !(1..=200).contains(&name.chars().count())) {
+        bail!("event must be 1 to 200 characters");
+    }
+    if kind == "track" && event.is_none() {
+        bail!("a track record needs an event");
+    }
+    if kind == "identify" && text("user_id")?.is_none() {
+        bail!("an identify record needs a user_id");
     }
     Ok(())
 }
+
+/// What the Worker said about a refused request: its `error`, and the first few rejected lines.
+fn refusal(body: &[u8]) -> String {
+    let Ok(body) = serde_json::from_slice::<Value>(body) else {
+        return String::new();
+    };
+    let mut text = body["error"].as_str().unwrap_or_default().to_owned();
+    if let Some(rejected) = body["rejected"].as_array() {
+        for entry in rejected.iter().take(5) {
+            text.push_str(&format!(
+                "; line {}: {}",
+                entry["line"],
+                entry["reason"].as_str().unwrap_or_default()
+            ));
+        }
+        if rejected.len() > 5 {
+            text.push_str(&format!("; and {} more", rejected.len() - 5));
+        }
+    }
+    text
+}
+
+/// A small response body, read in full only when it is small; the acknowledgement and error bodies are tiny.
+async fn small_body(mut response: slurp_client::reqwest::Response) -> Vec<u8> {
+    const MAX_BYTES: usize = 16 * 1024;
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if bytes.len() + chunk.len() > MAX_BYTES {
+            return Vec::new();
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    bytes
+}
+
 async fn send(
     http: &slurp_client::reqwest::Client,
     url: &str,
@@ -572,20 +609,22 @@ async fn send(
             .await;
         let delay = match result {
             Ok(response) if response.status().as_u16() == 200 => {
-                // HTTP 200 confirms durable acceptance. Optional timing must not turn that into a retry.
-                // A slow optional response body must not delay an already acknowledged event.
+                // HTTP 200 confirms durable acceptance. A slow or odd acknowledgement body must not turn that into a retry.
                 const MAX_ACK_WAIT: Duration = Duration::from_secs(1);
-                let publication = tokio::time::timeout(MAX_ACK_WAIT, ingest_publication(response))
+                let ack = tokio::time::timeout(MAX_ACK_WAIT, small_body(response))
                     .await
-                    .ok()
-                    .flatten();
-                let events = body
+                    .unwrap_or_default();
+                let sent = body
                     .split(|byte| *byte == b'\n')
                     .filter(|line| !line.is_empty())
                     .count();
+                let accepted = serde_json::from_slice::<Value>(&ack)
+                    .ok()
+                    .and_then(|ack| ack["accepted"].as_u64())
+                    .unwrap_or(sent as u64);
                 crate::output::emit(
                     crate::output::Kind::Send,
-                    &json!({"accepted":true,"events":events,"publication":publication}),
+                    &json!({"accepted":true,"events":accepted}),
                 )?;
                 return Ok(());
             }
@@ -596,7 +635,18 @@ async fn send(
                     .map_or(1 << attempt, |wait| wait.as_secs())
                     .min(30)
             }
-            Ok(response) => bail!("event send rejected (HTTP {})", response.status().as_u16()),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let detail = refusal(&small_body(response).await);
+                bail!(
+                    "event send rejected (HTTP {status}){}",
+                    if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {detail}")
+                    }
+                )
+            }
             Err(_) => 1 << attempt,
         };
         if attempt == 3 {
@@ -605,29 +655,6 @@ async fn send(
         tokio::time::sleep(Duration::from_secs(delay)).await;
     }
     bail!("event acceptance could not be confirmed; retry the same canonical records with --stdin")
-}
-
-async fn ingest_publication(
-    mut response: slurp_client::reqwest::Response,
-) -> Option<rpc::PublicationStatus> {
-    #[derive(serde::Deserialize)]
-    struct Ack {
-        publication: Option<rpc::PublicationStatus>,
-    }
-    // Metadata is small, optional, and never logged. The acknowledgement may be just {"ok":true}.
-    const MAX_ACK_BYTES: usize = 16 * 1024;
-    let mut bytes = Vec::new();
-    loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) if bytes.len() + chunk.len() <= MAX_ACK_BYTES => {
-                bytes.extend_from_slice(&chunk)
-            }
-            Ok(None) => break,
-            _ => return None,
-        }
-    }
-    let ack = serde_json::from_slice::<Ack>(&bytes).ok()?;
-    slurp_client::publication::validated(ack.publication)
 }
 
 async fn stream_stdin(
@@ -687,18 +714,55 @@ async fn stream_stdin(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_record;
+    use super::{create_key_request, refusal, validate_record};
     use serde_json::Value;
+    use slurp_client::api::KeyScope;
+
+    #[test]
+    fn a_minimal_record_is_enough_and_only_what_the_contract_names_is_checked() {
+        for good in [
+            r#"{"event":"signup"}"#,
+            r#"{"type":"identify","user_id":"u1"}"#,
+            r#"{"id":"x","event":"a","timestamp":"2026-11-07T12:00:00Z","data":{},"context":{},"custom":1}"#,
+            // Nothing is reserved: server metadata lives outside the record.
+            r#"{"event":"a","received_at":"x","sender":"y","context":{"geo":{}}}"#,
+        ] {
+            assert!(validate_record(good).is_ok(), "{good}");
+        }
+        for bad in [
+            r#"[]"#,
+            r#"{}"#,
+            r#"{"type":"bad","event":"a"}"#,
+            r#"{"type":null,"event":"a"}"#,
+            r#"{"event":""}"#,
+            r#"{"event":null}"#,
+            r#"{"type":"track"}"#,
+            r#"{"type":"identify"}"#,
+            r#"{"event":"a","id":""}"#,
+            r#"{"event":"a","timestamp":"today"}"#,
+            r#"{"event":"a","timestamp":"2026-02-30T00:00:00Z"}"#,
+            r#"{"event":"a","data":[]}"#,
+            r#"{"event":"a","context":"x"}"#,
+            r#"{"event":"a","user_id":""}"#,
+            r#"{"event":"a","session_id":7}"#,
+        ] {
+            assert!(validate_record(bad).is_err(), "{bad}");
+        }
+        let long = format!(r#"{{"event":"{}"}}"#, "e".repeat(201));
+        assert!(validate_record(&long).is_err());
+        let wide = format!(r#"{{"event":"{}"}}"#, "雪".repeat(200));
+        assert!(validate_record(&wide).is_ok(), "200 code points, 600 bytes");
+        let big_id = format!(r#"{{"event":"a","id":"{}"}}"#, "i".repeat(257));
+        assert!(validate_record(&big_id).is_err());
+    }
 
     /// The Worker is the authority on what a record may contain; the CLI's check is only a courtesy that saves a round trip.
     /// So the CLI must never refuse a record the Worker accepts. It may accept some the Worker refuses (the Worker scans the raw
     /// bytes for nesting depth, lone surrogates, duplicate keys and number forms; the CLI parses JSON), but that list is kept
     /// here, by name, so a new difference is noticed.
-    const LENIENT: &[&str] = &[
-        "duplicate key via escape at depth 2",
-        "duplicate top-level id",
-        "duplicate key at depth 2",
-    ];
+    ///
+    /// It is empty: the CLI and the Worker agree on every vector today.
+    const LENIENT: &[&str] = &[];
 
     #[test]
     fn the_cli_never_refuses_what_the_worker_accepts_and_its_leniency_is_listed() {
@@ -737,5 +801,44 @@ mod tests {
             lenient, LENIENT,
             "the CLI accepts records the Worker refuses; update the list if that is intended"
         );
+    }
+
+    #[test]
+    fn a_publishable_key_needs_a_source_and_a_secret_key_takes_a_name() {
+        let project = || "prj_0123456789abcdef".to_owned();
+        let publishable = create_key_request(project(), "publishable", Some("web".into()), None)
+            .expect("publishable with a source");
+        assert_eq!(publishable.scope, KeyScope::Publishable);
+        assert_eq!(publishable.source.as_deref(), Some("web"));
+        assert_eq!(publishable.name, None);
+        let secret = create_key_request(project(), "secret", None, Some("ci".into()))
+            .expect("secret with a name");
+        assert_eq!(secret.scope, KeyScope::Secret);
+        assert_eq!(secret.name.as_deref(), Some("ci"));
+        assert_eq!(secret.source, None);
+        assert!(create_key_request(project(), "secret", None, None).is_ok());
+        for refused in [
+            create_key_request(project(), "publishable", None, None),
+            create_key_request(project(), "publishable", Some("Web".into()), None),
+            create_key_request(
+                project(),
+                "publishable",
+                Some("web".into()),
+                Some("x".into()),
+            ),
+            create_key_request(project(), "secret", Some("web".into()), None),
+        ] {
+            assert!(refused.is_err());
+        }
+    }
+
+    #[test]
+    fn a_refusal_names_the_rejected_lines() {
+        let body = br#"{"error":"invalid records","rejected":[{"line":3,"reason":"timestamp must be RFC 3339"}]}"#;
+        assert_eq!(
+            refusal(body),
+            "invalid records; line 3: timestamp must be RFC 3339"
+        );
+        assert_eq!(refusal(b"<html>"), "");
     }
 }

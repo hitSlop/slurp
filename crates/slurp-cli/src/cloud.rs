@@ -770,23 +770,24 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
     let health = health(&receipt.url).await.ok();
     let mut projects = vec![];
     if let Ok(token) = crate::login::token(&receipt.url) {
-        let http = slurp_client::http_client()?;
-        let client =
-            slurp_client::rpc::ProjectClient::new(&receipt.url, http.clone(), Some(token.clone()));
+        use slurp_client::api;
+        let client = slurp_app::project_setup::Api::new(&receipt.url, &token)?;
         if let Ok(list) = client
-            .list_projects(&slurp_client::rpc::ListProjectsRequest {})
+            .call::<api::ListProjects>(&api::ListProjectsRequest {})
             .await
         {
-            let archive = slurp_client::rpc::ArchiveClient::new(&receipt.url, http, Some(token));
             for project in list.projects {
-                let coverage = archive
-                    .get_coverage(&slurp_client::rpc::GetCoverageRequest {
+                // The coverage rides on every listing; one archive is enough to read it.
+                let coverage = client
+                    .call::<api::ListArchives>(&api::ListArchivesRequest {
                         project: project.id.clone(),
+                        after: None,
+                        limit: Some(1),
                     })
                     .await
                     .ok()
-                    .and_then(|c| c.coverage);
-                projects.push(json!({"id": project.id, "name": project.name, "latest_published": coverage.and_then(|c| c.latest_published)}));
+                    .map(|page| page.coverage);
+                projects.push(json!({"id": project.id, "name": project.name, "latest_published": coverage.and_then(|c| c.last)}));
             }
         }
     }
@@ -932,7 +933,7 @@ async fn doctor(target: &WorkerArg, machine: bool) -> Result<u8> {
                 Ok(token) => {
                     let ok = crate::login::whoami(&receipt.url, &token)
                         .await
-                        .is_ok_and(|who| who.scope == "admin");
+                        .is_ok_and(|who| who.scope == slurp_client::api::TokenScope::Admin);
                     add(
                         "saved admin token works",
                         ok,
@@ -974,6 +975,23 @@ async fn doctor(target: &WorkerArg, machine: bool) -> Result<u8> {
     Ok(u8::from(failed > 0))
 }
 
+/// The variables for an upgraded Worker: the new bundle's settings, each keeping the value this Worker was deployed with. A
+/// setting the new bundle no longer has (renamed or removed) is dropped, and one it added takes its default.
+fn upgraded_vars(
+    bundle: &serde_json::Map<String, Value>,
+    deployed: &serde_json::Map<String, Value>,
+    build: &str,
+) -> serde_json::Map<String, Value> {
+    let mut vars = bundle.clone();
+    for (name, value) in deployed {
+        if vars.contains_key(name) {
+            vars.insert(name.clone(), value.clone());
+        }
+    }
+    vars.insert("SLURP_BUILD".into(), json!(build));
+    vars
+}
+
 async fn upgrade(args: &UpgradeArgs, machine: bool) -> Result<u8> {
     let progress = Progress { machine };
     let mut receipt = pick_receipt(args.target.worker.as_deref())?;
@@ -989,8 +1007,7 @@ async fn upgrade(args: &UpgradeArgs, machine: bool) -> Result<u8> {
         )?;
         return Ok(0);
     }
-    let mut vars = receipt.vars.clone();
-    vars.insert("SLURP_BUILD".into(), json!(bundle.build));
+    let vars = upgraded_vars(&bundle.vars, &receipt.vars, &bundle.build);
     let staged = stage(&bundle, &receipt.worker, &receipt.bucket, &vars)?;
     progress.step("Deploying the new Worker (your data, secret and settings are kept)");
     let account = receipt.account_id.as_deref();
@@ -1121,6 +1138,21 @@ mod tests {
         assert!(!version_at_least("4.46.0", (4, 100)));
         assert!(!version_at_least("3.99.0", (4, 100)));
         assert!(!version_at_least("", (4, 100)));
+    }
+
+    #[test]
+    fn an_upgrade_keeps_chosen_settings_drops_renamed_ones_and_adds_new_ones() {
+        let map = |value: Value| value.as_object().unwrap().clone();
+        let bundle =
+            map(json!({"SEAL_INTERVAL_MS": "600000", "ARCHIVE_MAX_BYTES": "8388608", "GEO": "on"}));
+        let deployed =
+            map(json!({"SEAL_INTERVAL_MS": "60000", "SEAL_MAX_BYTES": "1", "SLURP_BUILD": "old"}));
+        let vars = upgraded_vars(&bundle, &deployed, "new");
+        assert_eq!(vars["SEAL_INTERVAL_MS"], "60000");
+        assert_eq!(vars["ARCHIVE_MAX_BYTES"], "8388608");
+        assert_eq!(vars["GEO"], "on");
+        assert_eq!(vars["SLURP_BUILD"], "new");
+        assert!(!vars.contains_key("SEAL_MAX_BYTES"));
     }
 
     #[test]

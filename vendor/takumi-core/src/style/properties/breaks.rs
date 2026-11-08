@@ -1,0 +1,268 @@
+//! The fragmentation properties, which only paged output reads.
+
+use std::fmt;
+
+use cssparser::{BasicParseErrorKind, ParseError as CssParseError, Parser};
+
+use crate::style::{
+  Animatable, Color, FromCss, MakeComputed, ParseResult, SizingContext, ToCss, impl_css_enum, lerp,
+};
+
+/// A `break-before` or `break-after` value, Blink's `EBreakBetween`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum BreakBetween {
+  /// No forced break, and none avoided.
+  #[default]
+  Auto,
+  /// Avoid a break in any fragmentation context.
+  Avoid,
+  /// Avoid a page break.
+  AvoidPage,
+  /// Avoid a column break.
+  AvoidColumn,
+  /// Force a column break.
+  Column,
+  /// Force a page break.
+  Page,
+  /// Force a page break to a left page.
+  Left,
+  /// Force a page break to a right page.
+  Right,
+  /// Force a page break to a recto page.
+  Recto,
+  /// Force a page break to a verso page.
+  Verso,
+}
+
+impl_css_enum!(
+  BreakBetween,
+  "auto" => BreakBetween::Auto,
+  "avoid" => BreakBetween::Avoid,
+  "avoid-page" => BreakBetween::AvoidPage,
+  "avoid-column" => BreakBetween::AvoidColumn,
+  "column" => BreakBetween::Column,
+  "page" | "always" => BreakBetween::Page,
+  "left" => BreakBetween::Left,
+  "right" => BreakBetween::Right,
+  "recto" => BreakBetween::Recto,
+  "verso" => BreakBetween::Verso
+);
+
+impl BreakBetween {
+  /// Whether the value forces a page break, as Blink's `IsForcedBreakValue` decides when paginated.
+  pub fn forces_page_break(self) -> bool {
+    matches!(
+      self,
+      Self::Page | Self::Left | Self::Right | Self::Recto | Self::Verso
+    )
+  }
+
+  /// Whether the value avoids a page break, as Blink's `IsAvoidBreakValue` decides when paginated.
+  pub fn avoids_page_break(self) -> bool {
+    matches!(self, Self::Avoid | Self::AvoidPage)
+  }
+}
+
+/// A `break-inside` value, Blink's `EBreakInside`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum BreakInside {
+  /// The box may be split across pages.
+  #[default]
+  Auto,
+  /// Avoid a break inside the box in any fragmentation context.
+  Avoid,
+  /// Avoid a page break inside the box.
+  AvoidPage,
+  /// Avoid a column break inside the box.
+  AvoidColumn,
+}
+
+impl_css_enum!(
+  BreakInside,
+  "auto" => BreakInside::Auto,
+  "avoid" => BreakInside::Avoid,
+  "avoid-page" => BreakInside::AvoidPage,
+  "avoid-column" => BreakInside::AvoidColumn
+);
+
+impl BreakInside {
+  /// Whether the value avoids a page break, as Blink's `IsAvoidBreakValue` decides when paginated.
+  pub fn avoids_page_break(self) -> bool {
+    matches!(self, Self::Avoid | Self::AvoidPage)
+  }
+}
+
+/// A `widows` / `orphans` value: the fewest lines of a block a page break may
+/// leave on either side, per CSS 2 §13.3.2.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MinLines(u32);
+
+impl Default for MinLines {
+  fn default() -> Self {
+    Self(2)
+  }
+}
+
+impl MinLines {
+  /// The minimum line count as a usize for solver arithmetic.
+  pub fn get(&self) -> usize {
+    self.0 as usize
+  }
+}
+
+impl From<u32> for MinLines {
+  fn from(lines: u32) -> Self {
+    Self(lines.max(1))
+  }
+}
+
+impl MakeComputed for MinLines {}
+
+impl Animatable for MinLines {
+  fn interpolate(
+    &mut self,
+    from: &Self,
+    to: &Self,
+    progress: f32,
+    _sizing: &SizingContext,
+    _current_color: Color,
+  ) {
+    self.0 = lerp(from.0 as f32, to.0 as f32, progress).round() as u32;
+  }
+}
+
+impl<'i> FromCss<'i> for MinLines {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let value = input.expect_integer()?;
+
+    if value < 1 {
+      return Err(CssParseError::from_basic_kind(
+        BasicParseErrorKind::QualifiedRuleInvalid,
+      ));
+    }
+
+    Ok(Self(value as u32))
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["<number>"];
+}
+
+impl ToCss for MinLines {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    self.0.to_css(dest)
+  }
+}
+
+/// A `box-decoration-break` value, deciding how box decorations paint across
+/// page fragments.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum BoxDecorationBreak {
+  /// Decorations paint as if the box were unfragmented, then get sliced: the
+  /// edge at a break is open.
+  #[default]
+  Slice,
+  /// Every fragment paints its own complete decorations.
+  Clone,
+}
+
+impl_css_enum!(
+  BoxDecorationBreak,
+  "slice" => BoxDecorationBreak::Slice,
+  "clone" => BoxDecorationBreak::Clone
+);
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::{ToCss, properties::traits::FromCssStr};
+
+  #[test]
+  fn break_between_round_trips() {
+    for (css, expected) in [
+      ("auto", BreakBetween::Auto),
+      ("avoid", BreakBetween::Avoid),
+      ("avoid-page", BreakBetween::AvoidPage),
+      ("avoid-column", BreakBetween::AvoidColumn),
+      ("column", BreakBetween::Column),
+      ("page", BreakBetween::Page),
+      ("left", BreakBetween::Left),
+      ("right", BreakBetween::Right),
+      ("recto", BreakBetween::Recto),
+      ("verso", BreakBetween::Verso),
+    ] {
+      let parsed = BreakBetween::from_css_str(css).unwrap();
+
+      assert_eq!(parsed, expected, "{css}");
+      assert_eq!(parsed.to_css_string(), css);
+    }
+  }
+
+  #[test]
+  fn the_legacy_always_is_a_page_break() {
+    assert_eq!(BreakBetween::from_css_str("always"), Ok(BreakBetween::Page));
+  }
+
+  #[test]
+  fn sided_breaks_force_a_page_break() {
+    for value in [
+      BreakBetween::Page,
+      BreakBetween::Left,
+      BreakBetween::Right,
+      BreakBetween::Recto,
+      BreakBetween::Verso,
+    ] {
+      assert!(value.forces_page_break(), "{value:?}");
+    }
+
+    assert!(!BreakBetween::Column.forces_page_break());
+    assert!(!BreakBetween::AvoidColumn.avoids_page_break());
+    assert!(BreakBetween::AvoidPage.avoids_page_break());
+  }
+
+  #[test]
+  fn parses_box_decoration_break() {
+    assert_eq!(
+      BoxDecorationBreak::from_css_str("slice"),
+      Ok(BoxDecorationBreak::Slice)
+    );
+    assert_eq!(
+      BoxDecorationBreak::from_css_str("clone"),
+      Ok(BoxDecorationBreak::Clone)
+    );
+  }
+
+  #[test]
+  fn parses_min_lines() {
+    assert_eq!(MinLines::from_css_str("1"), Ok(MinLines(1)));
+    assert_eq!(MinLines::from_css_str("3"), Ok(MinLines(3)));
+    assert!(MinLines::from_css_str("0").is_err());
+    assert!(MinLines::from_css_str("-2").is_err());
+    assert!(MinLines::from_css_str("2.5").is_err());
+    assert!(MinLines::from_css_str("auto").is_err());
+  }
+
+  #[test]
+  fn min_lines_from_clamps() {
+    assert_eq!(MinLines::from(0), MinLines(1));
+    assert_eq!(MinLines::from(4), MinLines(4));
+    assert_eq!(MinLines::default(), MinLines(2));
+  }
+
+  #[test]
+  fn parses_break_inside() {
+    assert_eq!(BreakInside::from_css_str("auto"), Ok(BreakInside::Auto));
+    assert_eq!(BreakInside::from_css_str("avoid"), Ok(BreakInside::Avoid));
+    assert_eq!(
+      BreakInside::from_css_str("avoid-page"),
+      Ok(BreakInside::AvoidPage)
+    );
+    assert_eq!(
+      BreakInside::from_css_str("avoid-column"),
+      Ok(BreakInside::AvoidColumn)
+    );
+    assert!(!BreakInside::AvoidColumn.avoids_page_break());
+  }
+}

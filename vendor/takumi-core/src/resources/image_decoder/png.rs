@@ -1,0 +1,542 @@
+//! PNG stills, streamed downscaling, and APNG timelines.
+
+use std::{io::Cursor, sync::Arc};
+
+use png::{
+  BitDepth, BlendOp, ColorType, Decoder as PngRowDecoder, DisposeOp, FrameControl,
+  Reader as PngReader, Transformations,
+};
+
+use super::{
+  DecodeError, DecodeResult, DecodeTarget, DetectedImageFormat, Dispose, FrameInfo,
+  MAX_ANIMATION_FRAMES, MAX_ANIMATION_TOTAL_PIXELS, MAX_IMAGE_DIMENSION, PNG_SIGNATURE,
+  check_dimensions, covers_canvas, fit_to_target, rgba_buffer,
+};
+use crate::resources::{
+  image_buffer::{ImageBuffer, premultiply_rgba_in_place},
+  image_resampler::StreamResampler,
+};
+
+/// Decodes a PNG still as 8-bit RGBA, whatever its color type and depth.
+pub(crate) fn decode_png(bytes: &[u8]) -> DecodeResult<ImageBuffer> {
+  let mut reader = row_decoder(bytes).read_info().map_err(png_decode_error)?;
+  let (width, height) = (reader.info().width, reader.info().height);
+
+  check_dimensions(width, height)?;
+
+  let channels = output_channels(&reader).ok_or(DecodeError::InvalidBuffer)?;
+  let mut pixels = vec![
+    0;
+    reader
+      .output_buffer_size()
+      .ok_or(DecodeError::InvalidBuffer)?
+  ];
+
+  reader.next_frame(&mut pixels).map_err(png_decode_error)?;
+
+  if channels == 2 {
+    let mut rgba = vec![0; pixels.len() * 2];
+
+    expand_gray_alpha(&pixels, &mut rgba);
+    pixels = rgba;
+  }
+
+  rgba_buffer(pixels, (width, height))
+}
+
+pub(super) fn png_dimensions(bytes: &[u8]) -> DecodeResult<(u32, u32)> {
+  let mut decoder = row_decoder(bytes);
+  let info = decoder.read_header_info().map_err(png_decode_error)?;
+
+  Ok((info.width, info.height))
+}
+
+fn png_decode_error(error: png::DecodingError) -> DecodeError {
+  DecodeError::format(DetectedImageFormat::Png, error)
+}
+
+/// Writes gray-alpha pixels into `rgba` as RGBA, gray repeated in each color channel.
+fn expand_gray_alpha(gray_alpha: &[u8], rgba: &mut [u8]) {
+  for (rgba, &[gray, alpha]) in rgba
+    .as_chunks_mut::<4>()
+    .0
+    .iter_mut()
+    .zip(gray_alpha.as_chunks::<2>().0)
+  {
+    *rgba = [gray, gray, gray, alpha];
+  }
+}
+
+/// Streams an eligible non-interlaced PNG through [`StreamResampler`].
+pub(super) fn decode_png_scaled(
+  bytes: &[u8],
+  target: DecodeTarget,
+) -> Option<DecodeResult<ImageBuffer>> {
+  if !bytes.starts_with(&PNG_SIGNATURE) {
+    return None;
+  }
+
+  let mut reader = row_decoder(bytes).read_info().ok()?;
+
+  let info = reader.info();
+  let (native_width, native_height) = (info.width, info.height);
+  if info.interlaced
+    || native_width == 0
+    || native_height == 0
+    || native_width > MAX_IMAGE_DIMENSION
+    || native_height > MAX_IMAGE_DIMENSION
+    || !target.shrinks(native_width, native_height)
+  {
+    return None;
+  }
+
+  let channels = output_channels(&reader)?;
+  let mut resampler = StreamResampler::new(
+    (native_width, native_height),
+    (target.width, target.height),
+    target.algorithm,
+  );
+  let mut rgba_row = vec![0_u8; native_width as usize * 4];
+
+  loop {
+    let row = match reader.next_row() {
+      Ok(Some(row)) => row,
+      Ok(None) => break,
+      Err(error) => return Some(Err(png_decode_error(error))),
+    };
+
+    match channels {
+      4 => rgba_row.copy_from_slice(row.data()),
+      _ => expand_gray_alpha(row.data(), &mut rgba_row),
+    }
+
+    premultiply_rgba_in_place(&mut rgba_row);
+    resampler.push_row(&rgba_row);
+  }
+
+  Some(resampler.finish().ok_or(DecodeError::InvalidBuffer))
+}
+
+/// Whether the PNG carries an `acTL` animation control chunk.
+pub(crate) fn is_apng(bytes: &[u8]) -> bool {
+  bytes.starts_with(&PNG_SIGNATURE) && png_chunks(bytes).any(|(id, _)| &id == b"acTL")
+}
+
+/// Chunks of a PNG stream, as `(type, data)` pairs.
+fn png_chunks(bytes: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
+  let mut offset = PNG_SIGNATURE.len();
+  std::iter::from_fn(move || {
+    let header: [u8; 8] = bytes.get(offset..offset.checked_add(8)?)?.try_into().ok()?;
+    let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+    let start = offset + 8;
+    let data = bytes.get(start..start.checked_add(length)?)?;
+    offset = start.checked_add(length)?.checked_add(4)?;
+    Some(([header[4], header[5], header[6], header[7]], data))
+  })
+}
+
+pub(crate) fn apng_dimensions(bytes: &[u8]) -> DecodeResult<(u32, u32)> {
+  let reader = apng_reader(bytes)?;
+  let info = reader.info();
+  Ok((info.width, info.height))
+}
+
+/// Per-frame delays in milliseconds, in stream order, read from the `fcTL` chunks without decoding
+/// any pixels.
+pub(crate) fn apng_frame_infos(bytes: &[u8]) -> DecodeResult<Box<[FrameInfo]>> {
+  let (width, height) = apng_dimensions(bytes)?;
+  let frame_pixels = width as u64 * height as u64;
+  let mut total_pixels = 0_u64;
+  let mut frames = Vec::new();
+
+  for (id, data) in png_chunks(bytes) {
+    if &id != b"fcTL" {
+      continue;
+    }
+    if frames.len() >= MAX_ANIMATION_FRAMES {
+      break;
+    }
+
+    total_pixels += frame_pixels;
+    if total_pixels > MAX_ANIMATION_TOTAL_PIXELS {
+      break;
+    }
+
+    // `fcTL`: sequence, width, height, x, y, delay numerator, delay
+    // denominator, dispose op, blend op.
+    let Some(control) = data.get(..26) else {
+      break;
+    };
+    let read_32 = |offset: usize| {
+      u32::from_be_bytes([
+        control[offset],
+        control[offset + 1],
+        control[offset + 2],
+        control[offset + 3],
+      ])
+    };
+
+    frames.push(FrameInfo {
+      rect: (read_32(12), read_32(16), read_32(4), read_32(8)),
+      duration_ms: apng_delay_ms(
+        u16::from_be_bytes([control[20], control[21]]),
+        u16::from_be_bytes([control[22], control[23]]),
+      ),
+      blends: control[25] == 1,
+      dispose: match control[24] {
+        1 => Dispose::Background,
+        2 => Dispose::Previous,
+        _ => Dispose::Keep,
+      },
+    });
+  }
+
+  Ok(frames.into())
+}
+
+/// An `fcTL` delay fraction in milliseconds.
+fn apng_delay_ms(numerator: u16, denominator: u16) -> u32 {
+  let denominator = if denominator == 0 { 100 } else { denominator };
+  ((numerator as u64 * 1000) / denominator as u64).max(1) as u32
+}
+
+/// A row decoder expanding every pixel format to 8-bit samples with alpha.
+fn row_decoder(bytes: &[u8]) -> PngRowDecoder<Cursor<&[u8]>> {
+  let mut decoder = PngRowDecoder::new(Cursor::new(bytes));
+
+  decoder.set_transformations(
+    Transformations::EXPAND | Transformations::STRIP_16 | Transformations::ALPHA,
+  );
+  decoder
+}
+
+/// Samples per output pixel: 4 for RGBA, 2 for gray-alpha, `None` for anything else.
+fn output_channels(reader: &PngReader<Cursor<&[u8]>>) -> Option<usize> {
+  match reader.output_color_type() {
+    (ColorType::Rgba, BitDepth::Eight) => Some(4),
+    (ColorType::GrayscaleAlpha, BitDepth::Eight) => Some(2),
+    _ => None,
+  }
+}
+
+fn apng_reader(bytes: &[u8]) -> DecodeResult<PngReader<Cursor<&[u8]>>> {
+  let reader = row_decoder(bytes).read_info().map_err(png_decode_error)?;
+  let info = reader.info();
+  check_dimensions(info.width, info.height)?;
+
+  Ok(reader)
+}
+
+/// Decodes frame `index` alone when it covers the canvas without blending, `None` otherwise.
+pub(crate) fn decode_apng_frame_alone(
+  bytes: &[u8],
+  index: usize,
+  target: Option<DecodeTarget>,
+) -> Option<ImageBuffer> {
+  let mut reader = apng_reader(bytes).ok()?;
+  let (canvas_width, canvas_height) = (reader.info().width, reader.info().height);
+  let channels = output_channels(&reader)?;
+
+  // A default image no `fcTL` claims sits outside the animation.
+  if reader.info().frame_control.is_none() {
+    reader.next_frame_info().ok()?;
+  }
+  for _ in 0..index {
+    reader.next_frame_info().ok()?;
+  }
+  let frame = reader.info().frame_control?;
+
+  let mut subframe = vec![0; reader.output_buffer_size()?];
+  reader.next_frame(&mut subframe).ok()?;
+
+  // A full-canvas replacing frame already is the canvas; anything else lands on
+  // a cleared one, which is what its predecessors would have left behind.
+  let buffer = if channels == 4
+    && frame.blend_op == BlendOp::Source
+    && covers_canvas(
+      (frame.x_offset, frame.y_offset, frame.width, frame.height),
+      (canvas_width, canvas_height),
+    ) {
+    premultiply_rgba_in_place(&mut subframe);
+    ImageBuffer::from_premultiplied_rgba(subframe, canvas_width, canvas_height)?
+  } else {
+    let mut canvas = ApngCanvas::new(canvas_width, canvas_height);
+    canvas.composite(frame, &subframe, channels);
+    canvas.to_buffer(None).ok()?
+  };
+
+  fit_to_target(buffer, target).ok()
+}
+
+/// Decodes APNG frames in stream order, passing each frame past the first `skip` to `push`, up to
+/// `limit` pushed frames.
+pub(crate) fn decode_apng_frames(
+  bytes: &[u8],
+  skip: usize,
+  limit: Option<usize>,
+  target: Option<DecodeTarget>,
+  mut push: impl FnMut(Arc<ImageBuffer>),
+) -> DecodeResult<bool> {
+  let mut reader = apng_reader(bytes)?;
+  let (width, height) = (reader.info().width, reader.info().height);
+  let target = target.filter(|target| target.shrinks(width, height));
+  let channels = output_channels(&reader).ok_or(DecodeError::InvalidBuffer)?;
+
+  let mut canvas = ApngCanvas::new(width, height);
+  let mut subframe = Vec::new();
+  let mut total_pixels = 0_u64;
+  let mut pushed = 0_usize;
+  let mut index = 0_usize;
+
+  // One read past the cap: an unclaimed default image costs a read without
+  // taking a slot on the timeline.
+  for read in 0..=MAX_ANIMATION_FRAMES {
+    if index >= MAX_ANIMATION_FRAMES {
+      return Ok(false);
+    }
+    if limit.is_some_and(|limit| pushed >= limit) {
+      return Ok(false);
+    }
+
+    if read > 0 && reader.next_frame_info().is_err() {
+      break;
+    }
+
+    let Some(size) = reader.output_buffer_size() else {
+      return Ok(read > 0);
+    };
+    subframe.resize(size, 0);
+    if let Err(error) = reader.next_frame(&mut subframe) {
+      if read == 0 {
+        return Err(png_decode_error(error));
+      }
+      return Ok(true);
+    }
+
+    // The default image sits outside the animation unless an `fcTL` claims it.
+    let Some(frame) = reader.info().frame_control else {
+      continue;
+    };
+
+    total_pixels += width as u64 * height as u64;
+    if total_pixels > MAX_ANIMATION_TOTAL_PIXELS {
+      return Ok(true);
+    }
+
+    canvas.composite(frame, &subframe, channels);
+
+    let current = index;
+    index += 1;
+    if current >= skip {
+      push(Arc::new(canvas.to_buffer(target)?));
+      pushed += 1;
+    }
+
+    canvas.dispose(frame);
+  }
+
+  Ok(true)
+}
+
+/// The straight-alpha RGBA canvas an APNG's frames composite onto, plus the copy
+/// `DisposeOp::Previous` restores.
+struct ApngCanvas {
+  pixels: Vec<u8>,
+  restore: Vec<u8>,
+  width: u32,
+  height: u32,
+}
+
+impl ApngCanvas {
+  fn new(width: u32, height: u32) -> Self {
+    Self {
+      pixels: vec![0; width as usize * height as usize * 4],
+      restore: Vec::new(),
+      width,
+      height,
+    }
+  }
+
+  fn clamped_span(&self, frame: FrameControl) -> (u32, u32) {
+    (
+      frame.height.min(self.height.saturating_sub(frame.y_offset)),
+      frame.width.min(self.width.saturating_sub(frame.x_offset)),
+    )
+  }
+
+  /// Draws one subframe at its `fcTL` offset.
+  fn composite(&mut self, frame: FrameControl, subframe: &[u8], channels: usize) {
+    if frame.dispose_op == DisposeOp::Previous {
+      self.restore.clear();
+      self.restore.extend_from_slice(&self.pixels);
+    }
+
+    let (rows, columns) = self.clamped_span(frame);
+    for row in 0..rows {
+      let source_row = row as usize * frame.width as usize * channels;
+      let target_row = ((frame.y_offset + row) * self.width + frame.x_offset) as usize * 4;
+
+      // Replacing RGBA is the same bytes on both sides, so the row copies whole.
+      if channels == 4 && frame.blend_op == BlendOp::Source {
+        let span = columns as usize * 4;
+        self.pixels[target_row..target_row + span]
+          .copy_from_slice(&subframe[source_row..source_row + span]);
+        continue;
+      }
+
+      for column in 0..columns {
+        let source = source_row + column as usize * channels;
+        let pixel = match channels {
+          4 => [
+            subframe[source],
+            subframe[source + 1],
+            subframe[source + 2],
+            subframe[source + 3],
+          ],
+          _ => [
+            subframe[source],
+            subframe[source],
+            subframe[source],
+            subframe[source + 1],
+          ],
+        };
+
+        let target = target_row + column as usize * 4;
+        match frame.blend_op {
+          BlendOp::Source => self.pixels[target..target + 4].copy_from_slice(&pixel),
+          BlendOp::Over => blend_over(&mut self.pixels[target..target + 4], pixel),
+        }
+      }
+    }
+  }
+
+  /// Applies the frame's disposal, readying the canvas for the one after it.
+  fn dispose(&mut self, frame: FrameControl) {
+    match frame.dispose_op {
+      DisposeOp::None => {}
+      DisposeOp::Background => {
+        let (rows, columns) = self.clamped_span(frame);
+        for row in 0..rows {
+          let start = ((frame.y_offset + row) * self.width + frame.x_offset) as usize * 4;
+          self.pixels[start..start + columns as usize * 4].fill(0);
+        }
+      }
+      DisposeOp::Previous => self.pixels.copy_from_slice(&self.restore),
+    }
+  }
+
+  fn to_buffer(&self, target: Option<DecodeTarget>) -> DecodeResult<ImageBuffer> {
+    let mut premultiplied = self.pixels.clone();
+    premultiply_rgba_in_place(&mut premultiplied);
+
+    match target {
+      Some(target) => target.resample(&premultiplied, (self.width, self.height)),
+      None => ImageBuffer::from_premultiplied_rgba(premultiplied, self.width, self.height),
+    }
+    .ok_or(DecodeError::InvalidBuffer)
+  }
+}
+
+/// Straight-alpha source-over, as the APNG spec defines `BlendOp::Over`.
+fn blend_over(target: &mut [u8], source: [u8; 4]) {
+  if source[3] == u8::MAX {
+    target.copy_from_slice(&source);
+    return;
+  }
+  if source[3] == 0 {
+    return;
+  }
+
+  let source_alpha = source[3] as u32;
+  let target_alpha = target[3] as u32;
+  let out_alpha = source_alpha + target_alpha * (255 - source_alpha) / 255;
+  for channel in 0..3 {
+    let source_part = source[channel] as u32 * source_alpha;
+    let target_part = target[channel] as u32 * target_alpha * (255 - source_alpha) / 255;
+    target[channel] = ((source_part + target_part) / out_alpha) as u8;
+  }
+  target[3] = out_alpha as u8;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::resources::image_resampler::resample_premultiplied;
+
+  use crate::{
+    resources::image_decoder::{decode_bitmap_scaled, decode_image},
+    style::ImageScalingAlgorithm,
+  };
+
+  /// A `width` by `height` PNG of `color` whose samples are `sample(x, y)`.
+  fn encode(
+    (width, height): (u32, u32),
+    color: ColorType,
+    sample: impl Fn(u32, u32) -> Vec<u8>,
+  ) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+
+    encoder.set_color(color);
+    encoder.set_depth(BitDepth::Eight);
+
+    let sample = &sample;
+    let data: Vec<u8> = (0..height)
+      .flat_map(|y| (0..width).flat_map(move |x| sample(x, y)))
+      .collect();
+    let mut writer = encoder.write_header().unwrap();
+
+    writer.write_image_data(&data).unwrap();
+    drop(writer);
+    bytes
+  }
+
+  fn assert_streamed_matches_full(bytes: &[u8], width: u32, height: u32) {
+    for algorithm in [
+      ImageScalingAlgorithm::Auto,
+      ImageScalingAlgorithm::Smooth,
+      ImageScalingAlgorithm::Pixelated,
+    ] {
+      let target = DecodeTarget {
+        width,
+        height,
+        algorithm,
+      };
+      let streamed = decode_bitmap_scaled(bytes, target).unwrap();
+      let full = decode_image(bytes).unwrap();
+      let resized = resample_premultiplied(
+        full.data(),
+        (full.width(), full.height()),
+        (width, height),
+        algorithm,
+      )
+      .unwrap();
+      assert_eq!(streamed.data(), resized.data(), "{algorithm:?}");
+    }
+  }
+
+  #[test]
+  fn png_streaming_matches_full_decode_for_rgba() {
+    let bytes = encode((40, 30), ColorType::Rgba, |x, y| {
+      vec![(x * 6) as u8, (y * 8) as u8, ((x + y) * 3) as u8, 200]
+    });
+
+    assert_streamed_matches_full(&bytes, 13, 9);
+  }
+
+  #[test]
+  fn png_streaming_matches_full_decode_for_grayscale_alpha() {
+    let bytes = encode((32, 24), ColorType::GrayscaleAlpha, |x, y| {
+      vec![(x * 8) as u8, (255 - y * 4) as u8]
+    });
+
+    assert_streamed_matches_full(&bytes, 11, 7);
+  }
+
+  #[test]
+  fn real_png_streaming_matches_full_decode() {
+    let bytes = include_bytes!("../../../../assets/images/yeecord.png");
+    let full = decode_image(bytes).unwrap();
+    assert_streamed_matches_full(bytes, full.width() / 3, full.height() / 3);
+  }
+}

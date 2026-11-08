@@ -32,14 +32,14 @@ Tools:
 | `describe_schema` | The `events` columns, every event name with its count and first and last time, event types, and the helper views and macros. Call this first. |
 | `sql` | One read-only DuckDB statement; up to 1000 rows (`truncated` says if there were more); 60 second limit. |
 | `status` | Project, database, event count and the last sync. |
-| `sync` | Download new archives from your Worker (events are readable about 10 minutes after they are sent). |
-| `health` | Data-quality checks: spelling variants of event names, bad clocks, bots, double tracking. |
+| `sync` | Download new archives from your Worker (events are readable about 10 minutes after they are sent). `now: true` asks the Worker to publish what it has buffered first (needs the admin token). Events the import set aside are counted in its output. |
+| `health` | Data-quality checks: spelling variants of event names, bad clocks, bots, double tracking, and anything the import set aside (`_slurp.problems`). |
 | `report_check`, `report_build` | Validate a Markdown report, then build `report.html` (and `report.png`, optionally `report.pdf`) into a new folder. |
-| `send_event`, `identify` | **Only with `--allow-send`.** Write to the real event stream through the project's publishable key; records carry `context.source = "mcp"`. |
+| `send_event`, `identify` | **Only with `--allow-send`.** Write to the real event stream through the project's `mcp` source key; each event has an `id`, and its `sender` is `mcp`. |
 
 **Reading is sandboxed.** The server runs DuckDB read-only with external file access switched off and its settings locked, so SQL an agent writes cannot read local files (`read_csv('/etc/...')` is refused) or change its own limits. `slurp sql` on the command line is deliberately not sandboxed, because joining a local CSV there is a feature.
 
-**Sending is off by default.** An agent that sends made-up events would pollute your analytics, so `send_event` and `identify` exist only when you start the server with `--allow-send`, and every record they write is tagged so you can filter it out (`WHERE context->>'source' IS DISTINCT FROM 'mcp'`).
+**Sending is off by default.** An agent that sends made-up events would pollute your analytics, so `send_event` and `identify` exist only when you start the server with `--allow-send`, and every event they write has `sender = 'mcp'`, so you can filter it out (`WHERE sender <> 'mcp'`). They need the saved admin connection to get that key.
 
 Protocol: the server speaks MCP versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. If a client asks for another version it is answered with 2025-11-25 and the client decides whether to continue; requests that are not valid JSON-RPC 2.0 get a protocol error, and tools are refused until the client has sent `initialize`. It does not yet act on a client's cancel notification: a running query or report finishes first. The newer stateless protocol version (2026-07-28) is not implemented.
 

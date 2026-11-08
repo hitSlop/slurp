@@ -1,0 +1,113 @@
+use std::fmt;
+
+use crate::style::{
+  Animatable, Color, FromCss, Length, MakeComputed, ParseResult, SizingContext, ToCss,
+};
+use cssparser::Parser;
+
+/// Represents the `column-gap`/`row-gap` value: either `normal` (computes to `0`) or a [`Length`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Gap {
+  /// No explicit gap; computes to `0`.
+  #[default]
+  Normal,
+  /// A concrete gap length.
+  Length(Length),
+}
+
+impl MakeComputed for Gap {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    if let Self::Length(length) = self {
+      length.make_computed(sizing);
+    }
+  }
+}
+
+impl Animatable for Gap {
+  fn interpolate(
+    &mut self,
+    from: &Self,
+    to: &Self,
+    progress: f32,
+    sizing: &SizingContext,
+    current_color: Color,
+  ) {
+    *self = match (from, to) {
+      (Self::Normal, Self::Normal) => Self::Normal,
+      _ => Self::Length(Length::interpolated(
+        &from.to_length(),
+        &to.to_length(),
+        progress,
+        sizing,
+        current_color,
+      )),
+    };
+  }
+}
+
+impl<'i> FromCss<'i> for Gap {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    if input
+      .try_parse(|input| input.expect_ident_matching("normal"))
+      .is_ok()
+    {
+      return Ok(Self::Normal);
+    }
+
+    Length::from_css(input).map(Self::Length)
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["normal", "<length>"];
+}
+
+impl From<Length> for Gap {
+  fn from(length: Length) -> Self {
+    Self::Length(length)
+  }
+}
+
+impl Gap {
+  /// The gap as a length, with `normal` as `0`.
+  fn to_length(self) -> Length {
+    match self {
+      Self::Normal => Length::zero(),
+      Self::Length(length) => length,
+    }
+  }
+}
+
+impl ToCss for Gap {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::Normal => dest.write_str("normal"),
+      Self::Length(length) => length.to_css(dest),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn parses_normal() {
+    assert_eq!(Gap::from_css_str("normal"), Ok(Gap::Normal));
+  }
+
+  #[test]
+  fn parses_length() {
+    assert_eq!(Gap::from_css_str("10px"), Ok(Gap::Length(Length::Px(10.0))));
+  }
+
+  #[test]
+  fn round_trips_to_css() {
+    let mut buf = String::new();
+    Gap::Normal.to_css(&mut buf).unwrap();
+    assert_eq!(buf, "normal");
+
+    let mut buf = String::new();
+    Gap::Length(Length::Px(10.0)).to_css(&mut buf).unwrap();
+    assert_eq!(buf, "10px");
+  }
+}

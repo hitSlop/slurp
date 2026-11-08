@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { amplitudeCost, assumptions, sourcesNeeded, cloudflareCost, cloudflareRange, headlineVolume, rangeFrom, roughly, mixpanelCost, money, openpanelCost, posthogCost, tools, volumes } from '../src/lib/pricing.mjs';
+import { amplitudeCost, assumptions, projectsNeeded, cloudflareCost, cloudflareRange, headlineVolume, rangeFrom, roughly, mixpanelCost, money, openpanelCost, posthogCost, tools, volumes } from '../src/lib/pricing.mjs';
 
 test('PostHog marginal tiers', () => {
   assert.equal(posthogCost(1e6), 0);
@@ -55,10 +55,10 @@ test('extrapolated figures are rounded', () => {
   assert.deepEqual([42.2, 275.1, 415.54, 3215.5].map(roughly), [42, 280, 420, 3200]);
 });
 
-test('sources needed follow the measured per-source capacity, and extra always-busy sources add Durable Object duration', () => {
-  assert.deepEqual([1e6, 1e9, 3e9, 1e10].map(n => sourcesNeeded(n)), [1, 1, 1, 3]);
-  // one always-busy source (~332K GB-s) fits in the 400K GB-s included; three do not
-  const one = cloudflareCost(1e10, { ...assumptions, eventsPerSecondPerSource: 1e9 });
-  assert.ok(cloudflareCost(1e10) > one, 'sharding across sources costs a little more');
+test('sources needed follow the measured per-project capacity, and extra always-busy projects add Durable Object duration', () => {
+  assert.deepEqual([1e6, 1e9, 3e9, 1e10].map(n => projectsNeeded(n)), [1, 1, 1, 3]);
+  // one always-busy project (~332K GB-s) fits in the 400K GB-s included; three do not
+  const one = cloudflareCost(1e10, { ...assumptions, eventsPerSecondPerProject: 1e9 });
+  assert.ok(cloudflareCost(1e10) > one, 'sharding across projects costs a little more');
   assert.ok(cloudflareCost(1e10) - one < 20, 'but only a little');
 });

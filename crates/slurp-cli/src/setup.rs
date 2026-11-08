@@ -113,6 +113,46 @@ pub fn check_engine(path: &std::path::Path) -> Result<String> {
     Ok(version.to_owned())
 }
 
+/// SHA-256 of each DuckDB release asset `install` can download, for [`DUCKDB_VERSION`]. They come from the `digest` field of
+/// the GitHub release API (`gh api repos/duckdb/duckdb/releases/tags/v2.0.0`) and were checked by hashing the downloaded
+/// files. Update them together with the version.
+const DUCKDB_SHA256: &[(&str, &str)] = &[
+    (
+        "osx-universal",
+        "8a8f67e7c7f7d1392fa63ba3971948391392fe2a25fca63e7008e33c50beb4c2",
+    ),
+    (
+        "linux-amd64",
+        "c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc",
+    ),
+    (
+        "linux-arm64",
+        "859e1875d2a9515fbb4bf8871061437a14af82320da68c753f094c4b776348fe",
+    ),
+];
+
+/// Check a downloaded DuckDB archive against the digest pinned for its asset.
+///
+/// # Errors
+/// Returns an error when the asset has no pinned digest, the file cannot be read, or its SHA-256 differs.
+pub fn verify_download(asset: &str, file: &std::path::Path) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let expected = DUCKDB_SHA256
+        .iter()
+        .find(|(name, _)| *name == asset)
+        .map(|(_, digest)| *digest)
+        .with_context(|| format!("no pinned digest for the DuckDB asset {asset}"))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut fs::File::open(file)?, &mut hasher)
+        .context("reading the DuckDB download")?;
+    let actual = hex::encode(hasher.finalize());
+    anyhow::ensure!(
+        actual == expected,
+        "the DuckDB download does not match its pinned SHA-256 (expected {expected}, got {actual}); nothing was installed"
+    );
+    Ok(())
+}
+
 /// Download a pinned official release after the caller has obtained confirmation.
 pub fn install() -> Result<PathBuf> {
     let asset = match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -142,6 +182,7 @@ pub fn install() -> Result<PathBuf> {
             .success(),
         "DuckDB download failed"
     );
+    verify_download(asset, &zip)?;
     anyhow::ensure!(
         Command::new("tar")
             .arg("-xzf")
@@ -210,4 +251,39 @@ pub fn write_storage_guide(home: &std::path::Path) -> Result<PathBuf> {
         },
     )?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_installable_asset_has_a_pinned_digest_and_a_wrong_download_is_refused() {
+        for asset in ["osx-universal", "linux-amd64", "linux-arm64"] {
+            let digest = DUCKDB_SHA256
+                .iter()
+                .find(|(name, _)| *name == asset)
+                .unwrap_or_else(|| panic!("no digest for {asset}"))
+                .1;
+            assert!(
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "{asset}: {digest}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("duckdb.tar.gz");
+        fs::write(&file, b"not the DuckDB release").unwrap();
+        let error = verify_download("linux-amd64", &file)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("does not match its pinned SHA-256"),
+            "{error}"
+        );
+        assert!(verify_download("windows-amd64", &file).is_err());
+        assert!(verify_download("linux-amd64", &dir.path().join("missing")).is_err());
+    }
 }

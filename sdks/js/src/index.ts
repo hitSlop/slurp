@@ -1,5 +1,9 @@
-import { context, encoder, jsonData, pageHref, resolveEndpoint, uuidv7 } from './event.ts'
-import { defaultStorage } from './storage.ts'
+import { bytes, context, jsonData, pageHref, uuidv7, validEventName } from './event.ts'
+import { advance, newIdentity, reset as resetIdentity } from './identity.ts'
+import type { Identity } from './identity.ts'
+import { Queue } from './queue.ts'
+import { classify } from './response.ts'
+import { defaultStorage, restore, storageKey } from './storage.ts'
 import type { StorageAdapter } from './storage.ts'
 
 export type { StorageAdapter } from './storage.ts'
@@ -16,9 +20,9 @@ export interface SlurpOptions {
   maxBatchEvents?: number
   maxBatchBytes?: number
   maxQueue?: number
-  /** Most bytes kept while offline, counting events not yet batched and batches not yet acknowledged; the oldest are dropped (and reported) beyond it. Records can be up to 1 MiB each, so a count limit alone is not a size limit. Default 4 MiB, which also stays under the browser's roughly 5 MB localStorage. */
+  /** Most bytes kept while offline; the oldest lines that are not in a request are dropped (and reported) beyond it. Records can be up to 1 MiB each, so a count limit alone is not a size limit. Default 4 MiB, which also stays under the browser's roughly 5 MB localStorage. */
   maxQueueBytes?: number
-  /** A request with no answer after this many milliseconds is aborted and retried with the same bytes. Default 30000. */
+  /** A request with no answer after this many milliseconds is aborted and retried. Default 30000. */
   requestTimeoutMs?: number
   sessionTimeoutMs?: number
   storage?: StorageAdapter
@@ -40,6 +44,7 @@ export interface FlushResult {
   rejected: number
   pending: number
   retryAt: number | null
+  /** True once the client is closed, or the Worker refused its key (401/403) so this instance paused sending (the queue is kept). */
   stopped: boolean
 }
 
@@ -52,24 +57,8 @@ export interface SlurpClient {
   readonly pending: number
 }
 
-interface State {
-  version: 1
-  anonymousId: string
-  sessionId: string
-  lastActivity: number
-  userId?: string
-  queue: string[]
-  batches: string[]
-  retryAt: number
-  attempts: number
-  stopped: boolean
-}
-
-const count = (body: string) => body.split('\n').length - 1
-
 /** Saves still in flight for a closed client, by saved-state key. A replacement client waits for its own key here before it reads. */
 const pendingCloses = new Map<string, Promise<void>>()
-const bytes = (body: string) => encoder.encode(body).byteLength
 const KEEPALIVE_BYTES = 60 * 1024
 /** Largest single record the gateway accepts; records are stored whole, never truncated. */
 const MAX_EVENT_BYTES = 1024 * 1024
@@ -80,28 +69,10 @@ function positive(value: number | undefined, fallback: number): number {
   return value
 }
 
-/** True for one complete JSON object. The gateway validates a request as a whole, so one damaged line costs every event batched with it. */
-function isRecord(line: string): boolean {
-  try { const value = JSON.parse(line); return value !== null && typeof value === 'object' && !Array.isArray(value) } catch { return false }
-}
-
-/** Read saved state, keeping only complete records; `damaged` counts the lines that were thrown away. */
-function restore(raw: string): { state: State; damaged: number } {
-  const state: State = JSON.parse(raw)
-  if (state.version !== 1 || typeof state.anonymousId !== 'string' || typeof state.sessionId !== 'string' ||
-      !Number.isFinite(state.lastActivity) || (state.userId !== undefined && typeof state.userId !== 'string') ||
-      !Array.isArray(state.queue) || !state.queue.every(line => typeof line === 'string') ||
-      !Array.isArray(state.batches) || !state.batches.every(body => typeof body === 'string') ||
-      !Number.isFinite(state.retryAt) || !Number.isSafeInteger(state.attempts) || typeof state.stopped !== 'boolean') {
-    throw new Error('invalid stored SDK state')
-  }
-  let damaged = 0
-  const keep = (lines: string[]) => lines.filter(line => { const ok = line !== '' && !line.includes('\n') && isRecord(line); if (!ok && line !== '') damaged++; return ok })
-  state.queue = keep(state.queue)
-  state.batches = state.batches.map(body => keep(body.split('\n').slice(0, -1)).join('\n')).filter(joined => joined !== '').map(joined => joined + '\n')
-  return { state, damaged }
-}
-
+/**
+ * The driver: loads and saves state, schedules sends, runs the send loop. What is decided lives in identity.ts (who is sending),
+ * queue.ts (which lines go in a request) and response.ts (what an answer means); docs/contracts.md "SDK delivery" is the spec.
+ */
 export function createClient(options: SlurpOptions): SlurpClient {
   if (!options.key || !options.endpoint) throw new Error('key and endpoint are required')
   const flushAt = positive(options.flushAt, 100)
@@ -119,36 +90,39 @@ export function createClient(options: SlurpOptions): SlurpClient {
     try { options.onError?.(error instanceof Error ? error : new Error(String(error)), dropped) } catch { /* callbacks cannot break delivery */ }
   }
   const storage = options.storage ?? defaultStorage(report)
-  // Saved state belongs to one key: two senders sharing a storage (two sites on one origin) never send each other's queued events,
-  // and a replaced key starts clean. Replacing a key therefore starts a new visitor identity.
-  const storageKey = `@hitslop/slurp-sdk:v1:${resolveEndpoint(options.endpoint).replace(/[?#].*$/, "").replace(/\/$/, "")}:${options.key}`
+  const savedAt = storageKey(options.endpoint, options.key)
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
-  let state: State = {
-    version: 1, anonymousId: uuidv7(), sessionId: uuidv7(), lastActivity: 0,
-    queue: [], batches: [], retryAt: 0, attempts: 0, stopped: false,
-  }
+
+  let identity: Identity = newIdentity(uuidv7)
+  const queue = new Queue()
+  let retryAt = 0
+  let attempts = 0
   let ready = false
   let closed = false
+  let paused = false // this instance only: a refused key (401/403) pauses sending, but the queue is kept and nothing about the pause is saved
   let closing: Promise<void> | undefined
   let stagedCount = 0
   const staged: (() => void)[] = []
-  let sending: Promise<boolean | void> | undefined
+  let sending: Promise<'partial' | void> | undefined
   let controller: AbortController | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   let timerAt = Infinity
   let saving = false
   let saveWaiters: ((saved: boolean) => void)[] = []
-  let stop!: () => void
-  const stopped = new Promise<void>(resolve => { stop = resolve })
+  let saveFailing = false
+  let shutDown!: () => void
+  const shutdown = new Promise<void>(resolve => { shutDown = resolve })
 
+  const pending = () => stagedCount + queue.length
+  const until = () => Math.max(0, retryAt - Date.now()) || interval
   const clearTimer = () => {
     if (timer !== undefined) clearTimeout(timer)
     timer = undefined
     timerAt = Infinity
   }
-  const pending = () => stagedCount + state.queue.length + state.batches.reduce((total, body) => total + count(body), 0)
+  /** Arm the flush timer. It keeps the earliest deadline, so a stream of captures never postpones a flush. */
   const schedule = (delay: number) => {
-    if (closed || state.stopped) return
+    if (closed || paused) return
     const at = Date.now() + delay
     if (timerAt <= at) return
     clearTimer()
@@ -156,49 +130,29 @@ export function createClient(options: SlurpOptions): SlurpClient {
     timer = setTimeout(() => { clearTimer(); void flush() }, Math.min(delay, 2_147_483_647))
     ;(timer as unknown as { unref?: () => void }).unref?.()
   }
-  // Bytes held, kept incrementally (re-measured whenever whole batches change) so a capture never has to re-encode the queue.
-  let queueBytes = 0
-  let batchBytes = 0
-  const measure = () => {
-    queueBytes = state.queue.reduce((total, line) => total + bytes(line) + 1, 0)
-    batchBytes = state.batches.reduce((total, body) => total + bytes(body), 0)
-  }
   const trim = () => {
-    let dropped = 0
-    const excess = state.queue.length - maxQueue
-    if (excess > 0) {
-      for (const line of state.queue.splice(0, excess)) queueBytes -= bytes(line) + 1
-      dropped += excess
-    }
-    while (queueBytes + batchBytes > maxQueueBytes && state.queue.length) {
-      queueBytes -= bytes(state.queue.shift()!) + 1
-      dropped++
-    }
-    // Still too much: the oldest unsent batches go too, but never the one that is on the wire right now.
-    const protectedBatches = sending ? 1 : 0
-    while (queueBytes + batchBytes > maxQueueBytes && state.batches.length > protectedBatches) {
-      dropped += count(state.batches.splice(protectedBatches, 1)[0])
-      measure()
-    }
+    const dropped = queue.trim(maxQueue, maxQueueBytes)
     if (dropped > 0) report(new Error('queue full; dropped the oldest queued events'), dropped)
   }
+
   const hydrate = (raw: string | null) => {
-    if (raw !== null) {
-      const restored = restore(raw)
-      state = restored.state
-      if (restored.damaged) report(new Error(`dropped ${restored.damaged} damaged saved event(s)`), restored.damaged)
-    }
-    measure()
+    if (raw === null) return
+    const { saved, damaged } = restore(raw)
+    identity = { anonymousId: saved.anonymousId, sessionId: saved.sessionId, lastActivity: saved.lastActivity, ...(saved.userId === undefined ? {} : { userId: saved.userId }) }
+    queue.load(saved.queue)
+    retryAt = saved.retryAt
+    attempts = saved.attempts
+    if (damaged) report(new Error(`dropped ${damaged} damaged saved event(s)`), damaged)
   }
   // A client that replaces another one (`init` twice) must read what the first one saved, so it waits for that save to finish.
-  const earlier = pendingCloses.get(storageKey)
+  const earlier = pendingCloses.get(savedAt)
   let read: string | null | Promise<string | null> = null
-  try { read = earlier ? earlier.then(() => storage.getItem(storageKey)) : storage.getItem(storageKey) } catch (error) { report(error) }
+  try { read = earlier ? earlier.then(() => storage.getItem(savedAt)) : storage.getItem(savedAt) } catch (error) { report(error) }
   const finishLoad = () => {
     ready = true
     for (const apply of staged.splice(0)) apply()
     trim()
-    if (pending()) schedule(Math.max(0, state.retryAt - Date.now()) || interval)
+    if (pending()) schedule(until())
   }
   let loaded: Promise<void>
   if (typeof read === 'string' || read === null) {
@@ -209,6 +163,11 @@ export function createClient(options: SlurpOptions): SlurpClient {
     loaded = Promise.resolve(read).then(hydrate).catch(report).then(finishLoad)
   }
 
+  const snapshot = () => JSON.stringify({
+    version: 1, anonymousId: identity.anonymousId, sessionId: identity.sessionId, lastActivity: identity.lastActivity,
+    ...(identity.userId === undefined ? {} : { userId: identity.userId }), queue: queue.lines, retryAt, attempts,
+  })
+  /** Save the state now, coalescing saves that arrive meanwhile. A failed save is reported once and delivery carries on: the events are still in memory and a later save may work. */
   const persist = (): Promise<boolean> => new Promise(resolve => {
     saveWaiters.push(resolve)
     if (saving) return
@@ -219,8 +178,8 @@ export function createClient(options: SlurpOptions): SlurpClient {
         const waiters = saveWaiters
         saveWaiters = []
         let saved = true
-        try { await storage.setItem(storageKey, JSON.stringify(state)) }
-        catch (error) { saved = false; report(error) }
+        try { await storage.setItem(savedAt, snapshot()); saveFailing = false }
+        catch (error) { saved = false; if (!saveFailing) report(error); saveFailing = true }
         for (const done of waiters) done(saved)
       }
       saving = false
@@ -231,128 +190,106 @@ export function createClient(options: SlurpOptions): SlurpClient {
     else staged.push(operation)
     void persist()
   }
-  const cutBatch = (limit: number) => {
-    let size = 0
-    let length = 0
-    for (const line of state.queue) {
-      const next = bytes(line) + 1
-      if (length >= maxBatchEvents || (length > 0 && size + next > limit)) break
-      size += next
-      length++
-    }
-    if (length) {
-      state.batches.push(state.queue.splice(0, length).join('\n') + '\n')
-      queueBytes -= size
-      batchBytes += size
-    }
-  }
-  const retry = async (response?: Response) => {
-    let delay = NaN
-    const header = response?.headers.get('Retry-After')
-    if ((response?.status === 429 || response?.status === 503) && header) {
-      delay = /^\d+(?:\.\d+)?$/.test(header.trim()) ? Number(header) * 1000 : Date.parse(header) - Date.now()
-    }
-    state.attempts++
-    if (!Number.isFinite(delay)) {
-      const backoff = Math.min(500 * 2 ** Math.min(state.attempts - 1, 7), 60_000)
-      delay = backoff * (0.5 + Math.random() * 0.5)
-    }
-    state.retryAt = Date.now() + Math.max(0, delay)
+
+  const retry = async (delayMs?: number) => {
+    attempts++
+    const delay = delayMs ?? Math.min(500 * 2 ** Math.min(attempts - 1, 7), 60_000) * (0.5 + Math.random() * 0.5)
+    retryAt = Date.now() + delay
     await persist()
-    schedule(Math.max(0, state.retryAt - Date.now()))
+    schedule(Math.max(0, retryAt - Date.now()))
   }
-  const send = async (keepalive: boolean) => {
-    await loaded
-    while (!closed && !state.stopped) {
-      if (state.retryAt > Date.now()) { schedule(state.retryAt - Date.now()); return }
-      // A page-hide batch must fit a keepalive request; bigger pending batches wait for the next load.
-      if (!state.batches.length) cutBatch(keepalive ? Math.min(maxBatchBytes, KEEPALIVE_BYTES) : maxBatchBytes)
-      const body = state.batches[0]
-      if (!body) return
-      if (!(await persist())) { schedule(interval); return }
-      if (closed || state.stopped) return
-      if (keepalive && bytes(body) > KEEPALIVE_BYTES) return true
-      let response: Response | undefined
-      controller = new AbortController()
-      let deadlineTimer: ReturnType<typeof setTimeout> | undefined
-      try {
-        const endpoint = keepalive ? new URL(options.endpoint, pageHref()) : undefined
-        endpoint?.searchParams.set('key', options.key)
-        // A request that is never answered must not stall delivery for good: abort it and retry the same bytes.
-        const deadline = new Promise<never>((_, reject) => {
-          deadlineTimer = setTimeout(() => { controller?.abort(); reject(new Error(`request timed out after ${requestTimeoutMs} ms`)) }, requestTimeoutMs)
-          ;(deadlineTimer as unknown as { unref?: () => void }).unref?.()
+  /** One request, bounded by the request timeout. Resolves with nothing when the client is closed meanwhile. */
+  const exchange = async (body: string, keepalive: boolean) => {
+    controller = new AbortController()
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const endpoint = keepalive ? new URL(options.endpoint, pageHref()) : undefined
+      endpoint?.searchParams.set('key', options.key)
+      // A request that is never answered must not stall delivery for good: abort it and retry.
+      const deadline = new Promise<never>((_, reject) => {
+        deadlineTimer = setTimeout(() => { controller?.abort(); reject(new Error(`request timed out after ${requestTimeoutMs} ms`)) }, requestTimeoutMs)
+        ;(deadlineTimer as unknown as { unref?: () => void }).unref?.()
+      })
+      const answer = async () => {
+        const response = await doFetch(endpoint?.toString() ?? options.endpoint, {
+          method: 'POST', headers: keepalive ? { 'Content-Type': 'text/plain' } :
+            { 'Content-Type': 'application/x-ndjson', Authorization: `Bearer ${options.key}` },
+          body, keepalive, signal: controller!.signal,
         })
-        response = await Promise.race([
-          doFetch(endpoint?.toString() ?? options.endpoint, {
-            method: 'POST', headers: keepalive ? { 'Content-Type': 'text/plain' } :
-              { 'Content-Type': 'application/x-ndjson', Authorization: `Bearer ${options.key}` },
-            body, keepalive, signal: controller.signal,
-          }),
-          stopped.then(() => undefined),
-          deadline,
-        ])
-      } catch (error) {
+        // Only a 400 body matters (it can list the rejected lines); read it inside the timeout and let go of every other body.
+        const text = response.status === 400 ? await response.text().catch(() => '') : ''
+        if (response.status !== 400) void response.body?.cancel().catch(() => {})
+        return { status: response.status, retryAfter: response.headers?.get?.('Retry-After') ?? null, text }
+      }
+      return await Promise.race([answer(), shutdown.then(() => undefined), deadline])
+    } finally { clearTimeout(deadlineTimer); controller = undefined }
+  }
+  const send = async (keepalive: boolean): Promise<'partial' | void> => {
+    await loaded
+    while (!closed && !paused) {
+      if (retryAt > Date.now()) { schedule(retryAt - Date.now()); return }
+      // A page-hide request must fit a keepalive request; a bigger first line waits for the next load.
+      const lines = queue.take(maxBatchEvents, keepalive ? Math.min(maxBatchBytes, KEEPALIVE_BYTES) : maxBatchBytes)
+      if (!lines.length) return
+      const k = lines.length
+      const body = lines.join('\n') + '\n'
+      if (keepalive && bytes(body) > KEEPALIVE_BYTES) { queue.release(); return }
+      let reply: Awaited<ReturnType<typeof exchange>>
+      try { reply = await exchange(body, keepalive) }
+      catch (error) {
+        queue.release()
         if (closed) return
         report(error)
         await retry()
         return
-      } finally { clearTimeout(deadlineTimer); controller = undefined }
-      if (closed || !response) return
-      void response.body?.cancel().catch(() => {})
-      const status = response.status
-      if (status === 401 || status === 403) {
-        const dropped = pending()
-        state.stopped = true
-        state.batches = []
-        state.queue = []
-        queueBytes = 0
-        batchBytes = 0
+      }
+      if (closed || !reply) { queue.release(); return }
+      const outcome = classify(reply.status, reply.retryAfter, reply.text, k, Date.now())
+      if (outcome.kind === 'retry') {
+        queue.release()
+        report(new Error(`ingest ${reply.status}; retry scheduled`))
+        await retry(outcome.delayMs)
+        return
+      }
+      if (outcome.kind === 'pause') {
+        // Keep every line: the owner can rotate to a new key for the same source, which shares this storage and delivers them.
+        queue.release()
+        paused = true
         clearTimer()
-        report(new Error(`ingest ${status}; client stopped`), dropped)
+        report(new Error(`ingest ${reply.status}; key refused, sending paused until the next launch; ${queue.length} event(s) stay queued`))
         await persist()
         return
       }
-      if (status === 408 || status === 429 || status >= 500) {
-        report(new Error(`ingest ${status}; retry scheduled`))
-        await retry(response)
-        return
+      retryAt = 0
+      attempts = 0
+      if (outcome.kind === 'ok') { queue.ack(k); queue.split = Infinity; accepted += k }
+      else if (outcome.kind === 'split') {
+        if (queue.halve(k)) report(new Error('ingest 413; single event rejected'), 1)
+      } else if (outcome.kind === 'rejected') {
+        const dropped = queue.dropLines(outcome.lines.map(line => line - 1))
+        report(new Error(`ingest 400; ${dropped} rejected event(s) dropped (${outcome.reasons})`), dropped)
+      } else {
+        queue.ack(k)
+        report(new Error(`ingest ${reply.status}; batch dropped`), k)
       }
-      state.batches.shift()
-      batchBytes -= bytes(body)
-      state.retryAt = 0
-      state.attempts = 0
-      if (status === 413) {
-        const lines = body.slice(0, -1).split('\n')
-        if (lines.length === 1) report(new Error('ingest 413; single event rejected'), 1)
-        else {
-          const middle = Math.ceil(lines.length / 2)
-          state.batches.unshift(lines.slice(0, middle).join('\n') + '\n', lines.slice(middle).join('\n') + '\n')
-          measure()
-        }
-      } else if (status >= 200 && status < 300) accepted += count(body)
-      else report(new Error(`ingest ${status}; batch dropped`), count(body))
-      if (!(await persist())) { schedule(interval); return }
-      if (keepalive) return true
+      await persist()
+      if (keepalive) return queue.length ? 'partial' : undefined
     }
   }
   const start = (keepalive: boolean) => {
     sending ??= send(keepalive).finally(() => {
       sending = undefined
-      if (pending()) schedule(Math.max(0, state.retryAt - Date.now()) || interval)
+      if (queue.length) schedule(until())
     })
     return sending
   }
   async function flush(): Promise<FlushResult> {
     clearTimer()
-    while (await start(false)) {
-      if (closed || state.stopped || !pending()) break
-      clearTimer()
-    }
-    return { accepted, rejected, pending: pending(), retryAt: state.retryAt > Date.now() ? state.retryAt : null, stopped: closed || state.stopped }
+    if (await start(false) === 'partial') await start(false) // a page-hide send stops after one request
+    return { accepted, rejected, pending: pending(), retryAt: retryAt > Date.now() ? retryAt : null, stopped: closed || paused }
   }
   const onPageHide = () => {
-    if (!sending && !closed && !state.stopped) { clearTimer(); void start(true) }
+    if (!sending && !closed && !paused) { clearTimer(); void start(true) }
   }
   const onVisibility = () => { if (document.visibilityState === 'hidden') onPageHide() }
   const watchHide = (options.flushOnHide ?? true) && typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -366,12 +303,11 @@ export function createClient(options: SlurpOptions): SlurpClient {
   const capture = (type: 'track' | 'identify', event: string | undefined, data: Record<string, unknown>, overrides: CaptureOptions = {}, identified?: string): string => {
     const now = Date.now()
     const id = uuidv7(now)
-    if (closed || state.stopped) { report(new Error('client stopped; event dropped'), 1); return id }
+    if (closed) { report(new Error('client closed; event dropped'), 1); return id }
     let payload: Record<string, unknown>
     let eventContext: Record<string, unknown>
-    let identity: CaptureOptions
     try {
-      if (type === 'track' && (typeof event !== 'string' || !event.length || [...event].length > 200)) throw new Error('event must be a non-empty string of at most 200 characters')
+      if (type === 'track' && !validEventName(event)) throw new Error('event must be a non-empty string of at most 200 characters')
       if (type === 'identify' && (typeof identified !== 'string' || !identified.length)) throw new Error('userId must be a non-empty string')
       for (const value of [overrides.userId, overrides.anonymousId, overrides.sessionId]) {
         if (value !== undefined && (typeof value !== 'string' || !value.length)) throw new Error('identity overrides must be non-empty strings')
@@ -380,33 +316,24 @@ export function createClient(options: SlurpOptions): SlurpClient {
       const configured = typeof options.context === 'function' ? options.context() : options.context ?? {}
       eventContext = jsonData({ ...context(), ...jsonData(configured), ...jsonData(overrides.context ?? {}) })
       if ('geo' in eventContext) throw new Error('context.geo is reserved for server enrichment')
-      identity = { userId: overrides.userId, anonymousId: overrides.anonymousId, sessionId: overrides.sessionId }
     } catch (error) { report(error, 1); return id }
     stagedCount++
     apply(() => {
       stagedCount--
-      if (state.stopped) { report(new Error('client stopped; event dropped'), 1); return }
-      const switching = identified !== undefined && state.userId !== undefined && state.userId !== identified
-      const anonymousId = switching ? uuidv7(now) : state.anonymousId
-      const sessionId = switching || now - state.lastActivity >= sessionTimeout ? uuidv7(now) : state.sessionId
-      const userId = identified ?? identity.userId ?? state.userId
+      const next = advance(identity, now, sessionTimeout, identified, () => uuidv7(now))
+      const userId = identified ?? overrides.userId ?? next.userId
       const line = JSON.stringify({
         id, type, ...(event === undefined ? {} : { event }), timestamp: new Date(now).toISOString(),
         ...(userId !== undefined ? { user_id: userId } : {}),
-        anonymous_id: identity.anonymousId ?? anonymousId,
-        session_id: identity.sessionId ?? sessionId, data: payload, context: eventContext,
+        anonymous_id: overrides.anonymousId ?? next.anonymousId,
+        session_id: overrides.sessionId ?? next.sessionId, data: payload, context: eventContext,
       })
-      const size = bytes(line)
-      if (size > MAX_EVENT_BYTES) { report(new Error('event exceeds 1 MiB'), 1); return }
-      state.anonymousId = anonymousId
-      state.sessionId = sessionId
-      if (identified !== undefined) state.userId = identified
-      state.lastActivity = now
-      state.queue.push(line)
-      queueBytes += size + 1
+      if (bytes(line) > MAX_EVENT_BYTES) { report(new Error('event exceeds 1 MiB'), 1); return }
+      identity = next
+      queue.push(line)
       trim()
-      if (state.queue.length >= flushAt && state.retryAt <= Date.now()) void flush()
-      else schedule(Math.max(0, state.retryAt - Date.now()) || interval)
+      if (queue.length >= flushAt && retryAt <= Date.now() && !paused) void flush()
+      else schedule(until())
     })
     return id
   }
@@ -414,26 +341,21 @@ export function createClient(options: SlurpOptions): SlurpClient {
     track: (event, data = {}, overrides) => capture('track', event, data, overrides),
     identify: (userId, data = {}) => capture('identify', undefined, data, {}, userId),
     reset() {
-      if (closed || state.stopped) return
-      apply(() => {
-        delete state.userId
-        state.anonymousId = uuidv7()
-        state.sessionId = uuidv7()
-        state.lastActivity = Date.now()
-      })
+      if (closed) return
+      apply(() => { identity = resetIdentity(Date.now(), uuidv7) })
     },
     flush,
     close() {
       if (closing) return closing
       closed = true
-      stop()
+      shutDown()
       controller?.abort()
       clearTimer()
       hideWindow?.removeEventListener('pagehide', onPageHide)
       hideDocument?.removeEventListener('visibilitychange', onVisibility)
       const done = persist().then(() => {})
-      pendingCloses.set(storageKey, done)
-      void done.finally(() => { if (pendingCloses.get(storageKey) === done) pendingCloses.delete(storageKey) })
+      pendingCloses.set(savedAt, done)
+      void done.finally(() => { if (pendingCloses.get(savedAt) === done) pendingCloses.delete(savedAt) })
       return closing = done
     },
     get pending() { return pending() },

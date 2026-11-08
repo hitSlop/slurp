@@ -1,0 +1,67 @@
+use cssparser::match_ignore_ascii_case;
+
+use crate::style::{impl_css_enum, tw::TailwindPropertyParser};
+
+/// How children overflowing their container should affect layout
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum Overflow {
+  /// The automatic minimum size of this node as a flexbox/grid item should be based on the size of its content.
+  /// Content that overflows this node *should* contribute to the scroll region of its parent.
+  #[default]
+  Visible,
+  /// The automatic minimum size of this node as a flexbox/grid item should be based on the size of its content.
+  /// Content that overflows this node should *not* contribute to the scroll region of its parent.
+  Clip,
+  /// The automatic minimum size of this node as a flexbox/grid item should be `0`.
+  /// Content that overflows this node should *not* contribute to the scroll region of its parent.
+  Hidden,
+}
+
+impl_css_enum!(
+  Overflow,
+  "visible" => Overflow::Visible,
+  "clip" => Overflow::Clip,
+  "hidden" => Overflow::Hidden,
+);
+
+impl TailwindPropertyParser for Overflow {
+  fn parse_tw(token: &str) -> Option<Self> {
+    match_ignore_ascii_case! {token,
+      "visible" => Some(Overflow::Visible),
+      "clip" => Some(Overflow::Clip),
+      "hidden" => Some(Overflow::Hidden),
+      _ => None,
+    }
+  }
+}
+
+impl Overflow {
+  /// Blink's `IsOverflowClipOrVisible`.
+  pub(crate) fn is_clip_or_visible(self) -> bool {
+    matches!(self, Overflow::Visible | Overflow::Clip)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn parses_css_clip() {
+    assert_eq!(Overflow::from_css_str("clip"), Ok(Overflow::Clip));
+  }
+
+  #[test]
+  fn parses_tailwind_clip() {
+    assert_eq!(Overflow::parse_tw("clip"), Some(Overflow::Clip));
+  }
+
+  #[test]
+  fn only_visible_and_clip_leave_a_companion_axis_alone() {
+    assert!(Overflow::Visible.is_clip_or_visible());
+    assert!(Overflow::Clip.is_clip_or_visible());
+    assert!(!Overflow::Hidden.is_clip_or_visible());
+  }
+}

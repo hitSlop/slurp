@@ -1,5 +1,5 @@
-//! Read-only transports. Authentication is attached only to gateway list requests.
-use crate::{ListPage, ListedObject, protocol, rpc};
+//! Read-only access to a project's archives: `ListArchives` over the control API and the authenticated archive download.
+use crate::api::{self, ArchiveInfo, CallError, ErrorCode, ListArchivesResponse};
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
@@ -11,10 +11,13 @@ pub enum RemoteError {
     Unauthenticated,
     #[error("permission_denied: project read access required")]
     PermissionDenied,
-    #[error("retention_gap: checkpoint is below the retained floor")]
-    RetentionGap,
-    #[error("expired: object URL expired or object deleted")]
-    Expired,
+    #[error("not_found: {0}")]
+    NotFound(String),
+    /// A listed archive answered 404 on download: it is gone, so the listing and the bucket disagree. Fatal for a sync.
+    #[error(
+        "archive {0} is listed but the Worker answered 404 for it; it may have been deleted by retention meanwhile"
+    )]
+    ArchiveMissing(u64),
     #[error("transport: {0}")]
     Transport(String),
     #[error("protocol: {0}")]
@@ -26,52 +29,40 @@ fn io_error(_: std::io::Error) -> RemoteError {
 
 #[async_trait::async_trait]
 pub trait Remote: Send + Sync {
-    async fn list(&self, after: Option<i64>, limit: usize) -> Result<ListPage, RemoteError>;
-    async fn get_coverage(&self) -> Result<Option<rpc::Coverage>, RemoteError>;
-    async fn download(&self, obj: &ListedObject, dest: &Path)
-    -> Result<(String, u64), RemoteError>;
+    /// One page of `ListArchives`: without `after` it starts at the oldest retained archive.
+    async fn list(
+        &self,
+        after: Option<u64>,
+        limit: u32,
+    ) -> Result<ListArchivesResponse, RemoteError>;
+    /// Download one archive into `dest`; returns the SHA-256 (lowercase hex) and the byte count of what arrived.
+    async fn download(
+        &self,
+        archive: &ArchiveInfo,
+        dest: &Path,
+    ) -> Result<(String, u64), RemoteError>;
 }
 
-/// How many times one object is re-listed for a fresh link before giving up.
-const LINK_REFRESHES: u32 = 3;
-
-/// Download one listed object, verify its size and SHA-256 against the listing, and survive expired links.
-///
-/// Signed download links last a limited time, and a long catch-up (many or large archives, a slow connection) can outlive
-/// them. When a download answers [`RemoteError::Expired`], the object is listed again for a fresh link and retried, up to
-/// three times. Both `slurp sync` and `slurp read` download through this one function.
+/// Download one listed archive and verify its size and SHA-256 against the listing. Both `slurp sync` and `slurp read`
+/// download through this one function.
 ///
 /// # Errors
-/// Returns the transport error, [`RemoteError::Expired`] when the object is gone or links keep expiring,
-/// [`RemoteError::RetentionGap`] when the archive was removed meanwhile, or a protocol error when the bytes do not match
-/// the listed identity (the partial file is left for the caller to discard).
+/// Returns the transport error, [`RemoteError::ArchiveMissing`] when the archive is gone, or a protocol error when the bytes
+/// do not match the listed identity (the partial file is left for the caller to discard).
 pub async fn download_verified(
     remote: &dyn Remote,
-    obj: &ListedObject,
+    archive: &ArchiveInfo,
     dest: &Path,
 ) -> Result<(), RemoteError> {
-    let mut current = obj.clone();
-    for refresh in 0..=LINK_REFRESHES {
-        match remote.download(&current, dest).await {
-            Ok((sha, size)) if sha == obj.sha256 && size == obj.size => return Ok(()),
-            Ok(_) => {
-                return Err(RemoteError::Protocol(
-                    "download failed size/SHA256 verification".into(),
-                ));
-            }
-            Err(RemoteError::Expired) if refresh < LINK_REFRESHES => {
-                let seq = crate::protocol::parse_sequence(&obj.seq)?;
-                let page = remote.list(Some(seq - 1), 1).await?;
-                current = page
-                    .objects
-                    .into_iter()
-                    .find(|fresh| fresh.seq == obj.seq && fresh.sha256 == obj.sha256)
-                    .ok_or(RemoteError::Expired)?;
-            }
-            Err(error) => return Err(error),
-        }
+    let (sha, size) = remote.download(archive, dest).await?;
+    if sha == archive.sha256 && size == archive.size {
+        Ok(())
+    } else {
+        Err(RemoteError::Protocol(format!(
+            "archive {} failed size/SHA256 verification",
+            archive.seq
+        )))
     }
-    Err(RemoteError::Expired)
 }
 
 /// Shared gateway transport, independent of the lake adapter.
@@ -81,7 +72,8 @@ pub fn http_client() -> Result<reqwest::Client, RemoteError> {
 
 pub struct HttpRemote {
     client: reqwest::Client,
-    archive: rpc::ArchiveClient,
+    base: String,
+    token: String,
     project: String,
 }
 impl HttpRemote {
@@ -98,121 +90,128 @@ impl HttpRemote {
         }
         endpoint.set_query(None);
         endpoint.set_fragment(None);
-        let client = http_client()?;
         Ok(Self {
-            archive: rpc::ArchiveClient::new(endpoint.as_str(), client.clone(), Some(token.into())),
-            client,
+            client: http_client()?,
+            base: endpoint.as_str().trim_end_matches('/').to_owned(),
+            token: token.into(),
             project: project.into(),
         })
     }
-    /// Read archive coverage and optional scheduling hints in one authenticated request.
-    ///
-    /// # Errors
-    /// Returns an error for authorization, transport, or invalid archive coverage.
-    pub async fn get_status(&self) -> Result<rpc::GetCoverageResponse, RemoteError> {
-        let req = rpc::GetCoverageRequest {
-            project: self.project.clone(),
-        };
-        let mut response = self.rpc_retry(|| self.archive.get_coverage(&req)).await?;
-        if let Some(c) = &response.coverage {
-            protocol::validate_coverage(c)?;
-        }
-        response.publication = crate::publication::validated(response.publication);
-        Ok(response)
-    }
-    async fn backoff(&self, attempt: u32, retry_after: Option<Duration>) {
+    async fn backoff(attempt: u32, retry_after: Option<Duration>) {
         tokio::time::sleep(
             retry_after.unwrap_or_else(|| Duration::from_millis(100 * (1 << attempt))),
         )
         .await;
     }
-    async fn rpc_retry<T, F, Fut>(&self, request: F) -> Result<T, RemoteError>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<T, rpc::Error>>,
-    {
-        for attempt in 0..=3 {
-            match request().await {
-                Ok(value) => return Ok(value),
-                Err(e) => {
-                    let retry =
-                        matches!(e, rpc::Error::Unavailable { .. } | rpc::Error::Transport(_));
-                    if !retry || attempt == 3 {
-                        return Err(map_rpc_error(e));
-                    }
-                    self.backoff(attempt, None).await;
-                }
-            }
-        }
-        unreachable!()
-    }
-    /// What an HTTP status from the (signed-link) object download means. The link is the credential, so a refusal means it expired.
-    fn object_status(status: reqwest::StatusCode) -> RemoteError {
+    /// What a failed HTTP status on the download route means. 429 and 5xx are worth retrying.
+    fn download_status(status: reqwest::StatusCode, seq: u64) -> RemoteError {
         match status.as_u16() {
-            403 | 404 => RemoteError::Expired,
+            401 => RemoteError::Unauthenticated,
+            403 => RemoteError::PermissionDenied,
+            404 => RemoteError::ArchiveMissing(seq),
             429 | 500..=599 => RemoteError::Transport(format!("HTTP {}", status.as_u16())),
             _ => RemoteError::Protocol(format!("unexpected HTTP {}", status.as_u16())),
         }
     }
 }
-fn map_rpc_error(error: rpc::Error) -> RemoteError {
+
+/// Map a control API failure to the transports' error type. `Unavailable` and transport failures are retried by the caller.
+fn map_call_error(error: CallError) -> RemoteError {
     match error {
-        rpc::Error::Unauthenticated { .. } => RemoteError::Unauthenticated,
-        rpc::Error::Forbidden { .. } => RemoteError::PermissionDenied,
-        rpc::Error::RetentionGap { .. } => RemoteError::RetentionGap,
-        rpc::Error::Decode { .. } => RemoteError::Protocol(error.to_string()),
+        CallError::Api {
+            code: Some(ErrorCode::Unauthenticated),
+            ..
+        } => RemoteError::Unauthenticated,
+        CallError::Api {
+            code: Some(ErrorCode::Forbidden),
+            ..
+        } => RemoteError::PermissionDenied,
+        CallError::Api {
+            code: Some(ErrorCode::NotFound),
+            message,
+            ..
+        } => RemoteError::NotFound(message),
+        CallError::Decode(_) => RemoteError::Protocol(error.to_string()),
         _ => RemoteError::Transport(error.to_string()),
     }
 }
+
+/// Whether the same request may work later: the Worker or the network was unavailable, not the request refused.
+fn retryable(error: &CallError) -> bool {
+    match error {
+        CallError::Transport(_) => true,
+        CallError::Api {
+            code: Some(ErrorCode::Unavailable),
+            ..
+        } => true,
+        // A gateway or Cloudflare answered with something that is not an API error.
+        CallError::Api {
+            code: None, status, ..
+        } => matches!(status, 429 | 500..=599),
+        _ => false,
+    }
+}
+
 #[async_trait::async_trait]
 impl Remote for HttpRemote {
-    async fn list(&self, after: Option<i64>, limit: usize) -> Result<ListPage, RemoteError> {
-        let req = rpc::ListObjectsRequest {
+    async fn list(
+        &self,
+        after: Option<u64>,
+        limit: u32,
+    ) -> Result<ListArchivesResponse, RemoteError> {
+        let req = api::ListArchivesRequest {
             project: self.project.clone(),
-            after: after.map(|n| n.to_string()),
-            limit: Some(
-                u32::try_from(limit)
-                    .map_err(|_| RemoteError::Protocol("invalid page limit".into()))?,
-            ),
+            after,
+            limit: Some(limit),
         };
-        let page = self.rpc_retry(|| self.archive.list_objects(&req)).await?;
-        crate::protocol::validate_page(&page)?;
-        Ok(page)
+        for attempt in 0..=3 {
+            match api::call::<api::ListArchives>(&self.client, &self.base, &self.token, &req).await
+            {
+                Ok(page) => {
+                    crate::protocol::validate_listing(&page)?;
+                    return Ok(page);
+                }
+                Err(error) if retryable(&error) && attempt < 3 => {
+                    Self::backoff(attempt, None).await;
+                }
+                Err(error) => return Err(map_call_error(error)),
+            }
+        }
+        unreachable!()
     }
-    async fn get_coverage(&self) -> Result<Option<rpc::Coverage>, RemoteError> {
-        Ok(self.get_status().await?.coverage)
-    }
+
     async fn download(
         &self,
-        obj: &ListedObject,
+        archive: &ArchiveInfo,
         dest: &Path,
     ) -> Result<(String, u64), RemoteError> {
-        let url = reqwest::Url::parse(&obj.url)
-            .map_err(|_| RemoteError::Protocol("invalid object URL".into()))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            return Err(RemoteError::Protocol(
-                "object URL must use HTTP(S) without credentials".into(),
-            ));
-        }
+        let url = format!(
+            "{}{}",
+            self.base,
+            api::archive_path(&self.project, archive.seq)
+        );
         for attempt in 0..=3 {
-            let response = self.client.get(url.clone()).send().await;
+            let response = self.client.get(&url).bearer_auth(&self.token).send().await;
             let mut delay = None;
             let result = match response {
                 Ok(response) if response.status().is_success() => {
                     let mut file = tokio::fs::File::create(dest).await.map_err(io_error)?;
                     let mut stream = response.bytes_stream();
                     let mut hash = Sha256::new();
-                    let mut bytes = 0;
+                    let mut bytes = 0u64;
                     let mut interrupted = false;
                     while let Some(chunk) = stream.next().await {
                         match chunk {
                             Ok(chunk) => {
+                                bytes += chunk.len() as u64;
+                                if bytes > archive.size {
+                                    return Err(RemoteError::Protocol(format!(
+                                        "archive {} is larger than its listing says",
+                                        archive.seq
+                                    )));
+                                }
                                 file.write_all(&chunk).await.map_err(io_error)?;
                                 hash.update(&chunk);
-                                bytes += chunk.len() as u64;
                             }
                             Err(_) => {
                                 interrupted = true;
@@ -224,18 +223,18 @@ impl Remote for HttpRemote {
                         file.flush().await.map_err(io_error)?;
                         return Ok((hex::encode(hash.finalize()), bytes));
                     }
-                    RemoteError::Transport("object body interrupted".into())
+                    RemoteError::Transport("archive body interrupted".into())
                 }
                 Ok(response) => {
                     delay = crate::http::retry_after(response.headers());
-                    Self::object_status(response.status())
+                    Self::download_status(response.status(), archive.seq)
                 }
-                Err(_) => RemoteError::Transport("object request failed".into()),
+                Err(_) => RemoteError::Transport("archive request failed".into()),
             };
             if !matches!(result, RemoteError::Transport(_)) || attempt == 3 {
                 return Err(result);
             }
-            self.backoff(attempt, delay).await;
+            Self::backoff(attempt, delay).await;
         }
         unreachable!()
     }
@@ -243,7 +242,7 @@ impl Remote for HttpRemote {
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteError;
+    use super::*;
 
     #[test]
     fn errors_read_the_same_everywhere() {
@@ -257,12 +256,8 @@ mod tests {
                 "permission_denied: project read access required",
             ),
             (
-                RemoteError::RetentionGap,
-                "retention_gap: checkpoint is below the retained floor",
-            ),
-            (
-                RemoteError::Expired,
-                "expired: object URL expired or object deleted",
+                RemoteError::NotFound("no such project".into()),
+                "not_found: no such project",
             ),
             (
                 RemoteError::Transport("HTTP 503".into()),
@@ -276,7 +271,25 @@ mod tests {
         for (error, text) in cases {
             assert_eq!(error.to_string(), text);
         }
-        let boxed: Box<dyn std::error::Error + Send + Sync> = RemoteError::Expired.into();
-        assert!(boxed.to_string().starts_with("expired"));
+        assert!(
+            RemoteError::ArchiveMissing(7)
+                .to_string()
+                .starts_with("archive 7 is listed")
+        );
+    }
+
+    #[test]
+    fn only_unavailability_is_retried() {
+        let api = |status, code| CallError::Api {
+            status,
+            code,
+            message: String::new(),
+        };
+        assert!(retryable(&api(503, Some(ErrorCode::Unavailable))));
+        assert!(retryable(&api(502, None)));
+        assert!(retryable(&api(429, None)));
+        assert!(!retryable(&api(400, Some(ErrorCode::InvalidArgument))));
+        assert!(!retryable(&api(401, Some(ErrorCode::Unauthenticated))));
+        assert!(!retryable(&api(404, None)));
     }
 }

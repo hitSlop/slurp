@@ -1,0 +1,135 @@
+use std::fmt;
+
+use crate::style::{
+  Animatable, Color, FromCss, Length, MakeComputed, ParseResult, SizingContext, ToCss, discrete,
+};
+use cssparser::Parser;
+
+/// Represents the `max-width`/`max-height` value: either `none` (unbounded) or a [`Length`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum MaxSize {
+  /// No maximum; the box is unbounded on this axis.
+  #[default]
+  None,
+  /// A concrete maximum length.
+  Length(Length),
+}
+
+impl MaxSize {
+  /// Whether it is a negative length, which a sizing property rejects.
+  pub(crate) fn is_negative(self) -> bool {
+    matches!(self, Self::Length(length) if length.is_negative())
+  }
+
+  /// The maximum as a [`Length`], or `None` for `none`.
+  pub(crate) fn as_length(self) -> Option<Length> {
+    match self {
+      Self::Length(length) => Some(length),
+      Self::None => None,
+    }
+  }
+}
+
+impl MakeComputed for MaxSize {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    if let Self::Length(length) = self {
+      length.make_computed(sizing);
+    }
+  }
+}
+
+impl Animatable for MaxSize {
+  fn interpolate(
+    &mut self,
+    from: &Self,
+    to: &Self,
+    progress: f32,
+    sizing: &SizingContext,
+    current_color: Color,
+  ) {
+    *self = match (from, to) {
+      (Self::Length(from), Self::Length(to)) => Self::Length(Length::interpolated(
+        from,
+        to,
+        progress,
+        sizing,
+        current_color,
+      )),
+      _ => discrete(from, to, progress),
+    };
+  }
+}
+
+impl<'i> FromCss<'i> for MaxSize {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    if input
+      .try_parse(|input| input.expect_ident_matching("none"))
+      .is_ok()
+    {
+      return Ok(Self::None);
+    }
+
+    // `auto` is not a valid `max-width`/`max-height` value, but historically
+    // accepted here; keep treating it as `none` to avoid a behavior change.
+    if input
+      .try_parse(|input| input.expect_ident_matching("auto"))
+      .is_ok()
+    {
+      return Ok(Self::None);
+    }
+
+    Length::from_css(input).map(Self::Length)
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["none", "auto", "<length>"];
+}
+
+impl From<Length> for MaxSize {
+  fn from(length: Length) -> Self {
+    Self::Length(length)
+  }
+}
+
+impl ToCss for MaxSize {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::None => dest.write_str("none"),
+      Self::Length(length) => length.to_css(dest),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn parses_none() {
+    assert_eq!(MaxSize::from_css_str("none"), Ok(MaxSize::None));
+  }
+
+  #[test]
+  fn parses_auto_as_none() {
+    assert_eq!(MaxSize::from_css_str("auto"), Ok(MaxSize::None));
+  }
+
+  #[test]
+  fn parses_length() {
+    assert_eq!(
+      MaxSize::from_css_str("10px"),
+      Ok(MaxSize::Length(Length::Px(10.0)))
+    );
+  }
+
+  #[test]
+  fn round_trips_to_css() {
+    let mut buf = String::new();
+    MaxSize::None.to_css(&mut buf).unwrap();
+    assert_eq!(buf, "none");
+
+    let mut buf = String::new();
+    MaxSize::Length(Length::Px(10.0)).to_css(&mut buf).unwrap();
+    assert_eq!(buf, "10px");
+  }
+}

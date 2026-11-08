@@ -1,7 +1,7 @@
 //! Resolve where to send events and with which publishable key.
 use anyhow::{Result, anyhow, ensure};
 use slurp_app::{Workspace, project};
-use slurp_client::{config, rpc};
+use slurp_client::{api, config};
 use std::path::Path;
 
 // Deliberately not Debug/Serialize: the publishable key stays out of diagnostics and output.
@@ -13,12 +13,24 @@ fn env(name: &str) -> Option<String> {
     config::env_value(name)
 }
 
+/// The source `slurp send` and `slurp identify` send as, unless `--source` says otherwise.
+pub const DEFAULT_SOURCE: &str = "cli";
+
 /// The project to send to and its backend: an explicit reference (`--to`), or the project the current folder is bound to.
+///
+/// The key is the publishable key of `source` (default `cli`), which the Worker supplies. `SLURP_PUBLISHABLE_KEY` is an
+/// explicit key and is used only when no `--source` is given.
 pub async fn resolve(
     explicit_workspace: Option<&Path>,
     backend_override: Option<&str>,
     explicit_project: Option<&str>,
+    explicit_source: Option<&str>,
 ) -> Result<Target> {
+    let source = explicit_source.unwrap_or(DEFAULT_SOURCE);
+    ensure!(
+        slurp_app::project_setup::valid_source(source),
+        "a source is a lowercase name of 1 to 32 characters (letters, digits, underscore) starting with a letter, such as web or mcp"
+    );
     let cwd = std::env::current_dir()?;
     let home = config::home()?;
     let project_mode = explicit_project.is_none();
@@ -29,8 +41,8 @@ pub async fn resolve(
             reference.to_owned()
         } else {
             let token = crate::login::token(&backend)?;
-            rpc::ProjectClient::new(&backend, slurp_client::http_client()?, Some(token))
-                .get_project(&rpc::GetProjectRequest {
+            slurp_app::project_setup::Api::new(&backend, &token)?
+                .call::<api::GetProject>(&api::GetProjectRequest {
                     project: reference.into(),
                 })
                 .await
@@ -56,7 +68,7 @@ pub async fn resolve(
             config::normalize_backend(&value).is_ok_and(|value| value == backend)
         });
     let allow_environment = !project_mode || scoped_environment;
-    let key = match allow_environment
+    let key = match (allow_environment && explicit_source.is_none())
         .then(|| env("SLURP_PUBLISHABLE_KEY"))
         .flatten()
     {
@@ -64,11 +76,10 @@ pub async fn resolve(
         // A publishable key is public by design and the Worker can always say what it is, so nothing is kept on this machine.
         None => {
             let token = crate::login::token(&backend)?;
-            let client =
-                rpc::ProjectClient::new(&backend, slurp_client::http_client()?, Some(token));
-            slurp_app::project_setup::publishable_key(&client, &project)
+            let client = slurp_app::project_setup::Api::new(&backend, &token)?;
+            slurp_app::project_setup::source_key(&client, &project, source)
                 .await
-                .map_err(|_| anyhow!("could not get a publishable key for this project; connect as its admin (slurp connect) or set SLURP_PUBLISHABLE_KEY"))?
+                .map_err(|error| anyhow!("could not get the publishable key for source {source} ({error}); connect as the Worker's admin (slurp connect), or set SLURP_PUBLISHABLE_KEY"))?
         }
     };
     ensure!(

@@ -1,0 +1,174 @@
+use cssparser::Parser;
+use tiny_skia::BlendMode as TinyBlendMode;
+
+use crate::style::{
+  Animatable, FromCss, ListInterpolationStrategy, ParseResult, impl_css_enum, parse_comma_list,
+  tw::TailwindPropertyParser,
+};
+
+/// A list of blend modes.
+pub(crate) type BlendModes = Box<[BlendMode]>;
+
+impl<'i> FromCss<'i> for BlendModes {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    parse_comma_list(input, BlendMode::from_css)
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = BlendMode::VALID_TOKENS;
+}
+
+/// Defines the blending mode for an element.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum BlendMode {
+  /// The final color is the top color, regardless of what the bottom color is.
+  #[default]
+  Normal,
+  /// The final color is the result of multiplying the top and bottom colors.
+  Multiply,
+  /// The final color is the result of inverting the colors, multiplying them, and inverting that value.
+  Screen,
+  /// The final color is the result of multiply if the bottom color is darker, or screen if the bottom color is lighter.
+  Overlay,
+  /// The final color is composed of the darkest values of each color channel.
+  Darken,
+  /// The final color is composed of the lightest values of each color channel.
+  Lighten,
+  /// The final color is the result of dividing the bottom color by the inverse of the top color.
+  ColorDodge,
+  /// The final color is the result of inverting the bottom color, dividing the value by the top color, and inverting that value.
+  ColorBurn,
+  /// The final color is the result of multiply if the top color is darker, or screen if the top color is lighter.
+  HardLight,
+  /// The final color is similar to hard-light, but softer.
+  SoftLight,
+  /// The final color is the result of subtracting the darker of the two colors from the lighter one.
+  Difference,
+  /// The final color is similar to difference, but with less contrast.
+  Exclusion,
+  /// The final color has the hue of the top color, while using the saturation and luminosity of the bottom color.
+  Hue,
+  /// The final color has the saturation of the top color, while using the hue and luminosity of the bottom color.
+  Saturation,
+  /// The final color has the hue and saturation of the top color, while using the luminosity of the bottom color.
+  Color,
+  /// The final color has the luminosity of the top color, while using the hue and saturation of the bottom color.
+  Luminosity,
+  /// The final color is the result of adding the source and backdrop colors, clamped to maximum.
+  PlusLighter,
+  /// The final color is the result of adding the source and backdrop colors, clamped to minimum.
+  PlusDarker,
+}
+
+/// The tiny-skia mode, or the unchanged mode for the dodge, burn, and plus-darker modes the canvas blends.
+impl TryFrom<BlendMode> for TinyBlendMode {
+  type Error = BlendMode;
+
+  fn try_from(mode: BlendMode) -> Result<Self, Self::Error> {
+    use TinyBlendMode as T;
+
+    Ok(match mode {
+      BlendMode::Normal => T::SourceOver,
+      BlendMode::Multiply => T::Multiply,
+      BlendMode::Screen => T::Screen,
+      BlendMode::Overlay => T::Overlay,
+      BlendMode::Darken => T::Darken,
+      BlendMode::Lighten => T::Lighten,
+      BlendMode::HardLight => T::HardLight,
+      BlendMode::SoftLight => T::SoftLight,
+      BlendMode::Difference => T::Difference,
+      BlendMode::Exclusion => T::Exclusion,
+      BlendMode::Hue => T::Hue,
+      BlendMode::Saturation => T::Saturation,
+      BlendMode::Color => T::Color,
+      BlendMode::Luminosity => T::Luminosity,
+      BlendMode::PlusLighter => T::Plus,
+      _ => return Err(mode),
+    })
+  }
+}
+
+impl_css_enum!(
+  custom_animatable BlendMode,
+  "normal" => BlendMode::Normal,
+  "multiply" => BlendMode::Multiply,
+  "screen" => BlendMode::Screen,
+  "overlay" => BlendMode::Overlay,
+  "darken" => BlendMode::Darken,
+  "lighten" => BlendMode::Lighten,
+  "color-dodge" => BlendMode::ColorDodge,
+  "color-burn" => BlendMode::ColorBurn,
+  "hard-light" => BlendMode::HardLight,
+  "soft-light" => BlendMode::SoftLight,
+  "difference" => BlendMode::Difference,
+  "exclusion" => BlendMode::Exclusion,
+  "hue" => BlendMode::Hue,
+  "saturation" => BlendMode::Saturation,
+  "color" => BlendMode::Color,
+  "luminosity" => BlendMode::Luminosity,
+  "plus-lighter" => BlendMode::PlusLighter,
+  "plus-darker" => BlendMode::PlusDarker
+);
+
+impl TailwindPropertyParser for BlendMode {}
+
+impl Animatable for BlendMode {
+  fn list_interpolation_strategy() -> ListInterpolationStrategy {
+    ListInterpolationStrategy::RepeatToLcm
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::{FromCssStr, ToCss};
+
+  #[test]
+  fn color_dodge_and_color_burn_stay_off_the_approximate_reciprocal() {
+    assert!(TinyBlendMode::try_from(BlendMode::ColorDodge).is_err());
+    assert!(TinyBlendMode::try_from(BlendMode::ColorBurn).is_err());
+  }
+
+  #[test]
+  fn test_parse_blend_mode() {
+    for (css, expected) in [
+      ("normal", BlendMode::Normal),
+      ("multiply", BlendMode::Multiply),
+      ("plus-lighter", BlendMode::PlusLighter),
+      ("color-dodge", BlendMode::ColorDodge),
+    ] {
+      assert_eq!(
+        BlendMode::from_css_str(css),
+        Ok(expected),
+        "failed for {css}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_parse_blend_modes_list() {
+    assert_eq!(
+      BlendModes::from_css_str("screen, overlay"),
+      Ok(Box::new([BlendMode::Screen, BlendMode::Overlay]) as BlendModes)
+    );
+  }
+
+  #[test]
+  fn test_blend_mode_round_trip() {
+    for css in ["normal", "multiply", "plus-lighter"] {
+      let parsed = BlendMode::from_css_str(css).unwrap();
+      let reparsed = BlendMode::from_css_str(&parsed.to_css_string()).unwrap();
+      assert_eq!(parsed, reparsed, "failed for {css}");
+    }
+
+    let parsed = BlendModes::from_css_str("screen, overlay").unwrap();
+    let reparsed = BlendModes::from_css_str(&parsed.to_css_string()).unwrap();
+    assert_eq!(parsed, reparsed);
+  }
+
+  #[test]
+  fn test_parse_blend_mode_invalid() {
+    assert!(BlendMode::from_css_str("bogus").is_err());
+    assert!(BlendMode::from_css_str("123").is_err());
+  }
+}

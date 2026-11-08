@@ -1,51 +1,41 @@
-//! Validate generated wire values at the sync boundary; report sequences remain i64.
-use crate::{ListPage, RemoteError, rpc};
+//! Check wire values at the sync boundary, before anything is downloaded or recorded.
+use crate::{RemoteError, api};
 
-pub fn parse_sequence(value: &str) -> Result<i64, RemoteError> {
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(RemoteError::Protocol(
-            "expected a decimal sequence string".into(),
-        ));
-    }
-    value
-        .parse()
-        .map_err(|_| RemoteError::Protocol("sequence exceeds i64".into()))
-}
-
-/// Check a coverage read from the wire: a nonempty archive id and sequences that are decimal strings of at least 1.
+/// Check one page of `ListArchives`: sequences of at least 1 and strictly increasing, a SHA-256 that is 64 lowercase hex
+/// digits, a coverage that agrees with `first`/`last`, and a gap that is a real range.
 ///
 /// # Errors
 /// Returns a protocol error naming what is wrong.
-pub fn validate_coverage(coverage: &rpc::Coverage) -> Result<(), RemoteError> {
-    let first = parse_sequence(&coverage.first_retained)?;
-    let latest = coverage
-        .latest_published
-        .as_deref()
-        .map(parse_sequence)
-        .transpose()?;
-    if coverage.archive_id.is_empty() || first < 1 || latest.is_some_and(|n| n < 1) {
-        return Err(RemoteError::Protocol("invalid archive coverage".into()));
+pub fn validate_listing(page: &api::ListArchivesResponse) -> Result<(), RemoteError> {
+    let bad = |what: &str| Err(RemoteError::Protocol(format!("invalid listing: {what}")));
+    let coverage = &page.coverage;
+    if coverage.first.is_some_and(|n| n < 1)
+        || coverage.last.is_some_and(|n| n < 1)
+        || coverage.first.is_some() != coverage.last.is_some()
+        || coverage.first > coverage.last
+    {
+        return bad("coverage");
     }
-    Ok(())
-}
-
-pub fn validate_page(page: &ListPage) -> Result<(), RemoteError> {
-    if let Some(c) = &page.coverage {
-        validate_coverage(c)?;
-    } else if !page.objects.is_empty() || page.next_after.is_some() {
-        return Err(RemoteError::Protocol(
-            "objects or cursor without coverage".into(),
-        ));
-    }
-    for obj in &page.objects {
-        if parse_sequence(&obj.seq)? < 1 {
-            return Err(RemoteError::Protocol(
-                "object sequence must be positive".into(),
-            ));
+    let mut previous = 0;
+    for archive in &page.archives {
+        let valid_sha = archive.sha256.len() == 64
+            && archive
+                .sha256
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if archive.seq < 1 || archive.seq <= previous || !valid_sha {
+            return bad("an archive's sequence or sha256");
         }
+        previous = archive.seq;
     }
-    if let Some(after) = &page.next_after {
-        parse_sequence(after)?;
+    if !page.archives.is_empty() && coverage.last.is_none() {
+        return bad("archives without coverage");
+    }
+    if page
+        .gap
+        .is_some_and(|gap| gap.from < 1 || gap.to < gap.from)
+    {
+        return bad("gap");
     }
     Ok(())
 }
@@ -54,29 +44,59 @@ pub fn validate_page(page: &ListPage) -> Result<(), RemoteError> {
 mod tests {
     use super::*;
 
-    fn coverage(archive: &str, first: &str, latest: Option<&str>) -> rpc::Coverage {
-        rpc::Coverage {
-            archive_id: archive.into(),
-            first_retained: first.into(),
-            latest_published: latest.map(Into::into),
-            latest_published_at: None,
-            retention_seconds: 0,
+    fn archive(seq: u64, sha: &str) -> api::ArchiveInfo {
+        api::ArchiveInfo {
+            seq,
+            size: 10,
+            sha256: sha.into(),
+            events: 1,
+            created_at: "2026-11-07T12:00:00.000Z".into(),
+        }
+    }
+    fn page(
+        first: Option<u64>,
+        last: Option<u64>,
+        archives: Vec<api::ArchiveInfo>,
+    ) -> api::ListArchivesResponse {
+        api::ListArchivesResponse {
+            coverage: api::Coverage {
+                first,
+                last,
+                last_at: None,
+                pending: false,
+            },
+            archives,
+            next: None,
+            gap: None,
         }
     }
 
     #[test]
-    fn coverage_needs_an_archive_and_positive_decimal_sequences() {
-        assert!(validate_coverage(&coverage("a", "1", Some("7"))).is_ok());
-        assert!(validate_coverage(&coverage("a", "1", None)).is_ok());
+    fn a_listing_needs_positive_increasing_sequences_and_real_digests() {
+        let sha = "a".repeat(64);
+        assert!(validate_listing(&page(None, None, vec![])).is_ok());
+        assert!(
+            validate_listing(&page(
+                Some(1),
+                Some(2),
+                vec![archive(1, &sha), archive(2, &sha)]
+            ))
+            .is_ok()
+        );
         for bad in [
-            coverage("", "1", Some("7")),
-            coverage("a", "0", Some("7")),
-            coverage("a", "1", Some("0")),
-            coverage("a", "one", None),
-            coverage("a", "1", Some("-3")),
-            coverage("a", "99999999999999999999", None),
+            page(Some(0), Some(1), vec![]),
+            page(Some(2), Some(1), vec![]),
+            page(Some(1), None, vec![]),
+            page(None, None, vec![archive(1, &sha)]),
+            page(Some(1), Some(2), vec![archive(2, &sha), archive(1, &sha)]),
+            page(Some(1), Some(2), vec![archive(1, &sha), archive(1, &sha)]),
+            page(Some(1), Some(1), vec![archive(1, "not-a-digest")]),
+            page(Some(1), Some(1), vec![archive(1, &"A".repeat(64))]),
         ] {
-            assert!(validate_coverage(&bad).is_err(), "{bad:?}");
+            assert!(validate_listing(&bad).is_err(), "{bad:?}");
         }
+        let mut gap = page(Some(5), Some(5), vec![archive(5, &sha)]);
+        gap.gap = Some(api::Gap { from: 3, to: 2 });
+        assert!(validate_listing(&gap).is_err());
     }
 }

@@ -28,14 +28,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install test DuckDB
         run: |
-          if [ "$RUNNER_OS" = macOS ]; then asset=osx-universal; else asset=linux-amd64; fi
+          # The same digests `slurp setup` pins (crates/slurp-cli/src/setup.rs).
+          if [ "$RUNNER_OS" = macOS ]; then
+            asset=osx-universal; sha=8a8f67e7c7f7d1392fa63ba3971948391392fe2a25fca63e7008e33c50beb4c2
+          else
+            asset=linux-amd64; sha=c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc
+          fi
           curl -fL "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-$asset.tar.gz" -o "$RUNNER_TEMP/duckdb.tar.gz"
+          echo "$sha  $RUNNER_TEMP/duckdb.tar.gz" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/duckdb-bin"
           tar -xzf "$RUNNER_TEMP/duckdb.tar.gz" -C "$RUNNER_TEMP/duckdb-bin"
           echo "SLURP_TEST_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
           echo "SLURP_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Covers every crate, including the check that backend/src/api.gen.ts is the current export of crates/slurp-client/src/api.rs.
+      # CI is set here, so a native test that cannot find DuckDB fails instead of skipping.
       - run: cargo test --workspace
       - run: cargo doc --workspace --no-deps
 
@@ -51,20 +59,16 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install test DuckDB
         run: |
           curl -fL "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz" -o "$RUNNER_TEMP/duckdb.tar.gz"
+          echo "c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc  $RUNNER_TEMP/duckdb.tar.gz" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/duckdb-bin"
           tar -xzf "$RUNNER_TEMP/duckdb.tar.gz" -C "$RUNNER_TEMP/duckdb-bin"
           echo "SLURP_DUCKDB=$RUNNER_TEMP/duckdb-bin/duckdb" >> "$GITHUB_ENV"
-      - name: Generated webrpc clients are current
-        run: sh backend/api/generate.sh --check
       - run: npm ci
         working-directory: backend
       - name: Shared tools have one pinned version across the repo
@@ -79,7 +83,7 @@ jobs:
           ! ldd target/debug/slurp | grep -i dbus
       - run: npm run typecheck
         working-directory: backend
-      - name: Worker tests (wrangler dev, local R2 and Durable Objects, real CLI)
+      - name: Worker tests (workerd via Vitest), then the real CLI and Python SDKs against wrangler dev
         run: npm test
         working-directory: backend
         timeout-minutes: 10
@@ -100,16 +104,29 @@ jobs:
           pnpm --filter @hitslop/slurp-react-native build
           pnpm --filter @hitslop/slurp-react-native test
 
-  swift:
+  # Slurp has no Swift SDK: iOS and macOS apps use Segment's analytics-swift pointed at the Worker. This runs the real SDK, pinned in
+  # sdks/compat/swift/Package.resolved, against a real Worker. SLURP_COMPAT_SWIFT_REQUIRED makes "cannot build" a failure, not a skip.
+  compat-swift:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Swift SDK through the repository's root manifest (what people add by URL)
-        run: swift test
-      - name: Swift SDK on its own
-        run: swift test
-        working-directory: sdks/swift
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache@v4
+        with:
+          path: sdks/compat/swift/.build
+          key: swift-build-${{ runner.os }}-${{ hashFiles('sdks/compat/swift/Package.resolved', 'sdks/compat/swift/Package.swift', 'sdks/compat/swift/Sources/**') }}
+      - run: npm ci
+        working-directory: backend
+      - name: analytics-swift against the Worker
+        run: node --test --test-concurrency=1 --test-force-exit --test-timeout=600000 --experimental-strip-types test/http/compat-swift.test.ts
+        working-directory: backend
+        timeout-minutes: 25
+        env:
+          WRANGLER_SEND_METRICS: "false"
+          SLURP_COMPAT_SWIFT_REQUIRED: "1"
 
   web:
     runs-on: ubuntu-latest
@@ -122,6 +139,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install chart bundle verifier
+        run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: Embedded chart assets match their source
+        run: pnpm --dir report-assets check
+      - name: Chart text measurement tests
+        run: pnpm --dir report-assets test
       - run: pnpm --filter slurp-setup check
       - run: pnpm --filter slurp-setup build
       - name: The CLI's embedded quickstart page is current

@@ -1,3 +1,4 @@
+mod common;
 use serde_json::{Value, json};
 use slurp_app::{
     Workspace, agent_notes,
@@ -34,7 +35,7 @@ fn value(output: Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("JSON result")
 }
 fn init(root: &Path, database: Option<PathBuf>) -> Option<Workspace> {
-    let exe = std::env::var_os("SLURP_TEST_DUCKDB")?;
+    let exe = common::duckdb()?;
     Some(
         Workspace::init(
             root,
@@ -58,7 +59,7 @@ fn storage_error(error: anyhow::Error) {
 
 #[test]
 fn init_defaults_to_the_local_worker_and_allows_overrides() {
-    let Some(exe) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(exe) = common::duckdb() else {
         return;
     };
     {
@@ -114,7 +115,7 @@ fn init_defaults_to_the_local_worker_and_allows_overrides() {
 
 #[test]
 fn external_storage_setup_is_saved_and_never_relocated_implicitly() {
-    let Some(exe) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(exe) = common::duckdb() else {
         return;
     };
     let project = tempfile::tempdir().expect("project");
@@ -261,7 +262,7 @@ fn path_selection_is_project_relative_and_external_parent_must_exist() {
 
 #[test]
 fn init_failure_preserves_existing_data_and_leaves_no_configuration() {
-    let Some(exe) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(exe) = common::duckdb() else {
         return;
     };
     let project = tempfile::tempdir().expect("project");
@@ -315,7 +316,7 @@ fn init_failure_preserves_existing_data_and_leaves_no_configuration() {
 
 #[test]
 fn scripted_init_requires_explicit_agent_notes_and_preserves_instruction_files() {
-    let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(engine) = common::duckdb() else {
         return;
     };
     let project = tempfile::tempdir().expect("project");
@@ -423,7 +424,7 @@ fn reminders_preserve_text_permissions_aliases_and_scope() {
 
 #[test]
 fn init_data_dir_flag_and_conflicts_are_machine_readable() {
-    let Some(exe) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(exe) = common::duckdb() else {
         return;
     };
     let project = tempfile::tempdir().expect("project");
@@ -464,7 +465,7 @@ fn init_data_dir_flag_and_conflicts_are_machine_readable() {
 
 #[test]
 fn selecting_a_different_project_does_not_embed_environment_keys() {
-    let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(engine) = common::duckdb() else {
         return;
     };
     let root = tempfile::tempdir().expect("project");

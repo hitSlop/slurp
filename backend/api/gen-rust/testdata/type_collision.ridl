@@ -1,6 +1,0 @@
-webrpc = v1
-name = generator_test
-version = v1
-basepath = /rpc
-
-struct Error

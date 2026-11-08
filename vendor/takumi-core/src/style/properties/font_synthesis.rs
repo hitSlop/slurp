@@ -1,0 +1,144 @@
+use cssparser::{Parser, Token, match_ignore_ascii_case};
+use typed_builder::TypedBuilder;
+
+use crate::style::{FromCss, MakeComputed, ParseResult, impl_css_enum, unexpected_token};
+
+/// Controls synthetic font behaviors.
+#[derive(Debug, Clone, Copy, PartialEq, Default, TypedBuilder)]
+#[builder(field_defaults(default))]
+pub struct FontSynthesis {
+  /// Controls synthetic bolding when a matching font weight is unavailable.
+  pub weight: FontSynthesic,
+  /// Controls synthetic italics/obliques when a matching style is unavailable.
+  pub style: FontSynthesic,
+  /// Controls synthetic small capitals when the font lacks the caps feature.
+  pub small_caps: FontSynthesic,
+}
+
+impl MakeComputed for FontSynthesis {}
+
+impl<'i> FromCss<'i> for FontSynthesis {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let mut weight = FontSynthesic::None;
+    let mut style = FontSynthesic::None;
+    let mut small_caps = FontSynthesic::None;
+
+    while !input.is_exhausted() {
+      let ident = input.expect_ident()?;
+
+      match_ignore_ascii_case! {ident,
+        "none" => {
+          weight = FontSynthesic::None;
+          style = FontSynthesic::None;
+          small_caps = FontSynthesic::None;
+        },
+        "weight" => {
+          weight = FontSynthesic::Auto;
+        },
+        "style" => {
+          style = FontSynthesic::Auto;
+        },
+        "small-caps" => {
+          small_caps = FontSynthesic::Auto;
+        },
+        _ => return Err(unexpected_token!(&Token::Ident(ident.to_owned()))),
+      };
+    }
+
+    Ok(Self {
+      weight,
+      style,
+      small_caps,
+    })
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["none", "weight", "style", "small-caps"];
+}
+
+/// Control mode for synthetic.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum FontSynthesic {
+  /// Synthetic is allowed.
+  #[default]
+  Auto,
+  /// Synthetic is disabled.
+  None,
+}
+
+impl FontSynthesic {
+  /// Whether synthesis is permitted.
+  pub(crate) fn is_allowed(self) -> bool {
+    self == FontSynthesic::Auto
+  }
+}
+
+impl_css_enum!(
+  FontSynthesic,
+  "auto" => FontSynthesic::Auto,
+  "none" => FontSynthesic::None,
+);
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn test_parse_font_synthesis() {
+    for (css, expected) in [
+      (
+        "none",
+        FontSynthesis {
+          weight: FontSynthesic::None,
+          style: FontSynthesic::None,
+          small_caps: FontSynthesic::None,
+        },
+      ),
+      (
+        "weight",
+        FontSynthesis {
+          weight: FontSynthesic::Auto,
+          style: FontSynthesic::None,
+          small_caps: FontSynthesic::None,
+        },
+      ),
+      (
+        "style",
+        FontSynthesis {
+          weight: FontSynthesic::None,
+          style: FontSynthesic::Auto,
+          small_caps: FontSynthesic::None,
+        },
+      ),
+      (
+        "weight style",
+        FontSynthesis {
+          weight: FontSynthesic::Auto,
+          style: FontSynthesic::Auto,
+          small_caps: FontSynthesic::None,
+        },
+      ),
+      (
+        "small-caps weight",
+        FontSynthesis {
+          weight: FontSynthesic::Auto,
+          style: FontSynthesic::None,
+          small_caps: FontSynthesic::Auto,
+        },
+      ),
+    ] {
+      assert_eq!(
+        FontSynthesis::from_css_str(css),
+        Ok(expected),
+        "failed for {css}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_parse_font_synthesis_invalid() {
+    assert!(FontSynthesis::from_css_str("auto").is_err());
+    assert!(FontSynthesis::from_css_str("123").is_err());
+  }
+}

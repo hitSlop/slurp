@@ -76,7 +76,12 @@ enum Operation {
     /// Check the events for common data problems (spelling variants, bad clocks, bots, double tracking). Changes nothing.
     Health,
     Describe,
-    Sync,
+    /// Download newly published archives into the local database.
+    Sync {
+        /// First ask the Worker to publish what it has buffered, so events sent a moment ago are included. Needs the admin token.
+        #[arg(long)]
+        now: bool,
+    },
     /// Post a message, and optionally a report image, to Slack or Discord. Credentials come from the environment (SLACK_BOT_TOKEN, SLACK_WEBHOOK_URL, DISCORD_WEBHOOK_URL).
     #[command(subcommand)]
     Notify(Notify),
@@ -182,9 +187,10 @@ fn main() -> std::process::ExitCode {
     }
     let presentation = match &cli.command {
         Operation::Init(_) => output::Kind::Init,
-        Operation::Sync => output::Kind::Sync,
+        Operation::Sync { .. } => output::Kind::Sync,
         Operation::Sql { .. } => output::Kind::Sql,
         Operation::Health => output::Kind::Health,
+        Operation::Doctor | Operation::Status => output::Kind::Status,
         _ => output::Kind::General,
     };
     match run(cli) {
@@ -360,9 +366,15 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     let cancellation = w.cancellation.clone();
     ctrlc::set_handler(move || cancellation.cancel())?;
     match cli.command {
-        Operation::Sync => {
+        Operation::Sync { now } => {
             let auth = login::token(&w.backend)?;
-            tokio::runtime::Runtime::new()?.block_on(async { w.sync(&auth).await })
+            tokio::runtime::Runtime::new()?.block_on(async {
+                if now {
+                    w.sync_now(&auth).await
+                } else {
+                    w.sync(&auth).await
+                }
+            })
         }
         Operation::Mcp { allow_send } => {
             // stdout carries only protocol messages; nothing is printed afterwards.
@@ -371,9 +383,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
             std::process::exit(0);
         }
-        Operation::Doctor | Operation::Status => Ok(
-            json!({"version":w.version,"project":w.project,"backend":w.backend,"database":w.database,"events":w.execute("SELECT count(*) AS count FROM events",true)?,"last_delivery":w.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1",true)?}),
-        ),
+        Operation::Doctor | Operation::Status => w.status(),
         Operation::Health => slurp_app::health::run(&w),
         Operation::Describe => w.execute("DESCRIBE events", true),
         Operation::Sql {

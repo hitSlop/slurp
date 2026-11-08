@@ -42,10 +42,10 @@ await flush();
 Each record is one JSON line. Identify records omit `event` and put trait updates in `data`:
 
 ```json
-{"id":"019a3cb6-bc00-7000-8000-000000000001","type":"track","event":"signed_up","timestamp":"2025-11-01T00:00:00.000Z","user_id":"user-42","anonymous_id":"…","session_id":"…","data":{"plan":"pro"},"context":{"library":{"name":"@hitslop/slurp-sdk","version":"0.1.1"}}}
+{"id":"019a3cb6-bc00-7000-8000-000000000001","type":"track","event":"signed_up","timestamp":"2025-11-01T00:00:00.000Z","user_id":"user-42","anonymous_id":"…","session_id":"…","data":{"plan":"pro"},"context":{"library":{"name":"@hitslop/slurp-sdk","version":"0.1.2"}}}
 ```
 
-`user_id` is omitted until identification. Browser context also contains `page: {url, path, referrer, title}`, `user_agent`, `locale`, and `timezone`; Node context adds `runtime: {name: 'node', version: process.version}`. Event names must be non-empty strings of at most 200 characters. Data must be a plain object containing only JSON values: no cycles, dates, bigint, functions, undefined, symbols or nonfinite numbers. Data and context are snapshotted when captured. `context` accepts a plain JSON object or a function called for each record; use it for app, device, OS and screen metadata. `context.geo` is reserved for backend enrichment. `track(event, data, { userId, anonymousId, sessionId, context })` overrides one record without changing the client identity, for server applications handling multiple users. Events larger than 1 MiB of serialized UTF-8 JSON are dropped and reported; nothing is ever truncated. No server stamp fields are emitted.
+`user_id` is omitted until identification. Browser context also contains `page: {url, path, referrer, title}`, `user_agent`, `locale`, and `timezone`; Node context adds `runtime: {name: 'node', version: process.version}`. Event names must be non-empty strings of at most 200 characters (Unicode code points, as the Worker counts them). Data must be a plain object containing only JSON values: no cycles, dates, bigint, functions, undefined, symbols or nonfinite numbers. Data and context are snapshotted when captured. `context` accepts a plain JSON object or a function called for each record; use it for app, device, OS and screen metadata. `context.geo` is reserved for backend enrichment. `track(event, data, { userId, anonymousId, sessionId, context })` overrides one record without changing the client identity, for server applications handling multiple users. Events larger than 1 MiB of serialized UTF-8 JSON are dropped and reported; nothing is ever truncated. No server stamp fields are emitted.
 
 Options besides the required `key` and full `endpoint`:
 
@@ -56,20 +56,33 @@ Options besides the required `key` and full `endpoint`:
 | `flushIntervalMs` | 5000 | Background flush interval |
 | `maxBatchEvents` | 1000 | Maximum events per request |
 | `maxBatchBytes` | 921600 | UTF-8 body target; an event larger than the target travels alone |
-| `maxQueue` | 10000 | Unbatched queue cap by count; oldest queued events are dropped and reported |
-| `maxQueueBytes` | 4194304 | Most bytes kept offline, counting unbatched events and batches not yet acknowledged; the oldest are dropped and reported (never the batch being sent). Records can be up to 1 MiB, so a count limit alone is not a size limit; 4 MiB also stays under browser localStorage |
-| `requestTimeoutMs` | 30000 | A request with no answer after this long is aborted and retried with the same bytes |
+| `maxQueue` | 10000 | Queue cap by count; the oldest queued events that are not in a request are dropped and reported |
+| `maxQueueBytes` | 4194304 | Most bytes kept offline; the oldest events that are not in a request are dropped and reported (never the ones being sent). Records can be up to 1 MiB, so a count limit alone is not a size limit; 4 MiB also stays under browser localStorage |
+| `requestTimeoutMs` | 30000 | A request with no answer after this long is aborted and retried |
 | `sessionTimeoutMs` | 1800000 | Session inactivity timeout |
 | `storage` | Browser localStorage; Node memory | Adapter described below |
 | `fetch` | Global fetch | Fetch implementation |
 | `onError` | None | Error callback; `dropped` is zero when work is retained for retry |
-| `flushOnHide` | true in browsers | Try one head batch using fetch keepalive on page hide |
+| `flushOnHide` | true in browsers | Send one request using fetch keepalive on page hide |
 
-Limits and intervals must be positive safe integers. Browser page hide sends at most 60 KiB; larger bodies stay persisted. Timers are unref'd in Node. `flush()` resolves when queued work is acknowledged, a retry is scheduled, or the client stops. Its result is `{accepted, rejected, pending, retryAt, stopped}`: accepted/rejected are cumulative record counts for this client instance, pending is current retained work, retryAt is an epoch-millisecond deadline or null, and stopped includes closed clients. Acceptance means durable ingest acknowledgment, not publication or read availability. It respects a pending retry deadline, including across reloads; it does not wait for that deadline. `close()` immediately stops timers, listeners and requests and persists outstanding work; call `flush()` first for a normal shutdown. Subsequent `track` calls are dropped and reported.
+Limits and intervals must be positive safe integers. Browser page hide sends one request of at most 60 KiB (with `?key=` in the URL, since keepalive requests carry no `Authorization` header); the rest stays queued and saved. Timers are unref'd in Node. `flush()` resolves when queued work is acknowledged, a retry is scheduled, or the client stops sending. Its result is `{accepted, rejected, pending, retryAt, stopped}`: accepted/rejected are cumulative record counts for this client instance, pending is current retained work, retryAt is an epoch-millisecond deadline or null, and stopped is true for a closed client and for one that paused after the Worker refused its key (401/403). Acceptance means durable ingest acknowledgment, not publication or read availability. It respects a pending retry deadline, including across reloads; it does not wait for that deadline. `close()` immediately stops timers, listeners and requests and persists outstanding work; call `flush()` first for a normal shutdown. Subsequent `track` calls are dropped and reported.
 
-Batches are raw NDJSON with a trailing newline, sent to `endpoint` with `Content-Type: application/x-ndjson` and `Authorization: Bearer <key>`. Before the first send, the SDK persists the exact completed body. Retries and restarts resend those bytes so the gateway can dedupe a committed request whose response was lost. Any 2xx acknowledges a batch; 408, 429 and 503 and other 5xx responses, network errors and requests with no answer within `requestTimeoutMs` are retried with the same bytes (429 and 503 honor `Retry-After`, seconds or HTTP date; the rest back off with jitter from 250–500 ms to 30–60 s). A 413 splits existing lines without reserializing them; a rejected singleton is dropped. A 400 or other permanent rejection drops the batch. A 401/403 drops all pending work and permanently stops that client, including when its state is restored. Storage write failures retain work and prevent sending until a snapshot succeeds.
+A request is raw NDJSON with a trailing newline: the first queued events (at most `maxBatchEvents`, `maxBatchBytes` and, after a 413, the current split limit), sent to `endpoint` with `Content-Type: application/x-ndjson` and `Authorization: Bearer <key>`. Every event has an `id` the SDK generated when you captured it, and an event is resent with the same id and the same bytes until the Worker acknowledges it, so a retry after a lost response can only repeat an event, never change it; `slurp sync` imports each (source, id) once. A retry carries the same events, not necessarily the same request: the SDK keeps no frozen batches, only the queue.
 
-Delivery depends on retained storage, gateway dedupe retention, and a running client. Queue overflow, invalid/oversized events, permanent rejections, and failed browser persistence can lose events. Browser localStorage access is guarded; if unavailable it falls back to memory and reports the error. A process exiting before storage writes finish can lose newly queued events; awaiting `flush` or `close` finishes those writes. Neither call guarantees a successful network delivery when a retry is scheduled.
+How each answer is handled:
+
+| Answer | What the SDK does |
+| --- | --- |
+| 2xx | The events are removed. The split limit and backoff reset |
+| 400 listing `rejected` lines | Only those lines are dropped and reported through `onError`; the rest is sent at once |
+| any other 400 or 4xx (not 408, 413, 429) | The request's events are dropped and reported |
+| 413 | The request is halved and retried; a single event the Worker refuses is dropped and reported |
+| 408, 429, 5xx, a network error, or no answer within `requestTimeoutMs` | Retry later. 429 and 503 honor `Retry-After` (seconds or an HTTP date); the rest back off with jitter from 250-500 ms up to 30-60 s. The events stay queued |
+| 401, 403 | Everything stays queued and this client instance stops sending (`onError` hears it once, with `dropped` 0). New events are still queued, within `maxQueue` and `maxQueueBytes`, and the queue is saved as usual; nothing about the pause is saved. The next launch tries once and pauses again if the key is still refused. Rotate by creating a new key for the same source: it shares the saved queue and delivers it |
+
+The state machine, with every rule, is written down in [`sdks/conformance/README.md`](../conformance/README.md) and checked by the scenarios in `sdks/conformance/delivery.json`.
+
+Delivery depends on retained storage and a running client. Queue overflow, invalid or oversized events, permanent rejections and a process that exits before a save finishes can lose events. If saving fails (the storage throws), delivery carries on from memory and the failure is reported through `onError`; the events are then lost only if the process ends before a later save works. The browser default adapter is guarded: when `localStorage` is unavailable it falls back to memory, reports the error once and keeps delivering. Awaiting `flush` or `close` finishes pending writes. Neither call guarantees a successful network delivery when a retry is scheduled.
 
 The storage adapter has localStorage's shape; methods may be synchronous or return promises:
 
@@ -81,7 +94,7 @@ interface StorageAdapter {
 }
 ```
 
-Saved state is namespaced by endpoint and key, so two senders sharing a storage (two sites on one origin) never send each other's queued events. Replacing a key starts clean: the new key has its own queue and visitor identity (rotating a key gives each visitor a new anonymous id once, and the old key's unsent events stay behind). Replacing the default client with `init` hands its queue to the new client. Saved state is validated when it is read: lines that are not complete JSON records are dropped and reported through `onError` rather than sent (the gateway refuses a request that has one malformed line). If you replace a refused key, the client starts sending again instead of staying stopped. Use one active client per endpoint, key and adapter. **The default Node adapter is in memory, so a Node process that exits loses unsent events; the browser default is `localStorage`.** For restart recovery in Node, use the Node-only entry:
+Saved state holds the visitor identity, the queued events, and the retry deadline, and is namespaced by endpoint, project and source (both read from the publishable key `slurp_pk_<project>_<source>_<random>`), so two senders sharing a storage (two sites on one origin, or the `web` and `widget` sources) never send each other's queued events. Rotating a key means creating another key for the same source, so the queue and the visitor identity carry over to the new key. Replacing the default client with `init` hands its queue to the new client. Saved state is validated when it is read: lines that are not complete JSON records are dropped and reported through `onError` rather than sent. Use one active client per endpoint, source and adapter. **The default Node adapter is in memory, so a Node process that exits loses unsent events; the browser default is `localStorage`.** For restart recovery in Node, use the Node-only entry:
 
 ```js
 import { createClient } from '@hitslop/slurp-sdk';
@@ -123,7 +136,7 @@ pnpm --filter @hitslop/slurp-sdk typecheck
 pnpm --filter @hitslop/slurp-sdk build
 ```
 
-The capture scenarios verify identity transitions, contextual snapshots, key rotation and delivery results. The gateway integration scenario starts the real Worker (`backend/`) under `wrangler dev` with local R2 and Durable Objects, injects proxy faults, checks deduped restart replay, retry timing, 413 splitting and permanent authentication failures, then verifies archive digests and the exact delivered IDs. It needs Node 24+ and `npm install` in `backend/`; it uses no external services or paid APIs. `dist/` is ignored. Source uses erasable TypeScript and `.ts` import specifiers; the build rewrites them to `.js` and emits declarations.
+Unit tests cover the pure parts (`identity.ts`, `queue.ts`, `response.ts`), the capture scenarios verify identity transitions, contextual snapshots, key rotation and delivery results, and `test/conformance.test.ts` runs the shared delivery scenarios in `sdks/conformance/delivery.json`. The gateway integration scenario starts the real Worker (`backend/`) under `wrangler dev` with local R2 and Durable Objects, injects proxy faults, checks restart replay, retry timing, 413 splitting and permanent authentication failures, then verifies archive digests and that every delivered ID is archived. It needs Node 24+ and `npm install` in `backend/`; it uses no external services or paid APIs. `dist/` is ignored. Source uses erasable TypeScript and `.ts` import specifiers; the build rewrites them to `.js` and emits declarations.
 
 ## License
 

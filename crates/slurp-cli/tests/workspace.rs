@@ -1,7 +1,9 @@
+mod common;
 use serde_json::{Value, json};
-use slurp_app::Workspace;
+use sha2::{Digest, Sha256};
+use slurp_app::{ImportStats, Workspace};
 fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
-    let exe = std::env::var_os("SLURP_TEST_DUCKDB")?;
+    let exe = common::duckdb()?;
     let temp = tempfile::tempdir().expect("test directory");
     let w = Workspace::init(
         temp.path(),
@@ -21,32 +23,74 @@ fn archive(lines: &str) -> tempfile::NamedTempFile {
     std::io::Write::write_all(&mut f, &bytes).expect("write");
     f
 }
+/// One archive line: the Worker's envelope around a client's record, which is kept byte for byte.
+fn envelope(sender: &str, received_at: &str, record: &str) -> String {
+    format!(r#"{{"received_at":"{received_at}","sender":"{sender}","record":{record}}}"#)
+}
+fn text(lines: &[String]) -> String {
+    lines.join("\n") + "\n"
+}
+fn stats(imported: u64, duplicates: u64, conflicts: u64, invalid: u64) -> ImportStats {
+    ImportStats {
+        imported,
+        duplicates,
+        conflicts,
+        invalid,
+    }
+}
+const AT: &str = "2026-11-04T00:00:01.000Z";
+fn signup(id: &str, event: &str) -> String {
+    envelope(
+        "web",
+        AT,
+        &format!(r#"{{"id":"{id}","event":"{event}","timestamp":"2026-11-04T00:00:00Z"}}"#),
+    )
+}
+/// Everything the import wrote, without the clock: what "replaying changes nothing" compares.
+fn snapshot(w: &Workspace) -> Value {
+    json!([
+        w.execute("SELECT * FROM events ORDER BY sender, id", true).expect("events"),
+        w.execute("SELECT project, sequence, sha256, bytes FROM _slurp.deliveries ORDER BY sequence", true).expect("receipts"),
+        w.execute("SELECT kind, sender, id, archive_seq, line, record, detail FROM _slurp.problems ORDER BY kind, archive_seq, line", true).expect("problems"),
+    ])
+}
+
 #[test]
-fn replay_conflict_and_binding() {
+fn a_replayed_archive_changes_nothing_and_a_changed_one_is_refused() {
     let Some((temp, w)) = workspace() else {
-        eprintln!("set SLURP_TEST_DUCKDB for native integration tests");
         return;
     };
-    let event = r#"{"id":"e1","type":"track","event":"signup","timestamp":"2026-11-04T00:00:00Z","data":{"amount":12345678901234567890},"received_at":"2026-11-04T00:00:01Z","received_seq":"1"}"#;
-    let f = archive(&format!("{event}\n{event}\n"));
-    w.import("a", 1, "hash", 1, f.path()).expect("first import");
-    w.import("a", 1, "hash", 1, f.path()).expect("replay");
+    let f = archive(&text(&[
+        signup("e1", "signup"),
+        signup("e1", "signup"),   // a duplicate: the same content
+        signup("e1", "purchase"), // a conflict
+        "{not json".to_owned(),   // an invalid line
+        signup("e2", "signup"),
+    ]));
     assert_eq!(
-        w.execute("SELECT count(*) AS n FROM events", true)
-            .expect("count"),
-        json!([{"n":1}])
+        w.import(1, "hash", 1, f.path()).expect("first import"),
+        stats(2, 1, 1, 1)
     );
-    let second = archive(&event.replace("00:00:01Z", "00:00:02Z"));
-    w.import("a", 2, "hash2", 2, second.path())
-        .expect("changed stamps retry");
-    let conflict = archive(&event.replace("signup", "purchase"));
-    assert!(w.import("a", 3, "hash3", 3, conflict.path()).is_err());
+    let first = snapshot(&w);
     assert_eq!(
-        w.execute("SELECT count(*) AS n FROM _slurp.deliveries", true)
-            .expect("receipts"),
-        json!([{"n":2}])
+        w.import(1, "hash", 1, f.path()).expect("replay"),
+        stats(0, 0, 0, 0),
+        "a replay counts nothing"
     );
-    assert!(w.import("a", 1, "changed", 1, f.path()).is_err());
+    assert_eq!(
+        snapshot(&w),
+        first,
+        "events, receipts and problems are unchanged"
+    );
+    assert_eq!(
+        w.execute("SELECT count(*) AS n FROM _slurp.problems", true)
+            .expect("problems"),
+        json!([{"n": 2}])
+    );
+    assert!(
+        w.import(1, "changed", 1, f.path()).is_err(),
+        "a receipt for the same sequence with another digest is an integrity failure"
+    );
     Workspace::load(temp.path()).expect("matching identity");
     assert!(
         Workspace::init(
@@ -59,51 +103,358 @@ fn replay_conflict_and_binding() {
         .is_err()
     );
 }
-/// The event id is the identity. The Worker may archive the same event twice when two senders deliver it; the local database keeps
-/// one copy (the first), and only a different payload under the same id is an error.
+
 #[test]
-fn an_event_id_sent_by_two_senders_is_one_event_and_a_different_payload_is_a_conflict() {
+fn a_conflicting_id_is_set_aside_and_the_rest_of_the_archive_is_imported() {
     let Some((_temp, w)) = workspace() else {
-        eprintln!("set SLURP_TEST_DUCKDB for native integration tests");
         return;
     };
-    let line = |sender: &str, seq: u32, event: &str| {
-        format!(
-            r#"{{"received_at":"2026-11-04T00:00:0{seq}Z","received_seq":"{seq}","sender":"{sender}","id":"same","type":"track","event":"{event}","timestamp":"2026-11-04T00:00:00Z","data":{{}}}}"#
-        )
-    };
-    let both = archive(&format!(
-        "{}\n{}\n",
-        line("web", 1, "signup"),
-        line("ios", 2, "signup")
-    ));
-    w.import("a", 1, "hash", 1, both.path())
-        .expect("the same event from two senders");
+    w.import(1, "h1", 1, archive(&text(&[signup("e1", "signup")])).path())
+        .expect("first archive");
+    let second = archive(&text(&[signup("e1", "purchase"), signup("e2", "signup")]));
     assert_eq!(
-        w.execute(
-            "SELECT count(*) AS n, any_value(sender) AS sender FROM events",
-            true
-        )
-        .expect("count"),
-        json!([{"n": 1, "sender": "web"}]),
-        "one event, attributed to the first sender"
+        w.import(2, "h2", 1, second.path())
+            .expect("conflicts are not errors"),
+        stats(1, 0, 1, 0)
     );
-    let other = archive(&line("ios", 3, "purchase"));
+    assert_eq!(
+        w.execute("SELECT id, event FROM events ORDER BY id", true)
+            .expect("events"),
+        json!([{"id": "e1", "event": "signup"}, {"id": "e2", "event": "signup"}]),
+        "the first copy is kept"
+    );
+    let problems = w
+        .execute(
+            "SELECT kind, sender, id, archive_seq, line, detail, record FROM _slurp.problems",
+            true,
+        )
+        .expect("problems");
+    assert_eq!(problems[0]["kind"], "conflict");
+    assert_eq!(
+        (
+            problems[0]["sender"].clone(),
+            problems[0]["id"].clone(),
+            problems[0]["archive_seq"].clone(),
+            problems[0]["line"].clone()
+        ),
+        (json!("web"), json!("e1"), json!(2), json!(1))
+    );
     assert!(
-        w.import("a", 2, "hash2", 2, other.path()).is_err(),
-        "the same id with a different payload is a conflict, whoever sent it"
+        problems[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("archive 1 line 1")
+    );
+    assert!(
+        problems[0]["record"].as_str().unwrap().contains("purchase"),
+        "the rejected record is kept"
     );
 }
+
+/// A record only has to be an object with what its type needs; the importer fills in the rest, in one place.
+#[test]
+fn a_minimal_record_imports_with_defaults_and_keeps_its_exact_bytes_in_the_fingerprint() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let record = r#"{ "event" : "opened",  "n":1.0, "wide":12345678901234567890 }"#;
+    let geo = r#","geo":{"city":"Lyon","country":"FR","region":"ARA"}"#;
+    let line = format!(
+        r#"{{"received_at":"2026-11-07T12:00:00.000Z","sender":"ios"{geo},"record":{record}}}"#
+    );
+    assert_eq!(
+        w.import(7, "h", 1, archive(&text(&[line])).path())
+            .expect("import"),
+        stats(1, 0, 0, 0)
+    );
+    let row = &w
+        .execute("SELECT sender, id, type, event, strftime(timestamp, '%Y-%m-%dT%H:%M:%S') AS timestamp, strftime(received_at, '%Y-%m-%dT%H:%M:%S') AS received_at, data::VARCHAR AS data, context, geo->>'country' AS country, archive_seq, line, fingerprint, raw->>'wide' AS wide FROM events", true)
+        .expect("event")[0];
+    assert_eq!(row["sender"], "ios");
+    assert_eq!(
+        row["id"], "slurp:7:1",
+        "a missing id is derived from the archive and line"
+    );
+    assert_eq!(row["type"], "track");
+    assert_eq!(row["event"], "opened");
+    assert_eq!(
+        row["timestamp"], row["received_at"],
+        "a missing timestamp is the time received"
+    );
+    assert_eq!(row["data"], "{}");
+    assert_eq!(row["context"], Value::Null);
+    assert_eq!(row["country"], "FR");
+    assert_eq!(
+        (row["archive_seq"].clone(), row["line"].clone()),
+        (json!(7), json!(1))
+    );
+    assert_eq!(
+        row["fingerprint"],
+        hex::encode(Sha256::digest(record.as_bytes()))
+    );
+    assert_eq!(row["wide"], "12345678901234567890");
+    // An identify record needs a user_id and nothing else.
+    let identify = envelope("web", AT, r#"{"type":"identify","user_id":"u1"}"#);
+    assert_eq!(
+        w.import(8, "h8", 1, archive(&text(&[identify])).path())
+            .expect("identify"),
+        stats(1, 0, 0, 0)
+    );
+}
+
+/// The first copy by (archive_seq, line) wins, whatever order the copies arrive in within the files.
+#[test]
+fn the_first_copy_is_deterministic_by_archive_seq_and_line() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let archive1 = archive(&text(&[
+        signup("other", "signup"),
+        signup("x", "from_line_2"),
+        signup("x", "from_line_3"), // a different copy after the winner
+        signup("y", "from_line_4"),
+        signup("y", "from_line_4"), // the same copy: a duplicate
+    ]));
+    assert_eq!(
+        w.import(1, "h1", 1, archive1.path()).unwrap(),
+        stats(3, 1, 1, 0)
+    );
+    // A later archive repeats both ids with other content and one with the same content.
+    let archive2 = archive(&text(&[
+        signup("y", "from_line_4"),
+        signup("x", "later"),
+        signup("z", "z"),
+    ]));
+    assert_eq!(
+        w.import(2, "h2", 1, archive2.path()).unwrap(),
+        stats(1, 1, 1, 0)
+    );
+    assert_eq!(
+        w.execute(
+            "SELECT id, event, archive_seq, line FROM events ORDER BY id",
+            true
+        )
+        .unwrap(),
+        json!([
+            {"id": "other", "event": "signup", "archive_seq": 1, "line": 1},
+            {"id": "x", "event": "from_line_2", "archive_seq": 1, "line": 2},
+            {"id": "y", "event": "from_line_4", "archive_seq": 1, "line": 4},
+            {"id": "z", "event": "z", "archive_seq": 2, "line": 3},
+        ])
+    );
+    assert_eq!(
+        w.execute(
+            "SELECT id, archive_seq, line FROM _slurp.problems ORDER BY archive_seq, line",
+            true
+        )
+        .unwrap(),
+        json!([
+            {"id": "x", "archive_seq": 1, "line": 3},
+            {"id": "x", "archive_seq": 2, "line": 2},
+        ])
+    );
+}
+
+/// The identity is (sender, id): two senders may use the same id for different events.
+#[test]
+fn the_same_id_from_two_senders_is_two_events() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let record = |event: &str| {
+        format!(r#"{{"id":"same","event":"{event}","timestamp":"2026-11-04T00:00:00Z"}}"#)
+    };
+    let both = archive(&text(&[
+        envelope("web", AT, &record("signup")),
+        envelope("ios", AT, &record("purchase")),
+        envelope("ios", AT, &record("purchase")), // the same sender again: a duplicate, not a conflict
+    ]));
+    assert_eq!(w.import(1, "h", 1, both.path()).unwrap(), stats(2, 1, 0, 0));
+    assert_eq!(
+        w.execute("SELECT sender, id, event FROM events ORDER BY sender", true)
+            .unwrap(),
+        json!([
+            {"sender": "ios", "id": "same", "event": "purchase"},
+            {"sender": "web", "id": "same", "event": "signup"},
+        ])
+    );
+    assert_eq!(
+        w.execute("SELECT count(*) AS n FROM _slurp.problems", true)
+            .unwrap(),
+        json!([{"n": 0}])
+    );
+}
+
+/// Lines that cannot be events become problems; they never stop an import.
+#[test]
+fn lines_of_the_wrong_shape_become_invalid_problems() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let lines = [
+        "{not json".to_owned(),
+        r#"{"received_at":"2026-11-07T12:00:00.000Z","sender":"web","record":[1]}"#.to_owned(),
+        r#"{"received_at":"2026-11-07T12:00:00.000Z","record":{"event":"a"}}"#.to_owned(),
+        envelope("web", AT, r#"{"type":"bad","event":"a"}"#),
+        envelope("web", AT, r#"{"type":"track"}"#),
+        envelope("web", AT, r#"{"type":"identify"}"#),
+        envelope("web", AT, r#"{"event":"a","timestamp":"yesterday"}"#),
+        envelope("web", AT, r#"{"event":"a","data":[1]}"#),
+        envelope("web", AT, r#"{"id":"ok","event":"fine"}"#),
+    ];
+    assert_eq!(
+        w.import(1, "h", 1, archive(&text(&lines)).path())
+            .expect("import"),
+        stats(1, 0, 0, 8)
+    );
+    let problems = w
+        .execute(
+            "SELECT line, detail FROM _slurp.problems WHERE kind = 'invalid' ORDER BY line",
+            true,
+        )
+        .unwrap();
+    assert_eq!(problems.as_array().unwrap().len(), 8);
+    assert!(
+        problems[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("not a JSON envelope")
+    );
+    assert_eq!(problems[1]["detail"], "the record is not a JSON object");
+    assert_eq!(problems[2]["detail"], "the envelope has no sender");
+    assert_eq!(problems[3]["detail"], "unknown type bad");
+    assert_eq!(problems[4]["detail"], "a track record needs an event");
+    assert_eq!(problems[5]["detail"], "an identify record needs a user_id");
+    assert_eq!(problems[6]["detail"], "timestamp is not RFC 3339");
+    assert_eq!(problems[7]["detail"], "data is not an object");
+}
+
+#[test]
+fn a_truncated_archive_fails_before_anything_is_written() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let whole = std::fs::read(archive(&text(&[signup("e1", "signup")])).path()).unwrap();
+    let cut = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(cut.path(), &whole[..whole.len() - 6]).unwrap();
+    assert!(w.import(1, "h", 1, cut.path()).is_err());
+    assert_eq!(
+        w.execute("SELECT (SELECT count(*) FROM events) AS events, (SELECT count(*) FROM _slurp.deliveries) AS receipts", true).unwrap(),
+        json!([{"events": 0, "receipts": 0}])
+    );
+}
+
+#[test]
+fn a_retention_gap_is_one_problem_however_often_it_is_read() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    let gap = slurp_client::api::Gap { from: 3, to: 4 };
+    w.record_gap(&gap).expect("gap");
+    w.record_gap(&gap).expect("the same gap again");
+    assert_eq!(
+        w.execute(
+            "SELECT kind, archive_seq, line, detail FROM _slurp.problems",
+            true
+        )
+        .expect("problems"),
+        json!([{"kind": "gap", "archive_seq": 3, "line": 0, "detail": "archives 3 to 4 were deleted by retention before they were read"}])
+    );
+}
+
+#[test]
+fn a_retention_gap_makes_status_and_health_report_history_incomplete() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    assert!(w.status().unwrap().get("history_incomplete").is_none());
+    assert!(
+        slurp_app::health::run(&w)
+            .unwrap()
+            .get("history_incomplete")
+            .is_none()
+    );
+    w.record_gap(&slurp_client::api::Gap { from: 3, to: 4 })
+        .unwrap();
+    w.record_gap(&slurp_client::api::Gap { from: 6, to: 7 })
+        .unwrap();
+    let expected = json!({"from": 3, "to": 7});
+    let status = w.status().unwrap();
+    assert_eq!(status["history_incomplete"], expected);
+    assert_eq!(
+        slurp_app::health::run(&w).unwrap()["history_incomplete"],
+        expected
+    );
+}
+
+#[test]
+fn receipts_of_another_project_stop_a_sync_before_any_request() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    w.execute(
+        "INSERT INTO _slurp.deliveries(project, sequence, sha256, bytes) VALUES('prj_ffffffffffffffff', 1, 'x', 1)",
+        false,
+    )
+    .expect("a foreign receipt");
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(w.sync("t"))
+        .expect_err("a different project's archives");
+    assert!(error.to_string().contains("different project"), "{error}");
+}
+
+#[test]
+fn health_reports_what_the_import_set_aside() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    w.import(
+        1,
+        "h",
+        1,
+        archive(&text(&[
+            signup("e1", "a"),
+            signup("e1", "b"),
+            "oops".to_owned(),
+        ]))
+        .path(),
+    )
+    .unwrap();
+    w.record_gap(&slurp_client::api::Gap { from: 5, to: 6 })
+        .unwrap();
+    let found = slurp_app::health::run(&w).expect("health");
+    assert_eq!(
+        found["problems"]["counts"],
+        json!({"conflict": 1, "invalid": 1, "gap": 1})
+    );
+    assert_eq!(found["problems"]["latest"].as_array().unwrap().len(), 3);
+    let finding = found["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["check"] == "import_problems")
+        .expect("a finding for the problems");
+    assert_eq!(finding["severity"], "warning");
+}
+
 /// GitHub releases and deployments, received as webhooks, are one query away: the `releases` view.
 #[test]
 fn the_releases_view_lists_github_releases_and_deployments_from_webhooks() {
     let Some((_temp, w)) = workspace() else {
-        eprintln!("set SLURP_TEST_DUCKDB for native integration tests");
         return;
     };
     let line = |seq: u32, id: &str, event: &str, at: &str, data: &str| {
-        format!(
-            r#"{{"received_at":"2026-11-06T19:00:0{seq}Z","received_seq":"{seq}","sender":"github","id":"{id}","type":"track","event":"{event}","timestamp":"{at}","data":{data},"context":{{"webhook":{{"provider":"github","delivery":"{id}"}}}}}}"#
+        envelope(
+            if id.starts_with("other") {
+                "web"
+            } else {
+                "github"
+            },
+            &format!("2026-11-06T19:00:0{seq}Z"),
+            &format!(
+                r#"{{"id":"{id}","type":"track","event":"{event}","timestamp":"{at}","data":{data},"context":{{"webhook":{{"provider":"github","delivery":"{id}"}}}}}}"#
+            ),
         )
     };
     let lines = [
@@ -113,7 +464,7 @@ fn the_releases_view_lists_github_releases_and_deployments_from_webhooks() {
         line(4, "other:4", "signed_up", "2026-11-06T18:40:00Z", "{}"),
     ]
     .join("\n");
-    w.import("a", 1, "hash", 1, archive(&lines).path())
+    w.import(1, "hash", 1, archive(&lines).path())
         .expect("import");
     assert_eq!(
         w.execute("SELECT kind, tag, name, repo, environment, state, sender FROM releases ORDER BY happened_at", true).expect("releases"),
@@ -129,12 +480,19 @@ fn the_releases_view_lists_github_releases_and_deployments_from_webhooks() {
 #[test]
 fn the_revenue_view_lists_revenuecat_purchases_and_leaves_out_the_test_event() {
     let Some((_temp, w)) = workspace() else {
-        eprintln!("set SLURP_TEST_DUCKDB for native integration tests");
         return;
     };
     let line = |seq: u32, id: &str, event: &str, at: &str, data: &str| {
-        format!(
-            r#"{{"received_at":"2026-11-06T19:00:0{seq}Z","received_seq":"{seq}","sender":"revenuecat","id":"{id}","type":"track","event":"{event}","timestamp":"{at}","data":{data},"context":{{"webhook":{{"provider":"revenuecat","delivery":"{id}"}}}}}}"#
+        envelope(
+            if id.starts_with("other") {
+                "web"
+            } else {
+                "revenuecat"
+            },
+            &format!("2026-11-06T19:00:0{seq}Z"),
+            &format!(
+                r#"{{"id":"{id}","type":"track","event":"{event}","timestamp":"{at}","data":{data},"context":{{"webhook":{{"provider":"revenuecat","delivery":"{id}"}}}}}}"#
+            ),
         )
     };
     let lines = [
@@ -144,7 +502,7 @@ fn the_revenue_view_lists_revenuecat_purchases_and_leaves_out_the_test_event() {
         line(4, "other:4", "signed_up", "2026-11-06T18:40:00Z", "{}"),
     ]
     .join("\n");
-    w.import("a", 1, "hash", 1, archive(&lines).path())
+    w.import(1, "hash", 1, archive(&lines).path())
         .expect("import");
     assert_eq!(
         w.execute("SELECT type, app_user_id, product_id, period_type, renewal_number, price, price_in_purchased_currency, currency, store, environment, country_code, sender FROM revenue ORDER BY happened_at", true).expect("revenue"),
@@ -239,7 +597,7 @@ fn truncation_parameters_and_cancelled_transaction() {
     .expect("parameter report");
     let cancel = w.cancellation.clone();
     let worker = std::thread::spawn(move || {
-        w.execute("BEGIN; INSERT INTO events(id) VALUES('uncommitted'); SELECT sum(i) FROM range(1000000000000) t(i); COMMIT;",false)
+        w.execute("BEGIN; INSERT INTO events(sender, id) VALUES('web', 'uncommitted'); SELECT sum(i) FROM range(1000000000000) t(i); COMMIT;",false)
     });
     std::thread::sleep(std::time::Duration::from_millis(100));
     cancel.cancel();
@@ -270,9 +628,8 @@ fn behavioral_retention_runs_in_queries_and_reports() {
             .contains("unsupported DuckDB extension")
     );
     let Ok(w) = w.with_extensions(&["behavioral".to_owned()]) else {
-        eprintln!(
-            "skipped: the behavioral extension is not installed and this computer is offline"
-        );
+        // Installing it needs the network; CI has it, so there a failure is a failure.
+        common::may_skip("the behavioral extension is not installed and this computer is offline");
         return;
     };
     let days = [
@@ -285,9 +642,15 @@ fn behavioral_retention_runs_in_queries_and_reports() {
     let lines: String = days
         .iter()
         .enumerate()
-        .map(|(i, (user, day))| format!(r#"{{"id":"e{i}","type":"track","event":"seen","timestamp":"{day}T10:00:00Z","user_id":"{user}","data":{{}},"received_at":"{day}T10:00:01Z","received_seq":"{i}"}}"#) + "\n")
+        .map(|(i, (user, day))| {
+            envelope(
+                "web",
+                &format!("{day}T10:00:01Z"),
+                &format!(r#"{{"id":"e{i}","type":"track","event":"seen","timestamp":"{day}T10:00:00Z","user_id":"{user}","data":{{}}}}"#),
+            ) + "\n"
+        })
         .collect();
-    w.import("a", 1, "hash", 1, archive(&lines).path())
+    w.import(1, "hash", 1, archive(&lines).path())
         .expect("import");
     // Week 0 is everyone; week 1 is u1 and u3 (2 of 3 users came back).
     let rows = w
@@ -344,9 +707,9 @@ fn event_line(
     user: Option<&str>,
     anon: Option<&str>,
     at: &str,
-    seq: usize,
+    _seq: usize,
 ) -> String {
-    let mut record = json!({"id": id, "type": kind, "timestamp": at, "data": {}, "received_at": at, "received_seq": seq.to_string()});
+    let mut record = json!({"id": id, "type": kind, "timestamp": at, "data": {}});
     if kind == "track" {
         record["event"] = json!(event);
     }
@@ -356,7 +719,7 @@ fn event_line(
     if let Some(anon) = anon {
         record["anonymous_id"] = json!(anon);
     }
-    record.to_string() + "\n"
+    envelope("web", at, &record.to_string()) + "\n"
 }
 
 #[test]
@@ -374,7 +737,7 @@ fn helpers_are_installed_and_identities_are_stitched_without_guessing() {
     lines += &event_line("i2", "identify", "", Some("u2"), Some("a2"), t, 5);
     lines += &event_line("i3", "identify", "", Some("u3"), Some("a2"), t, 6);
     lines += &event_line("e4", "track", "viewed", None, Some("a3"), t, 7);
-    w.import("a", 1, "hash", 1, archive(&lines).path())
+    w.import(1, "hash", 1, archive(&lines).path())
         .expect("import");
     let rows = w
         .query("SELECT id, person_id FROM events_with_person ORDER BY id")
@@ -437,10 +800,10 @@ fn errors_view_reads_sentry_events_without_changing_what_was_stored() {
     .enumerate()
     {
         let mut record: Value = serde_json::from_str(&event_line(id, "track", if id == "x4" { "message" } else { "error" }, Some("u1"), None, t, i + 1)).unwrap();
-        record["data"] = data;
+        record["record"]["data"] = data;
         lines += &(record.to_string() + "\n");
     }
-    w.import("a", 1, "hash", 1, archive(&lines).path())
+    w.import(1, "hash", 1, archive(&lines).path())
         .expect("import");
     let rows = w
         .query("SELECT id, exception_type, message, handled, top_function, top_file, top_line, release, environment, group_key, tags->>'feature' FROM errors ORDER BY id")
@@ -505,20 +868,12 @@ fn health_reports_only_what_needs_attention() {
         );
     }
     // A client clock a day ahead.
-    let mut ahead = event_line(
-        "f1",
-        "track",
-        "opened",
-        Some("f1"),
-        None,
-        "2026-11-03T10:00:00Z",
-        next(),
-    );
-    ahead = ahead.replace(
-        "\"received_at\":\"2026-11-03T10:00:00Z\"",
-        "\"received_at\":\"2026-11-02T10:00:00Z\"",
-    );
-    lines += &ahead;
+    next();
+    lines += &(envelope(
+        "web",
+        "2026-11-02T10:00:00Z",
+        r#"{"id":"f1","type":"track","event":"opened","user_id":"f1","timestamp":"2026-11-03T10:00:00Z","data":{}}"#,
+    ) + "\n");
     // One id that is far busier than 30 ordinary ones.
     for i in 0..30 {
         lines += &event_line(
@@ -545,7 +900,7 @@ fn health_reports_only_what_needs_attention() {
     // The same event tracked twice under different ids.
     lines += &event_line("d1", "track", "paid", Some("d"), None, t, next());
     lines += &event_line("d2", "track", "paid", Some("d"), None, t, next());
-    w.import("a", 1, "hash", 1, archive(&lines).path())
+    w.import(1, "hash", 1, archive(&lines).path())
         .expect("import");
     let found = slurp_app::health::run(&w).expect("health");
     assert_eq!(found["ok"], json!(false));

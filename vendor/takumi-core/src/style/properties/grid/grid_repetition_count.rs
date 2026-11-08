@@ -1,0 +1,104 @@
+use std::fmt;
+
+use cssparser::{ParseError as CssParseError, Parser, Token};
+
+use crate::style::{FromCss, ParseResult, ToCss, unexpected_token};
+
+/// Represents grid track repetition keywords
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum GridRepetitionKeyword {
+  /// Automatically fills the available space with as many tracks as possible
+  AutoFill,
+  /// Automatically fits as many tracks as possible while maintaining minimum size
+  AutoFit,
+}
+
+/// Represents a grid track repetition pattern
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum GridRepetitionCount {
+  /// Keywords for auto-fill and auto-fit
+  Keyword(GridRepetitionKeyword),
+  /// Specifies an exact number of track repetitions
+  Count(u16),
+}
+
+impl GridRepetitionCount {}
+
+impl<'i> FromCss<'i> for GridRepetitionCount {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    if let Ok(ident) = input.try_parse(Parser::expect_ident_cloned) {
+      if ident.eq_ignore_ascii_case("auto-fill") {
+        return Ok(GridRepetitionCount::Keyword(
+          GridRepetitionKeyword::AutoFill,
+        ));
+      }
+      if ident.eq_ignore_ascii_case("auto-fit") {
+        return Ok(GridRepetitionCount::Keyword(GridRepetitionKeyword::AutoFit));
+      }
+      return Err(unexpected_token!(&Token::Ident(ident)));
+    }
+
+    let token = input.next()?;
+    match *token {
+      Token::Number {
+        int_value, value, ..
+      } => {
+        let count = int_value.map_or(value as i64, i64::from);
+
+        if count < 0 {
+          return Err(CssParseError::unexpected_token());
+        }
+        Ok(GridRepetitionCount::Count(count as u16))
+      }
+      _ => Err(unexpected_token!(token)),
+    }
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["auto-fill", "auto-fit", "<number>"];
+}
+
+impl ToCss for GridRepetitionKeyword {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::AutoFill => dest.write_str("auto-fill"),
+      Self::AutoFit => dest.write_str("auto-fit"),
+    }
+  }
+}
+
+impl ToCss for GridRepetitionCount {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::Keyword(kw) => kw.to_css(dest),
+      Self::Count(c) => write!(dest, "{c}"),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn test_parse_repetition_count() {
+    assert_eq!(
+      GridRepetitionCount::from_css_str("auto-fill"),
+      Ok(GridRepetitionCount::Keyword(
+        GridRepetitionKeyword::AutoFill
+      ))
+    );
+
+    assert_eq!(
+      GridRepetitionCount::from_css_str("auto-fit"),
+      Ok(GridRepetitionCount::Keyword(GridRepetitionKeyword::AutoFit))
+    );
+
+    assert_eq!(
+      GridRepetitionCount::from_css_str("3"),
+      Ok(GridRepetitionCount::Count(3))
+    );
+  }
+}

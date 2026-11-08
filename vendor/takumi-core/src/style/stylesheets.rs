@@ -1,0 +1,2655 @@
+use std::{
+  borrow::Cow,
+  fmt,
+  rc::Rc,
+  str::FromStr,
+  sync::{Arc, OnceLock},
+};
+
+use cssparser::{Parser, RuleBodyParser, Token, match_ignore_ascii_case};
+use pastey::paste;
+use serde::{
+  Deserialize,
+  de::{Error as DeError, IgnoredAny},
+};
+use smallvec::{SmallVec, smallvec};
+use thin_vec::ThinVec;
+
+use crate::{
+  Error,
+  error::StyleDeclarationBlockParseError,
+  style::{
+    CssInput, CssUnexpected, CssValueSeed, CustomProperties, SizingContext, properties::*,
+    selector::StyleDeclarationParser, unexpected_token,
+  },
+  viewport::Viewport,
+};
+#[path = "stylesheets_helpers.rs"]
+mod stylesheets_helpers;
+#[path = "stylesheets_mask.rs"]
+mod stylesheets_mask;
+#[path = "stylesheets_query.rs"]
+mod stylesheets_query;
+#[path = "stylesheets_values.rs"]
+mod stylesheets_values;
+#[path = "stylesheets_vars.rs"]
+mod stylesheets_vars;
+
+use self::{
+  stylesheets_helpers::*,
+  stylesheets_vars::{apply_deferred_declaration, resolve_custom_properties},
+};
+pub(crate) use self::{stylesheets_mask::PropertyMask, stylesheets_values::ParsedValues};
+
+/// Whether a longhand declared `where inherit = true` inherits.
+macro_rules! longhand_inherits {
+  ($inherit:tt) => {
+    true
+  };
+  () => {
+    false
+  };
+}
+
+/// What an anonymous box takes from its box: inherited properties and the ones flagged `anonymous`.
+macro_rules! define_anonymous_default {
+  ($parent:expr, $default:expr, inherit $inherit:tt $(, anonymous $anonymous:tt)?) => {
+    $parent.to_owned()
+  };
+  ($parent:expr, $default:expr, anonymous $anonymous:tt) => {
+    $parent.to_owned()
+  };
+  ($parent:expr, $default:expr) => {
+    $default
+  };
+}
+
+/// Whether a style group's fields inherit; a group holds only inherited or only non-inherited
+/// fields, like Blink's.
+const fn group_inherits(fields: &[bool]) -> bool {
+  let inherits = fields[0];
+  let mut index = 1;
+
+  while index < fields.len() {
+    assert!(
+      fields[index] == inherits,
+      "a style group mixes inherited and non-inherited fields"
+    );
+    index += 1;
+  }
+  inherits
+}
+
+/// `group`, or the parent's or the initial one when it holds the same values.
+fn share_group<T: PartialEq>(group: T, parent: &Rc<T>, initial: &Rc<T>) -> Rc<T> {
+  if group == **parent {
+    Rc::clone(parent)
+  } else if group == **initial {
+    Rc::clone(initial)
+  } else {
+    Rc::new(group)
+  }
+}
+
+type ParsedDeclarations = SmallVec<[StyleDeclaration; 8]>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeferredDeclaration {
+  pub(crate) property: PropertyId,
+  pub(crate) specified_value: String,
+}
+
+impl DeferredDeclaration {
+  /// Applies its substituted value, or `unset` when it is
+  /// [invalid at computed-value time](https://drafts.csswg.org/css-variables-1/#invalid-at-computed-value-time).
+  fn apply_with_parent(&self, style: &mut ComputedStyle, parent: &ComputedStyle) {
+    if apply_deferred_declaration(style, Some(parent), self) {
+      return;
+    }
+
+    for longhand in self.property.target_longhands().iter() {
+      StyleDeclaration::CssWideKeyword(longhand, CssWideKeyword::Unset)
+        .apply_with_parent(style, parent);
+    }
+  }
+}
+
+/// A utility value read from a custom property, with the built-in scale as its
+/// fallback. Tailwind compiles `bg-red-500` to `var(--color-red-500)`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TwVarRef {
+  pub(crate) name: Arc<str>,
+  pub(crate) deferred: DeferredDeclaration,
+  pub(crate) fallback: Option<Box<StyleDeclaration>>,
+}
+
+impl ToCss for DeferredDeclaration {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    let name = match self.property {
+      PropertyId::Longhand(id) => id.css_name(),
+      PropertyId::Shorthand(id) => id.css_name(),
+      PropertyId::All => "all",
+      _ => return Ok(()),
+    };
+
+    write!(dest, "{}: {};", name, self.specified_value)
+  }
+}
+
+/// `webkit_text_fill_color` → `-webkit-text-fill-color`.
+fn snake_to_css_name(name: &&str) -> Box<str> {
+  let mut kebab = name.replace("r#", "").replace('_', "-");
+
+  if kebab.starts_with("webkit-") {
+    kebab.insert(0, '-');
+  }
+
+  kebab.into()
+}
+
+impl TwVarRef {
+  fn apply(&self, style: &mut ComputedStyle, parent: Option<&ComputedStyle>) {
+    let defined = style.custom_properties.contains(self.name.as_ref());
+
+    if defined && apply_deferred_declaration(style, parent, &self.deferred) {
+      return;
+    }
+
+    let Some(fallback) = &self.fallback else {
+      return;
+    };
+
+    (**fallback).clone().apply(style, parent);
+  }
+}
+
+/// A BCP-47 `language[-Script][-REGION]` tag from the `lang` attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lang {
+  /// The canonical form, ASCII.
+  bytes: [u8; Lang::MAX_LEN],
+  len: u8,
+}
+
+impl<'de> Deserialize<'de> for Lang {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    let tag = Cow::<str>::deserialize(deserializer)?;
+    Lang::parse(&tag).map_err(|_| {
+      D::Error::custom(format!(
+        "expected a valid BCP-47 language tag, but got {:?}",
+        tag
+      ))
+    })
+  }
+}
+
+impl Lang {
+  /// The longest canonical form: an eight-letter language, a script, and a region.
+  const MAX_LEN: usize = 17;
+
+  /// Parses a BCP-47 tag string, canonicalizing language/script/region casing and dropping the
+  /// subtags after them.
+  pub fn parse(tag: &str) -> crate::Result<Self> {
+    let invalid = || Error::InvalidLanguageTag(tag.to_string());
+    let mut subtags = tag.split(['-', '_']).peekable();
+    let language = subtags
+      .next()
+      .filter(|language| {
+        matches!(language.len(), 2..=3 | 5..=8)
+          && language.bytes().all(|byte| byte.is_ascii_alphabetic())
+      })
+      .ok_or_else(invalid)?;
+    let mut canonical = language.to_ascii_lowercase();
+
+    if let Some(script) = subtags
+      .next_if(|script| script.len() == 4 && script.bytes().all(|byte| byte.is_ascii_alphabetic()))
+    {
+      canonical.push('-');
+      canonical.push_str(&script[..1].to_ascii_uppercase());
+      canonical.push_str(&script[1..].to_ascii_lowercase());
+    }
+
+    if let Some(region) = subtags.next_if(|region| {
+      (region.len() == 2 && region.bytes().all(|byte| byte.is_ascii_alphabetic()))
+        || (region.len() == 3 && region.bytes().all(|byte| byte.is_ascii_digit()))
+    }) {
+      canonical.push('-');
+      canonical.push_str(&region.to_ascii_uppercase());
+    }
+
+    let mut bytes = [0; Self::MAX_LEN];
+
+    bytes
+      .get_mut(..canonical.len())
+      .ok_or_else(invalid)?
+      .copy_from_slice(canonical.as_bytes());
+
+    Ok(Self {
+      bytes,
+      len: canonical.len() as u8,
+    })
+  }
+
+  /// The canonical string form (`language[-Script][-REGION]`).
+  pub fn as_str(&self) -> &str {
+    str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or_default()
+  }
+}
+
+#[derive(Clone, Copy)]
+struct InterpolationContext<'a> {
+  progress: f32,
+  sizing: &'a SizingContext,
+  current_color: Color,
+}
+
+/// The value `progress` of the way from `from` to `to`, standing `missing_from`
+/// or `missing_to` in for an endpoint that is unset.
+fn interpolated_with_missing<T: Animatable>(
+  from: &Option<T>,
+  to: &Option<T>,
+  missing_from: T,
+  missing_to: T,
+  context: InterpolationContext<'_>,
+) -> Option<T> {
+  if from.is_none() && to.is_none() {
+    return None;
+  }
+
+  Some(T::interpolated(
+    from.as_ref().unwrap_or(&missing_from),
+    to.as_ref().unwrap_or(&missing_to),
+    context.progress,
+    context.sizing,
+    context.current_color,
+  ))
+}
+
+macro_rules! push_expanded_declarations {
+  ($target:expr; $($declaration:expr),+ $(,)?) => {{
+    $(
+      $target.push($declaration);
+    )+
+  }};
+}
+
+macro_rules! push_axis_declarations {
+  ($target:expr, $value:expr, $first:ident, $second:ident) => {{
+    let value = $value;
+    push_expanded_declarations!(
+      $target;
+      StyleDeclaration::$first(value.x),
+      StyleDeclaration::$second(value.y),
+    );
+  }};
+}
+
+macro_rules! push_four_side_declarations {
+  ($target:expr, $values:expr, $top:ident, $right:ident, $bottom:ident, $left:ident) => {{
+    let values = $values;
+    push_expanded_declarations!(
+      $target;
+      StyleDeclaration::$top(values[0]),
+      StyleDeclaration::$right(values[1]),
+      StyleDeclaration::$bottom(values[2]),
+      StyleDeclaration::$left(values[3]),
+    );
+  }};
+}
+
+/// `declarations`, or the error Blink's `kNonNegative` raises when one of them is negative on a
+/// property that must not be.
+fn reject_negative<'i>(declarations: ParsedDeclarations) -> ParseResult<'i, ParsedDeclarations> {
+  if declarations
+    .iter()
+    .any(StyleDeclaration::is_negative_where_non_negative)
+  {
+    return Err(cssparser::ParseError::custom(ValueError::from(
+      Cow::Borrowed("a negative value is invalid here"),
+    )));
+  }
+
+  Ok(declarations)
+}
+
+macro_rules! define_style {
+  // Field default for `ComputedStyle`: explicit `= expr` when given, else the type's `Default`.
+  (@default $default:expr) => { $default };
+  (@default) => { ::core::default::Default::default() };
+  // `where builder = manual` keeps the generated constructor out of the way of a
+  // hand-written one.
+  // `where non_negative = true` makes a negative value invalid, as Blink's `kNonNegative`.
+  (@non_negative $value:ident, true) => { $value.is_negative() };
+  (@non_negative $value:ident) => {{
+    let _ = $value;
+    false
+  }};
+  (@builder $name:ident, $ty:ty, manual) => {};
+  (@builder $name:ident, $ty:ty) => {
+    paste! {
+      /// Returns a declaration for this property.
+      pub fn $name(value: $ty) -> Self {
+        Self::[<$name:camel>](value)
+      }
+    }
+  };
+  (
+    groups {
+      $(
+        $(#[doc = $group_doc:literal])*
+        $group:ident: $group_ty:ident {
+          $(
+            $longhand:ident: $longhand_ty:ty
+              $(where inherit = $longhand_inherit:literal)?
+              $(where anonymous = $longhand_anonymous:literal)?
+              $(where builder = $longhand_builder:ident)?
+              $(where non_negative = $longhand_non_negative:literal)?
+              $(= $longhand_default:expr)?,
+          )*
+        }
+      )*
+    }
+    // `name: type => (group.ltr_field, group.rtl_field)` — apply resolves to one of them.
+    transient_longhands {
+      $(
+        $transient:ident: $transient_ty:ty
+          $(where non_negative = $transient_non_negative:literal)?
+          $(= $transient_default:expr)?
+          => ($ltr_group:ident . $transient_ltr:ident, $rtl_group:ident . $transient_rtl:ident),
+      )*
+    }
+    shorthands {
+      $(
+        $shorthand:ident: $shorthand_ty:ty
+          => [$($target:ident),+ $(,)?]
+          |$value:ident, $target_var:ident|
+          $expand:block,
+      )*
+    }
+  ) => {
+    paste! {
+      /// Identifies a single longhand property.
+      #[repr(u8)]
+      #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+      #[non_exhaustive]
+      pub(crate) enum LonghandId {
+        $($(
+          #[doc = concat!("The `", stringify!($longhand), "` longhand.")]
+          [<$longhand:camel>],
+        )*)*
+        $(
+          #[doc = concat!("The `", stringify!($transient), "` logical-axis longhand.")]
+          [<$transient:camel>],
+        )*
+      }
+
+      impl LonghandId {
+        pub(crate) const COUNT: usize = [$($(Self::[<$longhand:camel>],)*)* $(Self::[<$transient:camel>],)*].len();
+        const ALL: [Self; Self::COUNT] = [
+          $($(Self::[<$longhand:camel>],)*)*
+          $(Self::[<$transient:camel>],)*
+        ];
+
+        pub(crate) const fn index(self) -> usize {
+          self as usize
+        }
+
+        const SNAKE_NAMES: [&'static str; Self::COUNT] = [
+          $($(stringify!($longhand),)*)*
+          $(stringify!($transient),)*
+        ];
+
+        /// Whether each longhand inherits, which decides what `unset` resets it to.
+        const INHERITED: [bool; Self::COUNT] = [
+          $($(longhand_inherits!($($longhand_inherit)?),)*)*
+          $({ let _ = stringify!($transient); false },)*
+        ];
+
+        /// The longhands `all` resets: every one but `direction`, `unicode-bidi`, and the logical-axis
+        /// ones, which resolve onto the others.
+        /// <https://drafts.csswg.org/css-cascade-4/#all-shorthand>
+        fn affected_by_all() -> PropertyMask {
+          [$($(Self::[<$longhand:camel>],)*)*]
+            .into_iter()
+            .filter(|property| !matches!(property, Self::Direction | Self::UnicodeBidi))
+            .collect()
+        }
+
+        /// The property's CSS name, e.g. `-webkit-text-fill-color`.
+        pub(crate) fn css_name(self) -> &'static str {
+          static NAMES: OnceLock<Box<[Box<str>]>> = OnceLock::new();
+          let names =
+            NAMES.get_or_init(|| LonghandId::SNAKE_NAMES.iter().map(snake_to_css_name).collect());
+
+          &names[self.index()]
+        }
+      }
+
+      /// Identifies a shorthand property that expands into longhands.
+      #[repr(u8)]
+      #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+      #[non_exhaustive]
+      pub(crate) enum ShorthandId {
+        $(
+          #[doc = concat!("The `", stringify!($shorthand), "` shorthand.")]
+          [<$shorthand:camel>],
+        )*
+      }
+
+      impl LonghandId {
+        fn parse_declarations<'i>(
+          self,
+          input: &mut cssparser::Parser<'i>,
+        ) -> ParseResult<'i, ParsedDeclarations> {
+          let state = input.state();
+          let keyword = input.try_parse(CssWideKeyword::from_css).ok();
+
+          if let Some(keyword) = keyword {
+            return Ok(smallvec![StyleDeclaration::CssWideKeyword(self, keyword)]);
+          }
+
+          input.reset(&state);
+          let declaration = match self {
+            $($(
+              Self::[<$longhand:camel>] => StyleDeclaration::[<$longhand:camel>](
+                <$longhand_ty as FromCss>::from_css(input)?,
+              ),
+            )*)*
+            $(
+              Self::[<$transient:camel>] => StyleDeclaration::[<$transient:camel>](
+                <$transient_ty as FromCss>::from_css(input)?,
+              ),
+            )*
+          };
+
+          reject_negative(smallvec![declaration])
+        }
+
+        const EXPECT_INFO: [(CssExpectedMessage, &'static [&'static str]); Self::COUNT] = [
+          $($((<$longhand_ty as FromCss>::EXPECT_MESSAGE, <$longhand_ty as FromCss>::VALID_TOKENS),)*)*
+          $((<$transient_ty as FromCss>::EXPECT_MESSAGE, <$transient_ty as FromCss>::VALID_TOKENS),)*
+        ];
+
+        fn expect_info(self) -> (CssExpectedMessage, &'static [&'static str]) {
+          Self::EXPECT_INFO[self.index()]
+        }
+      }
+
+      impl ShorthandId {
+        fn parse_declarations<'i>(
+          self,
+          input: &mut cssparser::Parser<'i>,
+        ) -> ParseResult<'i, ParsedDeclarations> {
+          match self {
+            $(
+              Self::[<$shorthand:camel>] => reject_negative(StyleDeclaration::[<expand_ $shorthand>](
+                <$shorthand_ty as FromCss>::from_css(input)?,
+              )),
+            )*
+          }
+        }
+
+        const EXPECT_INFO: [(CssExpectedMessage, &'static [&'static str]);
+          [$(Self::[<$shorthand:camel>]),*].len()] = [
+          $((<$shorthand_ty as FromCss>::EXPECT_MESSAGE, <$shorthand_ty as FromCss>::VALID_TOKENS),)*
+        ];
+
+        fn expect_info(self) -> (CssExpectedMessage, &'static [&'static str]) {
+          Self::EXPECT_INFO[self as usize]
+        }
+
+        const SNAKE_NAMES: [&'static str; Self::EXPECT_INFO.len()] =
+          [$(stringify!($shorthand),)*];
+
+        /// The property's CSS name, e.g. `border-radius`.
+        pub(crate) fn css_name(self) -> &'static str {
+          static NAMES: OnceLock<Box<[Box<str>]>> = OnceLock::new();
+          let names =
+            NAMES.get_or_init(|| ShorthandId::SNAKE_NAMES.iter().map(snake_to_css_name).collect());
+
+          &names[self as usize]
+        }
+      }
+
+      /// Identifies any property: longhand, shorthand, custom, or ignored.
+      #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+      #[non_exhaustive]
+      pub(crate) enum PropertyId {
+        /// An unrecognized property that is dropped.
+        Ignored,
+        /// A custom property (`--name`).
+        Custom,
+        /// A longhand property.
+        Longhand(LonghandId),
+        /// A shorthand property.
+        Shorthand(ShorthandId),
+        /// The `all` shorthand, which takes only a CSS-wide keyword.
+        All,
+      }
+
+      impl PropertyId {
+        fn from_normalized_name(name: &str) -> Self {
+          match name {
+            $($(stringify!($longhand) => Self::Longhand(LonghandId::[<$longhand:camel>]),)*)*
+            $(stringify!($transient) => Self::Longhand(LonghandId::[<$transient:camel>]),)*
+            $(stringify!($shorthand) => Self::Shorthand(ShorthandId::[<$shorthand:camel>]),)*
+            "all" => Self::All,
+            _ => Self::Ignored,
+          }
+        }
+
+        pub(crate) fn from_kebab_case(name: &str) -> Self {
+          PropertyId::from_name(name, normalize_kebab_property_name)
+        }
+
+        /// Resolves a property from a camelCase name.
+        pub(crate) fn from_camel_case(name: &str) -> Self {
+          PropertyId::from_name(name, normalize_camel_property_name)
+        }
+
+        fn parse_declarations<'i>(
+          self,
+          name: &str,
+          input: &mut cssparser::Parser<'i>,
+        ) -> ParseResult<'i, ParsedDeclarations> {
+          match self {
+            Self::Ignored => {
+              while input.next_including_whitespace_and_comments().is_ok() {}
+              Ok(ParsedDeclarations::new())
+            }
+            Self::Custom => {
+              // A custom property keeps its value verbatim, `!` included, so
+              // only an exact trailing `!important` is left for the caller.
+              let start = input.position();
+              let state = input.state();
+
+              while input.next_including_whitespace_and_comments().is_ok() {}
+
+              if important_start(input.slice_from(start)).is_some() {
+                input.reset(&state);
+                skip_to_bang(input);
+              }
+
+              Ok(smallvec![StyleDeclaration::CustomProperty(
+                name.to_owned(),
+                input.slice_from(start).trim().to_owned(),
+              )])
+            }
+            Self::Shorthand(property) => {
+              let state = input.state();
+
+              if let Ok(keyword) = input.try_parse(CssWideKeyword::from_css) {
+                return Ok(self.expand_keyword(keyword));
+              }
+
+              input.reset(&state);
+              property.parse_declarations(input)
+            }
+            Self::All => Ok(self.expand_keyword(CssWideKeyword::from_css(input)?)),
+            Self::Longhand(property) => property.parse_declarations(input),
+          }
+        }
+
+        pub(crate) fn parse_css_input_declarations<'de>(
+          self,
+          css_input: CssInput<'de>,
+        ) -> Result<ParsedDeclarations, CssInputParseError<'de>> {
+          debug_assert!(
+            !matches!(self, Self::Custom),
+            "custom properties should be handled before parse_css_input_declarations",
+          );
+
+          let css_string = match &css_input {
+            CssInput::Str(value) => Some(value.as_ref()),
+            CssInput::Number(_) | CssInput::Unexpected(_) => None,
+          };
+
+          if css_string.is_some_and(contains_var_function) {
+            return Ok(smallvec![StyleDeclaration::Deferred(DeferredDeclaration {
+              property: self,
+              specified_value: css_input.into_string(),
+            })]);
+          }
+
+          if matches!(self, Self::Ignored | Self::Custom) {
+            return Ok(ParsedDeclarations::new());
+          }
+
+          if let Some(keyword) = CssWideKeyword::from_css_input(&css_input) {
+            return Ok(self.expand_keyword(keyword));
+          }
+
+          if let CssInput::Unexpected(unexpected) = css_input {
+            return Err(CssInputParseError::UnexpectedType {
+              unexpected,
+              expected: self.expected_message("input").into(),
+            });
+          }
+
+          let source: Cow<'_, str> = match &css_input {
+            CssInput::Str(value) => Cow::Borrowed(value.as_ref()),
+            CssInput::Number(number) => Cow::Owned(number.to_string()),
+            CssInput::Unexpected(_) => unreachable!(),
+          };
+
+          let result = {
+            let mut parser = Parser::new(&source);
+
+            // `parse_entirely`, because a declaration list drops a value with
+            // anything left over and a lone value has no `;` to stop at.
+            parser.parse_entirely(|parser| match self {
+              Self::Shorthand(property) => property.parse_declarations(parser),
+              Self::Longhand(property) => property.parse_declarations(parser),
+              Self::All => Ok(self.expand_keyword(CssWideKeyword::from_css(parser)?)),
+              Self::Ignored | Self::Custom => unreachable!(),
+            })
+          }
+          .map_err(|error| {
+            (
+              self.expected_message(&source),
+              CssInputParseFailure::new(&error),
+            )
+          });
+
+          drop(source);
+
+          result.map_err(|(expected, failure)| CssInputParseError::new(css_input, expected, failure))
+        }
+
+        /// Parse-error "expected ..." text for this property's value type.
+        fn expected_message(self, token: &str) -> String {
+          let (message, valid_tokens) = match self {
+            Self::Longhand(property) => property.expect_info(),
+            Self::Shorthand(property) => property.expect_info(),
+            Self::All => (CssExpectedMessage::OneValue, CssWideKeyword::VALID_TOKENS),
+            Self::Ignored | Self::Custom => return String::new(),
+          };
+
+          message.build_message(token, merge_enum_values(valid_tokens))
+        }
+
+        /// Longhands this property expands into (shorthand-expansion targets; unrelated to `!important`).
+        pub(crate) fn target_longhands(self) -> PropertyMask {
+          match self {
+            Self::Ignored | Self::Custom => PropertyMask::default(),
+            Self::Longhand(property) => [property].into_iter().collect(),
+            Self::Shorthand(property) => match property {
+              $(ShorthandId::[<$shorthand:camel>] => {
+                [$(LonghandId::$target),+].into_iter().collect()
+              })*
+            },
+            Self::All => LonghandId::affected_by_all(),
+          }
+        }
+
+        /// `keyword` set on every longhand this property expands into.
+        fn expand_keyword(self, keyword: CssWideKeyword) -> ParsedDeclarations {
+          self
+            .target_longhands()
+            .iter()
+            .map(|longhand| StyleDeclaration::CssWideKeyword(longhand, keyword))
+            .collect()
+        }
+      }
+
+      /// Defines the style of an element.
+      #[derive(Debug, Default, Clone, PartialEq)]
+      pub struct Style {
+        /// The declaration block for this style.
+        pub declarations: StyleDeclarationBlock,
+      }
+
+      impl<'de> serde::Deserialize<'de> for Style {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+          D: serde::Deserializer<'de>,
+        {
+          struct StyleVisitor;
+
+          impl<'de> serde::de::Visitor<'de> for StyleVisitor {
+            type Value = Style;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+              formatter.write_str("a style object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+              A: serde::de::MapAccess<'de>,
+            {
+              let mut style = Style::default();
+
+              while let Some(key) = map.next_key::<Cow<'de, str>>()? {
+                let property = PropertyId::from_camel_case(&key);
+                if matches!(property, PropertyId::Ignored) {
+                  map.next_value::<IgnoredAny>()?;
+                  continue;
+                }
+
+                let css_input = map.next_value_seed(CssValueSeed)?;
+
+                // `undefined` / `null` values are how JS callers express "no declaration".
+                if matches!(css_input, CssInput::Unexpected(CssUnexpected::Unit)) {
+                  continue;
+                }
+
+                let (css_input, important) = split_important(css_input);
+
+                if matches!(property, PropertyId::Custom) {
+                  if !matches!(css_input, CssInput::Unexpected(_)) {
+                    style.declarations.push(
+                      StyleDeclaration::CustomProperty(key.into_owned(), css_input.into_string()),
+                      important,
+                    );
+                  }
+                } else {
+                  style
+                    .declarations
+                    .append_parsed_declarations(
+                      ParsedValues::parse(property, css_input)
+                        .map_err(|error| error.into_serde_error(&key))?,
+                      important,
+                    );
+                }
+              }
+
+              Ok(style)
+            }
+          }
+
+          deserializer.deserialize_map(StyleVisitor)
+        }
+      }
+
+      impl<'de> serde::Deserialize<'de> for StyleDeclarationBlock {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+          D: serde::Deserializer<'de>,
+        {
+          Style::deserialize(deserializer).map(Into::into)
+        }
+      }
+
+      impl Style {
+        fn with_declarations(
+          mut self,
+          declarations: impl IntoIterator<Item = StyleDeclaration>,
+          important: bool,
+        ) -> Self {
+          for declaration in declarations {
+            self.declarations.push(declaration, important);
+          }
+          self
+        }
+
+        /// Returns a new style with one declaration appended in source order.
+        pub fn with(self, declaration: StyleDeclaration) -> Self {
+          self.with_declarations([declaration], false)
+        }
+
+        $($(
+          #[doc = concat!("Sets `", stringify!($longhand), "`.")]
+          pub fn $longhand(self, value: impl Into<$longhand_ty>) -> Self {
+            self.with(StyleDeclaration::[<$longhand:camel>](value.into()))
+          }
+        )*)*
+        $(
+          #[doc = concat!("Sets `", stringify!($transient), "`.")]
+          pub fn $transient(self, value: impl Into<$transient_ty>) -> Self {
+            self.with(StyleDeclaration::[<$transient:camel>](value.into()))
+          }
+        )*
+        $(
+          #[doc = concat!("Sets `", stringify!($shorthand), "`, expanded and appended in source order.")]
+          pub fn $shorthand(self, value: impl Into<$shorthand_ty>) -> Self {
+            self.with_declarations(StyleDeclaration::[<expand_ $shorthand>](value.into()), false)
+          }
+
+          /// Returns a new style with this shorthand expanded and appended in source order.
+          #[deprecated(note = "use the method of the same name without the `with_` prefix")]
+          pub fn [<with_ $shorthand>](self, value: $shorthand_ty) -> Self {
+            self.$shorthand(value)
+          }
+        )*
+
+        /// Returns a new style with one `!important` declaration appended in source order.
+        pub fn with_important(self, declaration: StyleDeclaration) -> Self {
+          self.with_declarations([declaration], true)
+        }
+
+        /// Appends another declaration block in source order.
+        pub(crate) fn append_block(&mut self, declarations: StyleDeclarationBlock) {
+          self.declarations.append(declarations);
+        }
+
+        /// Merges a matched block declaration by declaration, which the cascade
+        /// does to keep each one's own importance, and takes its element state.
+        pub(crate) fn merge_matched_block(&mut self, declarations: &StyleDeclarationBlock) {
+          self
+            .declarations
+            .extend_element_state(declarations.element_state.iter().map(Box::as_ref));
+
+          for declaration in declarations.iter() {
+            self.push(declaration.clone(), false);
+          }
+        }
+
+        /// Appends one declaration, recording its importance.
+        pub fn push(&mut self, declaration: StyleDeclaration, important: bool) {
+          self.declarations.push(declaration, important);
+        }
+
+        /// Collects resource URLs referenced by this style's declarations.
+        pub fn image_urls(&self) -> impl Iterator<Item = &str> {
+          self.declarations.image_urls()
+        }
+
+        pub(crate) fn inherit_with_lang(self, parent: &ComputedStyle, lang: Option<Lang>) -> ComputedStyle {
+          let mut style = self.inherit(parent);
+          if let Some(lang) = lang {
+            style.lang = Some(lang);
+          }
+          style
+        }
+
+        /// Resolves this style against a parent into a computed style.
+        pub(crate) fn inherit(self, parent: &ComputedStyle) -> ComputedStyle {
+          let mut style = ComputedStyle::from_parent(parent);
+          let mut declarations = ParsedDeclarations::new();
+
+          for name in &self.declarations.element_state {
+            style.custom_properties.register_element_state(name);
+          }
+
+          for declaration in self.declarations.declarations {
+            match declaration {
+              StyleDeclaration::CustomProperty(name, value) => {
+                style
+                  .custom_properties
+                  .declare(name, value, Some(&parent.custom_properties));
+              }
+              declaration => declarations.push(declaration),
+            }
+          }
+
+          if let Some(resolved_custom_properties) =
+            resolve_custom_properties(style.custom_properties.values())
+          {
+            style
+              .custom_properties
+              .replace_values(resolved_custom_properties);
+          }
+
+          // Pre-resolve `direction` so logical-axis applies below see the
+          // final value even if `direction:` is declared later in the block.
+          for declaration in &declarations {
+            match declaration {
+              StyleDeclaration::Direction(d) => style.inherited_data_mut().direction = *d,
+              StyleDeclaration::CssWideKeyword(LonghandId::Direction, keyword) => {
+                style.inherited_data_mut().direction = match keyword {
+                  CssWideKeyword::Initial => Direction::default(),
+                  CssWideKeyword::Inherit | CssWideKeyword::Unset => parent.inherited_data.direction,
+                };
+              }
+              StyleDeclaration::Deferred(deferred)
+                if matches!(deferred.property, PropertyId::Longhand(LonghandId::Direction)) =>
+              {
+                deferred.apply_with_parent(&mut style, parent);
+              }
+              _ => {}
+            }
+          }
+
+          let parent_font_weight = parent.inherited_data.font_weight.value();
+          for mut declaration in declarations {
+            if let StyleDeclaration::FontWeight(weight) = &mut declaration {
+              *weight = weight.resolve_against(parent_font_weight);
+            }
+            declaration.apply_with_parent(&mut style, parent);
+          }
+          style
+        }
+      }
+
+      impl From<StyleDeclarationBlock> for Style {
+        fn from(declarations: StyleDeclarationBlock) -> Self {
+          Self { declarations }
+        }
+      }
+
+      impl From<Style> for StyleDeclarationBlock {
+        fn from(style: Style) -> Self {
+          style.declarations
+        }
+      }
+
+      $(
+        $(#[doc = $group_doc])*
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct $group_ty {
+          $(
+            #[doc = concat!("Computed `", stringify!($longhand), "` value.")]
+            pub $longhand: $longhand_ty,
+          )*
+        }
+
+        impl Default for $group_ty {
+          fn default() -> Self {
+            Self {
+              $($longhand: define_style!(@default $($longhand_default)?),)*
+            }
+          }
+        }
+
+        impl $group_ty {
+          /// Whether this group's fields inherit.
+          const INHERITED: bool = group_inherits(&[$(longhand_inherits!($($longhand_inherit)?)),*]);
+
+          /// Resolves relative units against the sizing context.
+          fn make_computed(&mut self, sizing: &SizingContext) {
+            $(self.$longhand.make_computed(sizing);)*
+          }
+        }
+      )*
+
+      /// The computed style snapshot used during layout and rendering, in Blink's field groups:
+      /// boxes that leave a group's values alone share one copy of the group.
+      #[derive(Clone, Debug, PartialEq)]
+      pub struct ComputedStyle {
+        /// Custom properties in scope: their specified values and the `@property`
+        /// rules that govern them.
+        pub custom_properties: CustomProperties,
+        /// Resolved BCP-47 language, inherited from the `lang` attribute. Drives
+        /// locale-aware shaping (Han unification, line-breaking). Has no CSS property.
+        pub lang: Option<Lang>,
+        /// `display` before an out-of-flow or floating box blockified it, as Blink's
+        /// `OriginalDisplay`.
+        pub original_display: Display,
+        $(
+          $(#[doc = $group_doc])*
+          pub $group: Rc<$group_ty>,
+        )*
+      }
+
+      impl Default for ComputedStyle {
+        fn default() -> Self {
+          Self {
+            custom_properties: Default::default(),
+            lang: None,
+            original_display: Display::default(),
+            $($group: Rc::default(),)*
+          }
+        }
+      }
+
+      thread_local! {
+        /// Every longhand at its initial value, which `initial` and `unset` copy from.
+        static INITIAL_STYLE: ComputedStyle = ComputedStyle::default();
+        /// Every longhand at its initial value made computed, which a box that sets nothing in a
+        /// group shares.
+        static COMPUTED_INITIAL_STYLE: ComputedStyle = {
+          let mut style = ComputedStyle::default();
+
+          style.resolve_computed(&SizingContext::builder().viewport(Viewport::new((0, 0))).build());
+          style
+        };
+      }
+
+      impl ComputedStyle {
+        $(
+          #[doc = concat!("`", stringify!($group), "` to change in place, copied first when another box shares it.")]
+          pub(crate) fn [<$group _mut>](&mut self) -> &mut $group_ty {
+            Rc::make_mut(&mut self.$group)
+          }
+        )*
+
+        /// Copies `property`'s value from `source`; a logical-axis longhand has no field of its
+        /// own, so it copies nothing.
+        fn copy_longhand(&mut self, property: LonghandId, source: &Self) {
+          match property {
+            $($(LonghandId::[<$longhand:camel>] => {
+              if self.$group.$longhand != source.$group.$longhand {
+                self.[<$group _mut>]().$longhand.clone_from(&source.$group.$longhand);
+              }
+            })*)*
+            $(LonghandId::[<$transient:camel>] => {})*
+          }
+        }
+
+        /// Whether `property` holds its initial value; a logical-axis longhand has no field of its
+        /// own, so it always does.
+        #[cfg(feature = "svg")]
+        pub(crate) fn is_initial_longhand(&self, property: LonghandId) -> bool {
+          INITIAL_STYLE.with(|initial| match property {
+            $($(LonghandId::[<$longhand:camel>] => self.$group.$longhand == initial.$group.$longhand,)*)*
+            $(LonghandId::[<$transient:camel>] => true,)*
+          })
+        }
+
+        /// Sets `property` back to its initial value.
+        #[cfg(feature = "svg")]
+        pub(crate) fn reset_longhand(&mut self, property: LonghandId) {
+          INITIAL_STYLE.with(|initial| self.copy_longhand(property, initial));
+        }
+
+        /// Points each group still at its initial values to the computed one every such box
+        /// shares.
+        fn share_computed_initial_groups(&mut self) {
+          INITIAL_STYLE.with(|initial| {
+            $(
+              if Rc::ptr_eq(&self.$group, &initial.$group) {
+                self.$group = COMPUTED_INITIAL_STYLE.with(|computed| Rc::clone(&computed.$group));
+              }
+            )*
+          });
+        }
+
+        /// Resolves relative units in the groups this style owns alone. A shared group came
+        /// from the parent or the computed initial style, which resolved it already.
+        fn make_computed_values(&mut self, sizing: &SizingContext) {
+          $(
+            if let Some(group) = Rc::get_mut(&mut self.$group) {
+              group.make_computed(sizing);
+            }
+          )*
+        }
+
+        /// A copy that shares no group, for checking the shared groups against values resolved
+        /// in full.
+        #[cfg(debug_assertions)]
+        fn unshared(&self) -> Self {
+          Self {
+            $($group: Rc::new((*self.$group).clone()),)*
+            ..self.clone()
+          }
+        }
+      }
+
+      /// A single specified declaration stored in a declaration block.
+      #[allow(private_interfaces)]
+      #[derive(Debug, Clone, PartialEq)]
+      #[non_exhaustive]
+      pub enum StyleDeclaration {
+        $($(
+          /// An explicit specified value for a non-shorthand property.
+          [<$longhand:camel>]($longhand_ty),
+        )*)*
+        $(
+          /// Logical-axis value, resolved to a physical side at apply time.
+          [<$transient:camel>]($transient_ty),
+        )*
+        /// A custom property declaration such as `--token: value`.
+        CustomProperty(String, String),
+        /// A property value that must be resolved after `var()` substitution.
+        Deferred(DeferredDeclaration),
+        /// A CSS variable with the built-in utility scale as its fallback.
+        VarRef(TwVarRef),
+        /// A CSS-wide keyword targeting a longhand property.
+        CssWideKeyword(LonghandId, CssWideKeyword),
+      }
+
+      impl ComputedStyle {
+        /// Builds a child computed style inheriting from a parent: an inherited group is the
+        /// parent's, a non-inherited one the initial one.
+        pub(crate) fn from_parent(parent: &Self) -> Self {
+          INITIAL_STYLE.with(|initial| Self {
+            custom_properties: parent.custom_properties.inherited(),
+            lang: parent.lang,
+            original_display: Display::default(),
+            $(
+              $group: Rc::clone(if $group_ty::INHERITED { &parent.$group } else { &initial.$group }),
+            )*
+          })
+        }
+
+        /// Whether a child that inherits nothing explicitly resolves the same against both, as
+        /// Blink's `InheritedEqualIncludingInheritedVariables`.
+        pub(crate) fn inherited_equal(&self, other: &Self) -> bool {
+          self.custom_properties == other.custom_properties
+            && self.lang == other.lang
+            $(&& (!$group_ty::INHERITED || self.$group == other.$group))*
+        }
+
+        /// Whether the values only explicit inheritance reads match, as Blink's `NonInheritedEqual`.
+        pub(crate) fn non_inherited_equal(&self, other: &Self) -> bool {
+          self.original_display == other.original_display
+            $(&& ($group_ty::INHERITED || self.$group == other.$group))*
+        }
+
+        /// Builds the style of an anonymous block box generated inside `parent`,
+        /// resolved down to its used values like any other box's.
+        pub(crate) fn for_anonymous(parent: &Self, sizing: &SizingContext) -> Self {
+          let mut style = INITIAL_STYLE.with(|initial| Self {
+            custom_properties: parent.custom_properties.inherited(),
+            lang: parent.lang,
+            original_display: Display::default(),
+            $(
+              $group: share_group(
+                $group_ty {
+                  $($longhand: define_anonymous_default!(parent.$group.$longhand, define_style!(@default $($longhand_default)?) $(, inherit $longhand_inherit)? $(, anonymous $longhand_anonymous)?),)*
+                },
+                &parent.$group,
+                &initial.$group,
+              ),
+            )*
+          });
+
+          // css 2.1 9.2.1.1: an anonymous box is a block container, and `display` starts
+          // at its initial `inline`.
+          style.base_data_mut().display.blockify();
+          style.make_computed(sizing);
+          // An anonymous block truncates as the box it stands in for, which clips for it.
+          style.misc4_data_mut().text_overflow = if parent.clips_overflow() {
+            parent.misc4_data.text_overflow.clone()
+          } else {
+            TextOverflow::Clip
+          };
+          style
+        }
+
+        pub(crate) fn apply_interpolated_properties(
+          &mut self,
+          from: &Self,
+          to: &Self,
+          animated_properties: &PropertyMask,
+          progress: f32,
+          sizing: &SizingContext,
+          current_color: Color,
+        ) {
+          let interpolation_context = InterpolationContext {
+            progress,
+            sizing,
+            current_color,
+          };
+
+          for property in animated_properties.iter() {
+            match property {
+              $($(
+                LonghandId::[<$longhand:camel>] => {
+                  self.[<$group _mut>]().$longhand.interpolate(
+                    &from.$group.$longhand,
+                    &to.$group.$longhand,
+                    progress,
+                    sizing,
+                    current_color,
+                  );
+                }
+              )*)*
+              $(LonghandId::[<$transient:camel>] => {})*
+            }
+          }
+
+          // special cases
+          if animated_properties.contains(&LonghandId::FlexGrow) {
+            self.misc1_data_mut().flex_grow = interpolated_with_missing(
+              &from.misc1_data.flex_grow,
+              &to.misc1_data.flex_grow,
+              FlexGrow(0.0),
+              FlexGrow(0.0),
+              interpolation_context,
+            );
+          }
+
+          if animated_properties.contains(&LonghandId::FlexShrink) {
+            self.misc2_data_mut().flex_shrink = interpolated_with_missing(
+              &from.misc2_data.flex_shrink,
+              &to.misc2_data.flex_shrink,
+              FlexGrow(1.0),
+              FlexGrow(1.0),
+              interpolation_context,
+            );
+          }
+
+          if animated_properties.contains(&LonghandId::WebkitTextStrokeWidth) {
+            self.misc_inherited1_data_mut().webkit_text_stroke_width = interpolated_with_missing(
+              &from.misc_inherited1_data.webkit_text_stroke_width,
+              &to.misc_inherited1_data.webkit_text_stroke_width,
+              Length::zero(),
+              Length::zero(),
+              interpolation_context,
+            );
+          }
+
+          if animated_properties.contains(&LonghandId::WebkitTextStrokeColor) {
+            self.misc_inherited1_data_mut().webkit_text_stroke_color = interpolated_with_missing(
+              &from.misc_inherited1_data.webkit_text_stroke_color,
+              &to.misc_inherited1_data.webkit_text_stroke_color,
+              ColorInput::CurrentColor,
+              ColorInput::CurrentColor,
+              interpolation_context,
+            );
+          }
+
+          if animated_properties.contains(&LonghandId::WebkitTextFillColor) {
+            self.misc_inherited1_data_mut().webkit_text_fill_color = interpolated_with_missing(
+              &from.misc_inherited1_data.webkit_text_fill_color,
+              &to.misc_inherited1_data.webkit_text_fill_color,
+              from.inherited_data.color,
+              to.inherited_data.color,
+              interpolation_context,
+            );
+          }
+        }
+      }
+
+      impl StyleDeclaration {
+        /// Whether it sets a property CSS keeps non-negative to a negative value, which makes the
+        /// declaration invalid.
+        pub(crate) fn is_negative_where_non_negative(&self) -> bool {
+          match self {
+            $($(
+              Self::[<$longhand:camel>](value) => {
+                define_style!(@non_negative value $(, $longhand_non_negative)?)
+              }
+            )*)*
+            $(
+              Self::[<$transient:camel>](value) => {
+                define_style!(@non_negative value $(, $transient_non_negative)?)
+              }
+            )*
+            _ => false,
+          }
+        }
+
+        /// Whether applying it may copy a non-inherited value from the parent, which Blink's
+        /// `HasExplicitInheritance` tracks.
+        pub(crate) fn inherits_explicitly(&self) -> bool {
+          match self {
+            Self::CssWideKeyword(property, CssWideKeyword::Inherit) => {
+              !LonghandId::INHERITED[property.index()]
+            }
+            Self::Deferred(..) | Self::VarRef(..) => true,
+            _ => false,
+          }
+        }
+
+        $($(
+          define_style!(@builder $longhand, $longhand_ty $(, $longhand_builder)?);
+        )*)*
+        $(
+          /// Returns a declaration for this property.
+          pub fn $transient(value: $transient_ty) -> Self {
+            Self::[<$transient:camel>](value)
+          }
+        )*
+        $(
+          /// The longhand declarations this shorthand value expands into.
+          pub(crate) fn [<expand_ $shorthand>](value: $shorthand_ty) -> ParsedDeclarations {
+            expand_shorthand(value, |$value, $target_var| $expand)
+          }
+        )*
+
+        /// The longhand this declaration targets.
+        pub(crate) fn longhand_id(&self) -> LonghandId {
+          match self {
+            $($(Self::[<$longhand:camel>](..) => LonghandId::[<$longhand:camel>],)*)*
+            $(Self::[<$transient:camel>](..) => LonghandId::[<$transient:camel>],)*
+            Self::CustomProperty(..) | Self::Deferred(..) | Self::VarRef(..) => {
+              unreachable!("custom and deferred declarations do not map to a single longhand")
+            }
+            Self::CssWideKeyword(id, _) => *id,
+          }
+        }
+
+        pub(crate) fn affected_longhands(&self) -> PropertyMask {
+          match self {
+            Self::CssWideKeyword(id, _) => [*id].into_iter().collect(),
+            Self::CustomProperty(..) => PropertyMask::default(),
+            Self::Deferred(deferred) => deferred.property.target_longhands(),
+            Self::VarRef(var_ref) => var_ref.deferred.property.target_longhands(),
+            _ => [self.longhand_id()].into_iter().collect(),
+          }
+        }
+
+        /// Applies this declaration to a computed style, resolving against the parent.
+        pub(crate) fn apply_with_parent(
+          self,
+          style: &mut ComputedStyle,
+          parent: &ComputedStyle,
+        ) {
+          self.apply_wide_overlapping(style);
+
+          let is_rtl = style.inherited_data.direction == Direction::Rtl;
+          match self {
+            Self::CssWideKeyword(property, keyword) => {
+              match property {
+                $(
+                  LonghandId::[<$transient:camel>] => {
+                    let value = match keyword {
+                      CssWideKeyword::Initial | CssWideKeyword::Unset => define_style!(@default $($transient_default)?),
+                      CssWideKeyword::Inherit => {
+                        if parent.inherited_data.direction == Direction::Rtl {
+                          parent.$rtl_group.$transient_rtl.to_owned()
+                        } else {
+                          parent.$ltr_group.$transient_ltr.to_owned()
+                        }
+                      }
+                    };
+
+                    if is_rtl {
+                      style.[<$rtl_group _mut>]().$transient_rtl = value;
+                    } else {
+                      style.[<$ltr_group _mut>]().$transient_ltr = value;
+                    }
+                  }
+                )*
+                _ => {
+                  let inherits = match keyword {
+                    CssWideKeyword::Initial => false,
+                    CssWideKeyword::Inherit => true,
+                    CssWideKeyword::Unset => LonghandId::INHERITED[property.index()],
+                  };
+
+                  if inherits {
+                    style.copy_longhand(property, parent);
+                  } else {
+                    INITIAL_STYLE.with(|initial| style.copy_longhand(property, initial));
+                  }
+                }
+              }
+            }
+            Self::CustomProperty(name, value) => {
+              style
+                .custom_properties
+                .declare(name, value, Some(&parent.custom_properties));
+            }
+            Self::Deferred(deferred) => deferred.apply_with_parent(style, parent),
+            Self::VarRef(var_ref) => var_ref.apply(style, Some(parent)),
+            $($(Self::[<$longhand:camel>](value) => style.[<$group _mut>]().$longhand = value,)*)*
+            $(
+              Self::[<$transient:camel>](value) => {
+                if is_rtl {
+                  style.[<$rtl_group _mut>]().$transient_rtl = value;
+                } else {
+                  style.[<$ltr_group _mut>]().$transient_ltr = value;
+                }
+              }
+            )*
+          }
+        }
+
+        /// Applies this declaration to a computed style without a parent.
+        pub(crate) fn apply_to_computed(&self, style: &mut ComputedStyle) {
+          self.apply_wide_overlapping(style);
+
+          let is_rtl = style.inherited_data.direction == Direction::Rtl;
+          match self {
+            Self::CssWideKeyword(property, keyword) => match keyword {
+              CssWideKeyword::Initial => match property {
+                $(
+                  LonghandId::[<$transient:camel>] => {
+                    if is_rtl {
+                      style.[<$rtl_group _mut>]().$transient_rtl = define_style!(@default $($transient_default)?);
+                    } else {
+                      style.[<$ltr_group _mut>]().$transient_ltr = define_style!(@default $($transient_default)?);
+                    }
+                  }
+                )*
+                _ => INITIAL_STYLE.with(|initial| style.copy_longhand(*property, initial)),
+              },
+              CssWideKeyword::Inherit | CssWideKeyword::Unset => {}
+            },
+            Self::CustomProperty(name, value) => {
+              style
+                .custom_properties
+                .declare(name.to_owned(), value.to_owned(), None);
+            }
+            Self::Deferred(deferred) => {
+              apply_deferred_declaration(style, None, deferred);
+            }
+            Self::VarRef(var_ref) => var_ref.apply(style, None),
+            $($(Self::[<$longhand:camel>](value) => style.[<$group _mut>]().$longhand.clone_from(value),)*)*
+            $(
+              Self::[<$transient:camel>](value) => {
+                if is_rtl {
+                  style.[<$rtl_group _mut>]().$transient_rtl.clone_from(value);
+                } else {
+                  style.[<$ltr_group _mut>]().$transient_ltr.clone_from(value);
+                }
+              }
+            )*
+          }
+        }
+      }
+
+      impl ToCss for StyleDeclaration {
+        fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+          match self {
+            $($(
+              Self::[<$longhand:camel>](value) => {
+                dest.write_str(LonghandId::[<$longhand:camel>].css_name())?;
+                dest.write_str(": ")?;
+                value.to_css(dest)?;
+                dest.write_str(";")
+              }
+            )*)*
+            $(
+              Self::[<$transient:camel>](value) => {
+                dest.write_str(LonghandId::[<$transient:camel>].css_name())?;
+                dest.write_str(": ")?;
+                value.to_css(dest)?;
+                dest.write_str(";")
+              }
+            )*
+            Self::CustomProperty(name, value) => {
+              write!(dest, "{}: {};", name, value)
+            }
+            Self::VarRef(var_ref) => var_ref.deferred.to_css(dest),
+            Self::Deferred(deferred) => deferred.to_css(dest),
+            Self::CssWideKeyword(id, keyword) => {
+              let keyword_str = match keyword {
+                CssWideKeyword::Initial => "initial",
+                CssWideKeyword::Inherit => "inherit",
+                CssWideKeyword::Unset => "unset",
+              };
+              write!(dest, "{}: {};", id.css_name(), keyword_str)
+            }
+          }
+        }
+      }
+
+    }
+  };
+}
+
+define_style! {
+  groups {
+    /// Non-inherited fields Blink keeps on `ComputedStyleBase` itself rather than in a group.
+    base_data: StyleBaseData {
+      display: Display,
+      position: Position,
+      overflow_x: Overflow,
+      overflow_y: Overflow,
+      float: Float,
+      clear: Clear,
+      table_layout: TableLayout,
+      vertical_align: VerticalAlign,
+    }
+    /// Blink's `box` field group: sizes, margins, padding, and border widths and styles.
+    box_data: StyleBoxData {
+      box_sizing: BoxSizing,
+      width: Size where builder = manual where non_negative = true,
+      height: Size where builder = manual where non_negative = true,
+      max_width: MaxSize where non_negative = true,
+      max_height: MaxSize where non_negative = true,
+      min_width: Length where non_negative = true,
+      min_height: Length where non_negative = true,
+      padding_top: Length where non_negative = true = Length::zero(),
+      padding_right: Length where non_negative = true = Length::zero(),
+      padding_bottom: Length where non_negative = true = Length::zero(),
+      padding_left: Length where non_negative = true = Length::zero(),
+      margin_top: Length = Length::zero(),
+      margin_right: Length = Length::zero(),
+      margin_bottom: Length = Length::zero(),
+      margin_left: Length = Length::zero(),
+      justify_content: JustifyContent,
+      align_items: AlignItems,
+      z_index: ZIndex,
+      border_top_width: LineWidth where non_negative = true,
+      border_right_width: LineWidth where non_negative = true,
+      border_bottom_width: LineWidth where non_negative = true,
+      border_left_width: LineWidth where non_negative = true,
+      border_top_style: BorderStyle,
+      border_right_style: BorderStyle,
+      border_bottom_style: BorderStyle,
+      border_left_style: BorderStyle,
+      box_decoration_break: BoxDecorationBreak,
+      baseline_source: BaselineSource,
+    }
+    /// Blink's `surround` field group: insets, corner radii, and border colors.
+    surround_data: StyleSurroundData {
+      aspect_ratio: AspectRatio,
+      top: Length,
+      right: Length,
+      bottom: Length,
+      left: Length,
+      border_top_left_radius: SpacePair<Length> where anonymous = true = SpacePair::from_single(Length::zero()),
+      border_top_right_radius: SpacePair<Length> where anonymous = true = SpacePair::from_single(Length::zero()),
+      border_bottom_right_radius: SpacePair<Length> where anonymous = true = SpacePair::from_single(Length::zero()),
+      border_bottom_left_radius: SpacePair<Length> where anonymous = true = SpacePair::from_single(Length::zero()),
+      corner_top_left_shape: Superellipse where anonymous = true,
+      corner_top_right_shape: Superellipse where anonymous = true,
+      corner_bottom_right_shape: Superellipse where anonymous = true,
+      corner_bottom_left_shape: Superellipse where anonymous = true,
+      border_top_color: ColorInput,
+      border_right_color: ColorInput,
+      border_bottom_color: ColorInput,
+      border_left_color: ColorInput,
+    }
+    /// Blink's `background` field group.
+    background_data: StyleBackgroundData {
+      background_image: Option<BackgroundImages> where anonymous = true,
+      background_position: PositionValues where anonymous = true,
+      background_size: BackgroundSizes where anonymous = true,
+      background_repeat: BackgroundRepeats where anonymous = true,
+      background_blend_mode: BlendModes where anonymous = true,
+      background_color: ColorInput where anonymous = true = ColorInput::transparent(),
+      background_clip: BackgroundClip where anonymous = true,
+      background_origin: BackgroundOrigin,
+    }
+    /// Blink's `visual` field group.
+    visual_data: StyleVisualData {
+      text_decoration_line: Option<TextDecorationLines>,
+    }
+    /// Blink's `svg` field group, where it keeps `opacity` and `transform` for SVG to read.
+    svg_data: StyleSvgData {
+      opacity: PercentageNumber,
+      transform: Option<Transforms>,
+      transform_origin: PositionValue = PositionValue::center(),
+      alignment_baseline: AlignmentBaseline,
+      mask_type: MaskType,
+      vector_effect: VectorEffect,
+    }
+    /// Blink's `svg->geometry` field group: the lengths and path SVG shapes are laid out from.
+    svg_geometry_data: StyleSvgGeometryData {
+      x: Length = Length::zero(),
+      y: Length = Length::zero(),
+      cx: Length = Length::zero(),
+      cy: Length = Length::zero(),
+      r: Length where non_negative = true = Length::zero(),
+      rx: Length where non_negative = true = Length::Auto,
+      ry: Length where non_negative = true = Length::Auto,
+      d: SvgPath,
+    }
+    /// Blink's `svg->stop` field group.
+    svg_stop_data: StyleSvgStopData {
+      stop_color: ColorInput = ColorInput::Value(Color::black()),
+      stop_opacity: PercentageNumber,
+    }
+    /// Blink's `svg->svgmisc` field group.
+    svg_misc_data: StyleSvgMiscData {
+      baseline_shift: BaselineShift,
+      flood_color: ColorInput = ColorInput::Value(Color::black()),
+      flood_opacity: PercentageNumber,
+      lighting_color: ColorInput = ColorInput::Value(Color::white()),
+    }
+    /// Blink's `misc` field group: its rarely set non-inherited fields under eight bits.
+    misc_data: StyleMiscData {
+      flex_direction: FlexDirection,
+      box_orient: BoxOrient,
+      justify_self: AlignItems,
+      align_content: JustifyContent,
+      justify_items: AlignItems,
+      align_self: AlignItems,
+      flex_wrap: FlexWrap,
+      outline_style: BorderStyle,
+      object_fit: ObjectFit where anonymous = true,
+      r#continue: Continue where anonymous = true,
+      unicode_bidi: UnicodeBidi,
+      text_decoration_style: TextDecorationStyle,
+      break_before: BreakBetween,
+      break_after: BreakBetween,
+      break_inside: BreakInside,
+      contain: Contain,
+      isolation: Isolation,
+      mix_blend_mode: BlendMode,
+    }
+    /// Blink's `misc->misc1` field group, which Blink nests in `misc`.
+    misc1_data: StyleMisc1Data {
+      animation_delay: AnimationDurations,
+      animation_direction: AnimationDirections,
+      animation_duration: AnimationDurations,
+      animation_fill_mode: AnimationFillModes,
+      animation_iteration_count: AnimationIterationCounts,
+      animation_name: AnimationNames,
+      animation_play_state: AnimationPlayStates,
+      animation_timing_function: AnimationTimingFunctions,
+      backdrop_filter: Filters,
+      box_shadow: Option<BoxShadows>,
+      clip_path: Option<BasicShape>,
+      column_gap: Gap,
+      content: ContentValue,
+      counter_increment: CounterIncrement,
+      counter_reset: CounterReset,
+      counter_set: CounterSet,
+      filter: Filters,
+      flex_basis: Option<FlexBasis>,
+      flex_grow: Option<FlexGrow>,
+    }
+    /// Blink's `misc->misc2` field group, which Blink nests in `misc`.
+    misc2_data: StyleMisc2Data {
+      flex_line_count: FlexLineCount,
+      flex_shrink: Option<FlexGrow>,
+      grid_auto_columns: Option<GridTrackSizes>,
+      grid_auto_flow: GridAutoFlow,
+      grid_auto_rows: Option<GridTrackSizes>,
+      grid_column_end: GridPlacement,
+      grid_column_start: GridPlacement,
+      grid_row_end: GridPlacement,
+      grid_row_start: GridPlacement,
+      grid_template_areas: Option<GridTemplateAreas>,
+      grid_template_columns: Option<GridTemplateComponents>,
+      grid_template_rows: Option<GridTemplateComponents>,
+      mask_image: Option<BackgroundImages>,
+      mask_position: PositionValues,
+      mask_repeat: BackgroundRepeats,
+      mask_size: BackgroundSizes,
+    }
+    /// Blink's `misc->misc3` field group, which Blink nests in `misc`.
+    misc3_data: StyleMisc3Data {
+      max_lines: Option<u32> where anonymous = true,
+      object_position: PositionValue where anonymous = true = PositionValue::center(),
+      offset_anchor: OffsetAnchor,
+      offset_distance: Length,
+      offset_path: Option<OffsetPath>,
+      offset_position: OffsetPosition,
+      offset_rotate: OffsetRotate,
+      order: Order,
+      outline_color: ColorInput,
+      outline_offset: Length,
+      outline_width: LineWidth,
+      rotate: Option<Angle>,
+      row_gap: Gap,
+      scale: Option<SpacePair<PercentageNumber>>,
+      text_decoration_color: ColorInput,
+      text_decoration_inset: TextDecorationInset,
+      text_decoration_thickness: TextDecorationThickness,
+    }
+    /// Blink's `misc->misc4` field group, which Blink nests in `misc`.
+    misc4_data: StyleMisc4Data {
+      text_overflow: TextOverflow where anonymous = true,
+      translate: SpacePair<Length>,
+    }
+    /// Blink's `inherited` field group, plus the inherited fields Blink keeps on `ComputedStyleBase` itself.
+    inherited_data: StyleInheritedData {
+      text_transform: TextTransform where inherit = true,
+      font_style: FontStyle where inherit = true,
+      font_stretch: FontStretch where inherit = true,
+      color: ColorInput where inherit = true,
+      font_size: FontSize where inherit = true,
+      font_family: FontFamily where inherit = true,
+      line_height: LineHeight where inherit = true,
+      font_weight: FontWeight where inherit = true,
+      font_variation_settings: FontVariationSettings where inherit = true,
+      font_feature_settings: FontFeatureSettings where inherit = true,
+      font_variant_ligatures: FontVariantLigatures where inherit = true,
+      font_variant_numeric: FontVariantNumeric where inherit = true,
+      font_variant_east_asian: FontVariantEastAsian where inherit = true,
+      font_variant_caps: FontVariantCaps where inherit = true,
+      font_variant_position: FontVariantPosition where inherit = true,
+      font_kerning: FontKerning where inherit = true,
+      font_optical_sizing: FontOpticalSizing where inherit = true,
+      font_language_override: FontLanguageOverride where inherit = true,
+      font_synthesis_weight: FontSynthesic where inherit = true,
+      font_synthesis_style: FontSynthesic where inherit = true,
+      font_synthesis_small_caps: FontSynthesic where inherit = true,
+      text_align: TextAlign where inherit = true,
+      text_align_last: TextAlignLast where inherit = true,
+      letter_spacing: Length where inherit = true,
+      word_spacing: Length where inherit = true,
+      white_space_collapse: WhiteSpaceCollapse where inherit = true,
+      text_wrap_mode: TextWrapMode where inherit = true,
+      text_wrap_style: TextWrapStyle where inherit = true,
+      direction: Direction where inherit = true,
+      visibility: Visibility where inherit = true,
+      caption_side: CaptionSide where inherit = true,
+      border_collapse: BorderCollapse where inherit = true,
+      empty_cells: EmptyCells where inherit = true,
+      border_spacing: BorderSpacing where inherit = true,
+      list_style_position: ListStylePosition where inherit = true,
+    }
+    /// Blink's `misc-inherited` field group: its rarely set inherited fields under eight bits.
+    misc_inherited_data: StyleMiscInheritedData {
+      stroke_linejoin: LineJoin where inherit = true,
+      text_underline_position: TextUnderlinePosition where inherit = true,
+      text_decoration_skip_ink: TextDecorationSkipInk where inherit = true,
+      image_rendering: ImageScalingAlgorithm where inherit = true,
+      overflow_wrap: OverflowWrap where inherit = true,
+      word_break: WordBreak where inherit = true,
+      line_break: LineBreak where inherit = true,
+      hyphens: Hyphens where inherit = true,
+      text_justify: TextJustify where inherit = true,
+      clip_rule: FillRule where inherit = true,
+    }
+    /// Blink's `misc-inherited->misc-inherited1` field group, which Blink nests in `misc-inherited`.
+    misc_inherited1_data: StyleMiscInherited1Data {
+      block_ellipsis: BlockEllipsis where inherit = true,
+      hyphenate_character: HyphenateCharacter where inherit = true,
+      list_style_image: ListStyleImage where inherit = true,
+      list_style_type: ListStyleType where inherit = true,
+      orphans: MinLines where inherit = true,
+      tab_size: TabSize where inherit = true,
+      text_fit: TextFit where inherit = true,
+      text_indent: TextIndent where inherit = true,
+      text_shadow: Option<TextShadows> where inherit = true,
+      text_underline_offset: TextUnderlineOffset where inherit = true,
+      webkit_text_fill_color: Option<ColorInput> where inherit = true,
+      webkit_text_stroke_color: Option<ColorInput> where inherit = true,
+      webkit_text_stroke_width: Option<Length> where inherit = true,
+      widows: MinLines where inherit = true,
+    }
+    /// Blink's `svginherited` field group.
+    svg_inherited_data: StyleSvgInheritedData {
+      color_interpolation: ColorInterpolation where inherit = true,
+      color_interpolation_filters: ColorInterpolation where inherit = true = ColorInterpolation::LinearRgb,
+      dominant_baseline: DominantBaseline where inherit = true,
+      fill_rule: FillRule where inherit = true,
+      paint_order: PaintOrder where inherit = true,
+      shape_rendering: ShapeRendering where inherit = true,
+      text_anchor: TextAnchor where inherit = true,
+    }
+    /// Blink's `svginherited->fill` field group.
+    svg_fill_data: StyleSvgFillData {
+      fill: SvgPaint where inherit = true = SvgPaint::Color(ColorInput::Value(Color::black())),
+      fill_opacity: PercentageNumber where inherit = true,
+    }
+    /// Blink's `svginherited->stroke` field group, but for `stroke-linejoin`, which `misc_inherited_data` keeps.
+    svg_stroke_data: StyleSvgStrokeData {
+      stroke: SvgPaint where inherit = true = SvgPaint::None,
+      stroke_width: Length where inherit = true where non_negative = true = Length::Px(1.0),
+      stroke_opacity: PercentageNumber where inherit = true,
+      stroke_dasharray: Option<StrokeDasharray> where inherit = true,
+      stroke_dashoffset: Length where inherit = true = Length::zero(),
+      stroke_linecap: LineCap where inherit = true,
+      stroke_miterlimit: StrokeMiterlimit where inherit = true,
+    }
+    /// Blink's `svginherited->resources` field group.
+    svg_resources_data: StyleSvgResourcesData {
+      marker_start: Option<SvgResource> where inherit = true,
+      marker_mid: Option<SvgResource> where inherit = true,
+      marker_end: Option<SvgResource> where inherit = true,
+    }
+  }
+  transient_longhands {
+    margin_inline_start: Length = Length::zero() => (box_data.margin_left, box_data.margin_right),
+    margin_inline_end: Length = Length::zero() => (box_data.margin_right, box_data.margin_left),
+    padding_inline_start: Length where non_negative = true = Length::zero() => (box_data.padding_left, box_data.padding_right),
+    padding_inline_end: Length where non_negative = true = Length::zero() => (box_data.padding_right, box_data.padding_left),
+    inset_inline_start: Length => (surround_data.left, surround_data.right),
+    inset_inline_end: Length => (surround_data.right, surround_data.left),
+    border_inline_start_width: LineWidth => (box_data.border_left_width, box_data.border_right_width),
+    border_inline_end_width: LineWidth => (box_data.border_right_width, box_data.border_left_width),
+    border_inline_start_style: BorderStyle => (box_data.border_left_style, box_data.border_right_style),
+    border_inline_end_style: BorderStyle => (box_data.border_right_style, box_data.border_left_style),
+    border_inline_start_color: ColorInput => (surround_data.border_left_color, surround_data.border_right_color),
+    border_inline_end_color: ColorInput => (surround_data.border_right_color, surround_data.border_left_color),
+    border_start_start_radius: SpacePair<Length> = SpacePair::from_single(Length::zero()) => (surround_data.border_top_left_radius, surround_data.border_top_right_radius),
+    border_start_end_radius: SpacePair<Length> = SpacePair::from_single(Length::zero()) => (surround_data.border_top_right_radius, surround_data.border_top_left_radius),
+    border_end_start_radius: SpacePair<Length> = SpacePair::from_single(Length::zero()) => (surround_data.border_bottom_left_radius, surround_data.border_bottom_right_radius),
+    border_end_end_radius: SpacePair<Length> = SpacePair::from_single(Length::zero()) => (surround_data.border_bottom_right_radius, surround_data.border_bottom_left_radius),
+  }
+  shorthands {
+    list_style: ListStyleShorthand => [ListStyleType, ListStylePosition, ListStyleImage] |value, target| {
+      target.push(StyleDeclaration::list_style_type(value.style_type));
+      target.push(StyleDeclaration::list_style_position(value.position));
+      target.push(StyleDeclaration::list_style_image(value.image));
+    },
+    marker: Option<SvgResource> => [MarkerStart, MarkerMid, MarkerEnd] |value, target| {
+      target.push(StyleDeclaration::marker_start(value.clone()));
+      target.push(StyleDeclaration::marker_mid(value.clone()));
+      target.push(StyleDeclaration::marker_end(value));
+    },
+    offset: OffsetShorthand => [OffsetPosition, OffsetPath, OffsetDistance, OffsetRotate, OffsetAnchor] |value, target| {
+      target.push(StyleDeclaration::offset_position(value.position));
+      target.push(StyleDeclaration::offset_path(value.path));
+      target.push(StyleDeclaration::offset_distance(value.distance));
+      target.push(StyleDeclaration::offset_rotate(value.rotate));
+      target.push(StyleDeclaration::offset_anchor(value.anchor));
+    },
+    animation: Animations => [AnimationName, AnimationDuration, AnimationDelay, AnimationTimingFunction, AnimationIterationCount, AnimationDirection, AnimationFillMode, AnimationPlayState] |value, target| {
+      target.push(StyleDeclaration::animation_duration(value.iter().map(|animation| animation.duration).collect()));
+      target.push(StyleDeclaration::animation_delay(value.iter().map(|animation| animation.delay).collect()));
+      target.push(StyleDeclaration::animation_timing_function(
+        value
+          .iter()
+          .map(|animation| animation.timing_function)
+          .collect(),
+      ));
+      target.push(StyleDeclaration::animation_iteration_count(
+        value
+          .iter()
+          .map(|animation| animation.iteration_count)
+          .collect(),
+      ));
+      target.push(StyleDeclaration::animation_direction(
+        value.iter().map(|animation| animation.direction).collect(),
+      ));
+      target.push(StyleDeclaration::animation_fill_mode(
+        value.iter().map(|animation| animation.fill_mode).collect(),
+      ));
+      target.push(StyleDeclaration::animation_play_state(
+        value.iter().map(|animation| animation.play_state).collect(),
+      ));
+      target.push(StyleDeclaration::animation_name(value.into_iter().map(|animation| animation.name).collect()));
+    },
+    padding: Sides<Length> => [PaddingTop, PaddingRight, PaddingBottom, PaddingLeft] |value, target| {
+      push_four_side_declarations!(
+        target,
+        value.0,
+        padding_top,
+        padding_right,
+        padding_bottom,
+        padding_left
+      );
+    },
+    padding_inline: SpacePair<Length> => [PaddingInlineStart, PaddingInlineEnd] |value, target| {
+      push_axis_declarations!(target, value, padding_inline_start, padding_inline_end);
+    },
+    padding_block: SpacePair<Length> => [PaddingTop, PaddingBottom] |value, target| {
+      push_axis_declarations!(target, value, padding_top, padding_bottom);
+    },
+    // The block-axis and size logical properties map as in `writing-mode: horizontal-tb`, the
+    // only writing mode takumi lays out.
+    padding_block_start: Length => [PaddingTop] |value, target| {
+      target.push(StyleDeclaration::padding_top(value));
+    },
+    padding_block_end: Length => [PaddingBottom] |value, target| {
+      target.push(StyleDeclaration::padding_bottom(value));
+    },
+    margin: Sides<Length> => [MarginTop, MarginRight, MarginBottom, MarginLeft] |value, target| {
+      push_four_side_declarations!(
+        target,
+        value.0,
+        margin_top,
+        margin_right,
+        margin_bottom,
+        margin_left
+      );
+    },
+    margin_inline: SpacePair<Length> => [MarginInlineStart, MarginInlineEnd] |value, target| {
+      push_axis_declarations!(target, value, margin_inline_start, margin_inline_end);
+    },
+    margin_block: SpacePair<Length> => [MarginTop, MarginBottom] |value, target| {
+      push_axis_declarations!(target, value, margin_top, margin_bottom);
+    },
+    margin_block_start: Length => [MarginTop] |value, target| {
+      target.push(StyleDeclaration::margin_top(value));
+    },
+    margin_block_end: Length => [MarginBottom] |value, target| {
+      target.push(StyleDeclaration::margin_bottom(value));
+    },
+    inset: Sides<Length> => [Top, Right, Bottom, Left] |value, target| {
+      push_four_side_declarations!(target, value.0, top, right, bottom, left);
+    },
+    inset_inline: SpacePair<Length> => [InsetInlineStart, InsetInlineEnd] |value, target| {
+      push_axis_declarations!(target, value, inset_inline_start, inset_inline_end);
+    },
+    inset_block: SpacePair<Length> => [Top, Bottom] |value, target| {
+      push_axis_declarations!(target, value, top, bottom);
+    },
+    inset_block_start: Length => [Top] |value, target| {
+      target.push(StyleDeclaration::top(value));
+    },
+    inset_block_end: Length => [Bottom] |value, target| {
+      target.push(StyleDeclaration::bottom(value));
+    },
+    inline_size: Size => [Width] |value, target| {
+      target.push(StyleDeclaration::width(value));
+    },
+    block_size: Size => [Height] |value, target| {
+      target.push(StyleDeclaration::height(value));
+    },
+    min_inline_size: Length => [MinWidth] |value, target| {
+      target.push(StyleDeclaration::min_width(value));
+    },
+    min_block_size: Length => [MinHeight] |value, target| {
+      target.push(StyleDeclaration::min_height(value));
+    },
+    max_inline_size: MaxSize => [MaxWidth] |value, target| {
+      target.push(StyleDeclaration::max_width(value));
+    },
+    max_block_size: MaxSize => [MaxHeight] |value, target| {
+      target.push(StyleDeclaration::max_height(value));
+    },
+    mask: Backgrounds => [MaskImage, MaskPosition, MaskSize, MaskRepeat] |value, target| {
+      target.push(StyleDeclaration::mask_position(
+        value.iter().map(|background| background.position).collect(),
+      ));
+      target.push(StyleDeclaration::mask_size(
+        value.iter().map(|background| background.size).collect(),
+      ));
+      target.push(StyleDeclaration::mask_repeat(
+        value.iter().map(|background| background.repeat).collect(),
+      ));
+      target.push(StyleDeclaration::mask_image(Some(
+        value
+          .into_iter()
+          .map(|background| background.image)
+          .collect(),
+      )));
+    },
+    gap: SpacePair<Gap> => [RowGap, ColumnGap] |value, target| {
+      push_axis_declarations!(target, value, row_gap, column_gap);
+    },
+    flex_flow: FlexFlow => [FlexDirection, FlexWrap] |value, target| {
+      target.push(StyleDeclaration::flex_direction(value.direction));
+      target.push(StyleDeclaration::flex_wrap(value.wrap));
+    },
+    box_pack: BoxPack => [JustifyContent] |value, target| {
+      target.push(StyleDeclaration::justify_content(value.into()));
+    },
+    box_align: BoxAlign => [AlignItems] |value, target| {
+      target.push(StyleDeclaration::align_items(value.into()));
+    },
+    flex: Flex => [FlexGrow, FlexShrink, FlexBasis] |value, target| {
+      target.push(StyleDeclaration::flex_grow(Some(FlexGrow(value.grow))));
+      target.push(StyleDeclaration::flex_shrink(Some(FlexGrow(value.shrink))));
+      target.push(StyleDeclaration::flex_basis(Some(value.basis)));
+    },
+    place_items: PlaceItems => [AlignItems, JustifyItems] |value, target| {
+      target.push(StyleDeclaration::align_items(value.align));
+      target.push(StyleDeclaration::justify_items(value.justify));
+    },
+    place_content: PlaceContent => [AlignContent, JustifyContent] |value, target| {
+      target.push(StyleDeclaration::align_content(value.align));
+      target.push(StyleDeclaration::justify_content(value.justify));
+    },
+    place_self: PlaceSelf => [AlignSelf, JustifySelf] |value, target| {
+      target.push(StyleDeclaration::align_self(value.align));
+      target.push(StyleDeclaration::justify_self(value.justify));
+    },
+    grid_column: GridLine => [GridColumnStart, GridColumnEnd] |value, target| {
+      target.push(StyleDeclaration::grid_column_start(value.start));
+      target.push(StyleDeclaration::grid_column_end(value.end));
+    },
+    grid_row: GridLine => [GridRowStart, GridRowEnd] |value, target| {
+      target.push(StyleDeclaration::grid_row_start(value.start));
+      target.push(StyleDeclaration::grid_row_end(value.end));
+    },
+    grid_template: GridTemplate => [GridTemplateRows, GridTemplateColumns, GridTemplateAreas] |value, target| {
+      target.push(StyleDeclaration::grid_template_rows(value.rows));
+      target.push(StyleDeclaration::grid_template_columns(value.columns));
+      target.push(StyleDeclaration::grid_template_areas(value.areas));
+    },
+    grid: Grid => [GridTemplateRows, GridTemplateColumns, GridTemplateAreas, GridAutoFlow, GridAutoRows, GridAutoColumns] |value, target| {
+      target.push(StyleDeclaration::grid_template_rows(value.template.rows));
+      target.push(StyleDeclaration::grid_template_columns(value.template.columns));
+      target.push(StyleDeclaration::grid_template_areas(value.template.areas));
+      target.push(StyleDeclaration::grid_auto_flow(value.auto_flow));
+      target.push(StyleDeclaration::grid_auto_rows(value.auto_rows));
+      target.push(StyleDeclaration::grid_auto_columns(value.auto_columns));
+    },
+    grid_area: GridArea => [GridRowStart, GridColumnStart, GridRowEnd, GridColumnEnd] |value, target| {
+      target.push(StyleDeclaration::grid_row_start(value.row_start));
+      target.push(StyleDeclaration::grid_column_start(value.column_start));
+      target.push(StyleDeclaration::grid_row_end(value.row_end));
+      target.push(StyleDeclaration::grid_column_end(value.column_end));
+    },
+    border_radius: BorderRadius => [BorderTopLeftRadius, BorderTopRightRadius, BorderBottomRightRadius, BorderBottomLeftRadius] |value, target| {
+      push_four_side_declarations!(
+        target,
+        value.0.0,
+        border_top_left_radius,
+        border_top_right_radius,
+        border_bottom_right_radius,
+        border_bottom_left_radius
+      );
+    },
+    corner_shape: Sides<Superellipse> => [CornerTopLeftShape, CornerTopRightShape, CornerBottomRightShape, CornerBottomLeftShape] |value, target| {
+      push_four_side_declarations!(
+        target,
+        value.0,
+        corner_top_left_shape,
+        corner_top_right_shape,
+        corner_bottom_right_shape,
+        corner_bottom_left_shape
+      );
+    },
+    border_width: Sides<LineWidth> => [BorderTopWidth, BorderRightWidth, BorderBottomWidth, BorderLeftWidth] |value, target| {
+      push_four_side_declarations!(
+        target,
+        value.0,
+        border_top_width,
+        border_right_width,
+        border_bottom_width,
+        border_left_width
+      );
+    },
+    border_inline_width: SpacePair<LineWidth> => [BorderInlineStartWidth, BorderInlineEndWidth] |value, target| {
+      push_axis_declarations!(
+        target,
+        value,
+        border_inline_start_width,
+        border_inline_end_width
+      );
+    },
+    border_inline_style: SpacePair<BorderStyle> => [BorderInlineStartStyle, BorderInlineEndStyle] |value, target| {
+      push_axis_declarations!(
+        target,
+        value,
+        border_inline_start_style,
+        border_inline_end_style
+      );
+    },
+    border_inline_color: SpacePair<ColorInput> => [BorderInlineStartColor, BorderInlineEndColor] |value, target| {
+      push_axis_declarations!(
+        target,
+        value,
+        border_inline_start_color,
+        border_inline_end_color
+      );
+    },
+    border_block_style: SpacePair<BorderStyle> => [BorderTopStyle, BorderBottomStyle] |value, target| {
+      push_axis_declarations!(target, value, border_top_style, border_bottom_style);
+    },
+    border_block_color: SpacePair<ColorInput> => [BorderTopColor, BorderBottomColor] |value, target| {
+      push_axis_declarations!(target, value, border_top_color, border_bottom_color);
+    },
+    border_block_start_width: LineWidth => [BorderTopWidth] |value, target| {
+      target.push(StyleDeclaration::border_top_width(value));
+    },
+    border_block_end_width: LineWidth => [BorderBottomWidth] |value, target| {
+      target.push(StyleDeclaration::border_bottom_width(value));
+    },
+    border_block_start_style: BorderStyle => [BorderTopStyle] |value, target| {
+      target.push(StyleDeclaration::border_top_style(value));
+    },
+    border_block_end_style: BorderStyle => [BorderBottomStyle] |value, target| {
+      target.push(StyleDeclaration::border_bottom_style(value));
+    },
+    border_block_start_color: ColorInput => [BorderTopColor] |value, target| {
+      target.push(StyleDeclaration::border_top_color(value));
+    },
+    border_block_end_color: ColorInput => [BorderBottomColor] |value, target| {
+      target.push(StyleDeclaration::border_bottom_color(value));
+    },
+    border_block_width: SpacePair<LineWidth> => [BorderTopWidth, BorderBottomWidth] |value, target| {
+      push_axis_declarations!(
+        target,
+        value,
+        border_top_width,
+        border_bottom_width
+      );
+    },
+    border: Border => [BorderTopWidth, BorderRightWidth, BorderBottomWidth, BorderLeftWidth, BorderTopStyle, BorderRightStyle, BorderBottomStyle, BorderLeftStyle, BorderTopColor, BorderRightColor, BorderBottomColor, BorderLeftColor] |value, target| {
+      target.push(StyleDeclaration::border_top_width(value.width));
+      target.push(StyleDeclaration::border_right_width(value.width));
+      target.push(StyleDeclaration::border_bottom_width(value.width));
+      target.push(StyleDeclaration::border_left_width(value.width));
+      target.push(StyleDeclaration::border_top_style(value.style));
+      target.push(StyleDeclaration::border_right_style(value.style));
+      target.push(StyleDeclaration::border_bottom_style(value.style));
+      target.push(StyleDeclaration::border_left_style(value.style));
+      target.push(StyleDeclaration::border_top_color(value.color));
+      target.push(StyleDeclaration::border_right_color(value.color));
+      target.push(StyleDeclaration::border_bottom_color(value.color));
+      target.push(StyleDeclaration::border_left_color(value.color));
+    },
+    border_top: Border => [BorderTopWidth, BorderTopStyle, BorderTopColor] |value, target| {
+      target.push(StyleDeclaration::border_top_width(value.width));
+      target.push(StyleDeclaration::border_top_style(value.style));
+      target.push(StyleDeclaration::border_top_color(value.color));
+    },
+    border_right: Border => [BorderRightWidth, BorderRightStyle, BorderRightColor] |value, target| {
+      target.push(StyleDeclaration::border_right_width(value.width));
+      target.push(StyleDeclaration::border_right_style(value.style));
+      target.push(StyleDeclaration::border_right_color(value.color));
+    },
+    border_bottom: Border => [BorderBottomWidth, BorderBottomStyle, BorderBottomColor] |value, target| {
+      target.push(StyleDeclaration::border_bottom_width(value.width));
+      target.push(StyleDeclaration::border_bottom_style(value.style));
+      target.push(StyleDeclaration::border_bottom_color(value.color));
+    },
+    border_left: Border => [BorderLeftWidth, BorderLeftStyle, BorderLeftColor] |value, target| {
+      target.push(StyleDeclaration::border_left_width(value.width));
+      target.push(StyleDeclaration::border_left_style(value.style));
+      target.push(StyleDeclaration::border_left_color(value.color));
+    },
+    border_inline: Border => [BorderInlineStartWidth, BorderInlineEndWidth, BorderInlineStartStyle, BorderInlineEndStyle, BorderInlineStartColor, BorderInlineEndColor] |value, target| {
+      target.push(StyleDeclaration::border_inline_start_width(value.width));
+      target.push(StyleDeclaration::border_inline_end_width(value.width));
+      target.push(StyleDeclaration::border_inline_start_style(value.style));
+      target.push(StyleDeclaration::border_inline_end_style(value.style));
+      target.push(StyleDeclaration::border_inline_start_color(value.color));
+      target.push(StyleDeclaration::border_inline_end_color(value.color));
+    },
+    border_inline_start: Border => [BorderInlineStartWidth, BorderInlineStartStyle, BorderInlineStartColor] |value, target| {
+      target.push(StyleDeclaration::border_inline_start_width(value.width));
+      target.push(StyleDeclaration::border_inline_start_style(value.style));
+      target.push(StyleDeclaration::border_inline_start_color(value.color));
+    },
+    border_inline_end: Border => [BorderInlineEndWidth, BorderInlineEndStyle, BorderInlineEndColor] |value, target| {
+      target.push(StyleDeclaration::border_inline_end_width(value.width));
+      target.push(StyleDeclaration::border_inline_end_style(value.style));
+      target.push(StyleDeclaration::border_inline_end_color(value.color));
+    },
+    border_block: Border => [BorderTopWidth, BorderBottomWidth, BorderTopStyle, BorderBottomStyle, BorderTopColor, BorderBottomColor] |value, target| {
+      target.push(StyleDeclaration::border_top_width(value.width));
+      target.push(StyleDeclaration::border_bottom_width(value.width));
+      target.push(StyleDeclaration::border_top_style(value.style));
+      target.push(StyleDeclaration::border_bottom_style(value.style));
+      target.push(StyleDeclaration::border_top_color(value.color));
+      target.push(StyleDeclaration::border_bottom_color(value.color));
+    },
+    border_block_start: Border => [BorderTopWidth, BorderTopStyle, BorderTopColor] |value, target| {
+      target.push(StyleDeclaration::border_top_width(value.width));
+      target.push(StyleDeclaration::border_top_style(value.style));
+      target.push(StyleDeclaration::border_top_color(value.color));
+    },
+    border_block_end: Border => [BorderBottomWidth, BorderBottomStyle, BorderBottomColor] |value, target| {
+      target.push(StyleDeclaration::border_bottom_width(value.width));
+      target.push(StyleDeclaration::border_bottom_style(value.style));
+      target.push(StyleDeclaration::border_bottom_color(value.color));
+    },
+    border_style: Sides<BorderStyle> => [BorderTopStyle, BorderRightStyle, BorderBottomStyle, BorderLeftStyle] |value, target| {
+      push_four_side_declarations!(
+        target,
+        value.0,
+        border_top_style,
+        border_right_style,
+        border_bottom_style,
+        border_left_style
+      );
+    },
+    border_color: Sides<ColorInput> => [BorderTopColor, BorderRightColor, BorderBottomColor, BorderLeftColor] |value, target| {
+      push_four_side_declarations!(
+        target,
+        value.0,
+        border_top_color,
+        border_right_color,
+        border_bottom_color,
+        border_left_color
+      );
+    },
+    outline: Border => [OutlineWidth, OutlineStyle, OutlineColor] |value, target| {
+      target.push(StyleDeclaration::outline_width(value.width));
+      target.push(StyleDeclaration::outline_style(value.style));
+      target.push(StyleDeclaration::outline_color(value.color));
+    },
+    overflow: SpacePair<Overflow> => [OverflowX, OverflowY] |value, target| {
+      push_axis_declarations!(target, value, overflow_x, overflow_y);
+    },
+    overflow_inline: Overflow => [OverflowX] |value, target| {
+      target.push(StyleDeclaration::overflow_x(value));
+    },
+    overflow_block: Overflow => [OverflowY] |value, target| {
+      target.push(StyleDeclaration::overflow_y(value));
+    },
+    background: Backgrounds => [BackgroundImage, BackgroundPosition, BackgroundSize, BackgroundRepeat, BackgroundColor, BackgroundClip, BackgroundOrigin] |value, target| {
+      target.push(StyleDeclaration::background_position(
+        value.iter().map(|background| background.position).collect(),
+      ));
+      target.push(StyleDeclaration::background_size(
+        value.iter().map(|background| background.size).collect(),
+      ));
+      target.push(StyleDeclaration::background_repeat(
+        value.iter().map(|background| background.repeat).collect(),
+      ));
+      target.push(StyleDeclaration::background_color(
+        value
+          .iter()
+          .filter_map(|background| background.color)
+          .next_back()
+          .unwrap_or(ColorInput::transparent()),
+      ));
+      target.push(StyleDeclaration::background_clip(
+        value
+          .last()
+          .map(|background| background.clip)
+          .unwrap_or_default(),
+      ));
+      target.push(StyleDeclaration::background_origin(
+        value
+          .last()
+          .map(|background| background.origin)
+          .unwrap_or_default(),
+      ));
+      target.push(StyleDeclaration::background_image(Some(
+        value
+          .into_iter()
+          .map(|background| background.image)
+          .collect(),
+      )));
+    },
+    font_synthesis: FontSynthesis => [FontSynthesisWeight, FontSynthesisStyle, FontSynthesisSmallCaps] |value, target| {
+      target.push(StyleDeclaration::font_synthesis_weight(value.weight));
+      target.push(StyleDeclaration::font_synthesis_style(value.style));
+      target.push(StyleDeclaration::font_synthesis_small_caps(value.small_caps));
+    },
+    font: FontShorthand => [FontStyle, FontVariantLigatures, FontVariantCaps, FontVariantNumeric, FontVariantEastAsian, FontVariantPosition, FontWeight, FontStretch, FontSize, LineHeight, FontFamily, FontOpticalSizing, FontKerning, FontFeatureSettings, FontVariationSettings, FontLanguageOverride] |value, target| {
+      target.push(StyleDeclaration::font_style(value.style));
+      target.push(StyleDeclaration::font_variant_ligatures(FontVariantLigatures::default()));
+      target.push(StyleDeclaration::font_variant_caps(value.caps));
+      target.push(StyleDeclaration::font_variant_numeric(FontVariantNumeric::default()));
+      target.push(StyleDeclaration::font_variant_east_asian(FontVariantEastAsian::default()));
+      target.push(StyleDeclaration::font_variant_position(FontVariantPosition::default()));
+      target.push(StyleDeclaration::font_weight(value.weight));
+      target.push(StyleDeclaration::font_stretch(value.stretch));
+      target.push(StyleDeclaration::font_size(value.size));
+      target.push(StyleDeclaration::line_height(value.line_height));
+      target.push(StyleDeclaration::font_family(value.family));
+      target.push(StyleDeclaration::font_optical_sizing(FontOpticalSizing::default()));
+      target.push(StyleDeclaration::font_kerning(FontKerning::default()));
+      target.push(StyleDeclaration::font_feature_settings(FontFeatureSettings::default()));
+      target.push(StyleDeclaration::font_variation_settings(FontVariationSettings::default()));
+      target.push(StyleDeclaration::font_language_override(FontLanguageOverride::default()));
+    },
+    font_variant: FontVariant => [FontVariantLigatures, FontVariantNumeric, FontVariantEastAsian, FontVariantCaps, FontVariantPosition] |value, target| {
+      target.push(StyleDeclaration::font_variant_ligatures(value.ligatures));
+      target.push(StyleDeclaration::font_variant_numeric(value.numeric));
+      target.push(StyleDeclaration::font_variant_east_asian(value.east_asian));
+      target.push(StyleDeclaration::font_variant_caps(value.caps));
+      target.push(StyleDeclaration::font_variant_position(value.position));
+    },
+    webkit_text_stroke: Option<TextStroke> => [WebkitTextStrokeWidth, WebkitTextStrokeColor] |value, target| {
+      target.push(StyleDeclaration::webkit_text_stroke_width(
+        value.map(|value| value.width),
+      ));
+      target.push(StyleDeclaration::webkit_text_stroke_color(
+        value.and_then(|value| value.color),
+      ));
+    },
+    text_decoration: TextDecoration => [TextDecorationLine, TextDecorationStyle, TextDecorationColor, TextDecorationThickness] |value, target| {
+      target.push(StyleDeclaration::text_decoration_line(Some(value.line)));
+      target.push(StyleDeclaration::text_decoration_style(value.style));
+      target.push(StyleDeclaration::text_decoration_color(value.color));
+      target.push(StyleDeclaration::text_decoration_thickness(value.thickness));
+    },
+    white_space: WhiteSpace => [TextWrapMode, WhiteSpaceCollapse] |value, target| {
+      target.push(StyleDeclaration::text_wrap_mode(value.text_wrap_mode));
+      target.push(StyleDeclaration::white_space_collapse(
+        value.white_space_collapse,
+      ));
+    },
+    text_wrap: TextWrap => [TextWrapMode, TextWrapStyle] |value, target| {
+      target.push(StyleDeclaration::text_wrap_mode(value.mode));
+      target.push(StyleDeclaration::text_wrap_style(value.style));
+    },
+    line_clamp: LineClamp => [MaxLines, BlockEllipsis, Continue] |value, target| {
+      target.push(StyleDeclaration::max_lines(value.max_lines));
+      target.push(StyleDeclaration::block_ellipsis(value.block_ellipsis));
+      target.push(StyleDeclaration::r#continue(value.line_continue));
+    },
+    webkit_line_clamp: WebkitLineClamp => [MaxLines, BlockEllipsis, Continue] |value, target| {
+      target.push(StyleDeclaration::max_lines(value.0.max_lines));
+      target.push(StyleDeclaration::block_ellipsis(value.0.block_ellipsis));
+      target.push(StyleDeclaration::r#continue(value.0.line_continue));
+    },
+  }
+}
+
+impl StyleDeclaration {
+  /// Blink's `StyleCascade::ApplyWideOverlapping` for `vertical-align`.
+  fn apply_wide_overlapping(&self, style: &mut ComputedStyle) {
+    if matches!(
+      self,
+      Self::VerticalAlign(_) | Self::CssWideKeyword(LonghandId::VerticalAlign, _)
+    ) {
+      style.box_data_mut().baseline_source = BaselineSource::default();
+    }
+  }
+
+  /// Applies this declaration against `parent`, or as the root's when there is none.
+  pub(crate) fn apply(self, style: &mut ComputedStyle, parent: Option<&ComputedStyle>) {
+    match parent {
+      Some(parent) => self.apply_with_parent(style, parent),
+      None => self.apply_to_computed(style),
+    }
+  }
+}
+
+// Hand-written so that a `Length` still reaches the sizing longhands, which the
+// CSS Sizing keywords moved off `Length`.
+impl StyleDeclaration {
+  /// Returns a declaration for this property.
+  pub fn width(value: impl Into<Size>) -> Self {
+    Self::Width(value.into())
+  }
+
+  /// Returns a declaration for this property.
+  pub fn height(value: impl Into<Size>) -> Self {
+    Self::Height(value.into())
+  }
+}
+
+/// CSS-wide keywords that can target any longhand declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CssWideKeyword {
+  /// Reset the targeted longhand to its initial value.
+  Initial,
+  /// Inherit the targeted longhand from the parent computed style.
+  Inherit,
+  /// Apply CSS `unset` semantics to the targeted longhand.
+  Unset,
+}
+
+impl<'i> FromCss<'i> for CssWideKeyword {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let ident = input.expect_ident_cloned()?;
+
+    match_ignore_ascii_case! { ident.as_ref(),
+      "initial" => Ok(Self::Initial),
+      "inherit" => Ok(Self::Inherit),
+      "unset" => Ok(Self::Unset),
+      _ => Err(unexpected_token!(&Token::Ident(ident))),
+    }
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["initial", "inherit", "unset"];
+}
+
+/// The set of properties marked `!important`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclarationImportance {
+  pub(crate) longhands: PropertyMask,
+  /// A custom property affects no longhand, so the mask above cannot record
+  /// one and the cascade would read the block as carrying nothing important.
+  has_custom_property: bool,
+}
+
+impl DeclarationImportance {
+  /// Whether no property is marked important.
+  pub fn is_empty(&self) -> bool {
+    !self.has_custom_property && self.longhands.iter().next().is_none()
+  }
+
+  /// Records what a declaration marks important.
+  pub(crate) fn insert_declaration(&mut self, declaration: &StyleDeclaration) {
+    self
+      .longhands
+      .extend(declaration.affected_longhands().iter());
+
+    self.has_custom_property |= matches!(declaration, StyleDeclaration::CustomProperty(..));
+  }
+
+  /// Merges another importance set.
+  pub(crate) fn extend_from(&mut self, other: &Self) {
+    self.longhands.union(&other.longhands);
+    self.has_custom_property |= other.has_custom_property;
+  }
+}
+
+impl<T> From<T> for DeclarationImportance
+where
+  T: IntoIterator<Item = LonghandId>,
+{
+  fn from(value: T) -> Self {
+    Self {
+      longhands: value.into_iter().collect(),
+      has_custom_property: false,
+    }
+  }
+}
+
+/// Which declarations in a block carry `!important`, one bit per position.
+/// Stays unallocated while nothing is important, which is the common block.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ImportantBits(ThinVec<u64>);
+
+impl ImportantBits {
+  fn get(&self, index: usize) -> bool {
+    self
+      .0
+      .get(index / 64)
+      .is_some_and(|word| word & (1 << (index % 64)) != 0)
+  }
+
+  fn set(&mut self, index: usize) {
+    let word = index / 64;
+
+    if word >= self.0.len() {
+      self.0.resize(word + 1, 0);
+    }
+
+    self.0[word] |= 1 << (index % 64);
+  }
+
+  fn push(&mut self, index: usize, important: bool) {
+    if important {
+      self.set(index);
+    }
+  }
+
+  fn set_all(&mut self, len: usize) {
+    for index in 0..len {
+      self.set(index);
+    }
+  }
+
+  fn append(&mut self, offset: usize, other: &Self) {
+    for index in 0..other.0.len() * 64 {
+      if other.get(index) {
+        self.set(offset + index);
+      }
+    }
+  }
+}
+
+/// Ordered specified declarations plus the set of important properties.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StyleDeclarationBlock {
+  /// Ordered declarations in source order.
+  pub(crate) declarations: ThinVec<StyleDeclaration>,
+  /// Custom property names a utility engine wrote as the element's own
+  /// composition state, which stops at the element that set it.
+  pub(crate) element_state: SmallVec<[Box<str>; 2]>,
+  /// Positional against `declarations`, because the mask below unions the block
+  /// and cannot tell `p-2 !p-4` apart once both have marked the same longhand.
+  important: ImportantBits,
+  /// Properties that were marked with `!important`.
+  pub importance: DeclarationImportance,
+}
+
+impl StyleDeclarationBlock {
+  fn from_parsed_declarations(declarations: ParsedDeclarations, important: bool) -> Self {
+    let mut block = Self::default();
+    block.append_parsed_declarations(declarations, important);
+    block
+  }
+
+  /// Records a name a utility engine wrote as this element's own state.
+  pub(crate) fn push_element_state(&mut self, name: &str) {
+    if self
+      .element_state
+      .iter()
+      .all(|existing| existing.as_ref() != name)
+    {
+      self.element_state.push(name.into());
+    }
+  }
+
+  pub(crate) fn extend_element_state<'n>(&mut self, names: impl IntoIterator<Item = &'n str>) {
+    for name in names {
+      self.push_element_state(name);
+    }
+  }
+
+  /// Reserves room for `additional` more declarations.
+  pub(crate) fn reserve(&mut self, additional: usize) {
+    self.declarations.reserve(additional);
+  }
+
+  /// Appends a declaration and records whether it was important.
+  pub fn push(&mut self, declaration: StyleDeclaration, important: bool) {
+    if important {
+      self.importance.insert_declaration(&declaration);
+    }
+    self.important.push(self.declarations.len(), important);
+    self.declarations.push(declaration);
+  }
+
+  fn append_parsed_declarations(&mut self, declarations: ParsedDeclarations, important: bool) {
+    for declaration in declarations {
+      self.push(declaration, important);
+    }
+  }
+
+  /// Marks the block `!important`, the way a shorthand hands the marker to
+  /// every longhand it expands into.
+  pub(crate) fn mark_important(&mut self) {
+    for declaration in &self.declarations {
+      self.importance.insert_declaration(declaration);
+    }
+    self.important.set_all(self.declarations.len());
+  }
+
+  /// Splits the block at the two ends of the cascade: a layer's important
+  /// declarations beat the layers that beat its normal ones.
+  pub(crate) fn split_importance(self) -> (Self, Self) {
+    if self.importance.is_empty() {
+      return (self, Self::default());
+    }
+
+    let mut normal = Self::default();
+    let mut important = Self::default();
+
+    let flags = self.important;
+    let element_state = self.element_state;
+
+    for (index, declaration) in self.declarations.into_iter().enumerate() {
+      let is_important = flags.get(index);
+      let target = if is_important {
+        &mut important
+      } else {
+        &mut normal
+      };
+
+      // The name belongs to whichever side kept the declaration that wrote it,
+      // which can be both.
+      if let StyleDeclaration::CustomProperty(name, _) = &declaration
+        && element_state.iter().any(|state| state.as_ref() == name)
+      {
+        target.push_element_state(name);
+      }
+
+      target.push(declaration, is_important);
+    }
+
+    (normal, important)
+  }
+
+  /// Appends another block's declarations and importance.
+  pub(crate) fn append(&mut self, other: Self) {
+    self.importance.extend_from(&other.importance);
+    self.extend_element_state(other.element_state.iter().map(Box::as_ref));
+    self
+      .important
+      .append(self.declarations.len(), &other.important);
+    self.declarations.extend(other.declarations);
+  }
+
+  /// Iterates over the declarations in source order.
+  pub fn iter(&self) -> std::slice::Iter<'_, StyleDeclaration> {
+    self.declarations.iter()
+  }
+
+  /// Whether a declaration may copy a non-inherited value from the parent.
+  pub(crate) fn inherits_explicitly(&self) -> bool {
+    self
+      .declarations
+      .iter()
+      .any(StyleDeclaration::inherits_explicitly)
+  }
+
+  /// The number of declarations in this block.
+  pub fn len(&self) -> usize {
+    self.declarations.len()
+  }
+
+  /// Whether this block has no declarations.
+  pub fn is_empty(&self) -> bool {
+    self.declarations.is_empty()
+  }
+
+  /// Collects resource URLs referenced by declarations in this block.
+  pub fn image_urls(&self) -> impl Iterator<Item = &str> {
+    fn background_image_url(image: &BackgroundImage) -> Option<&str> {
+      if let BackgroundImage::Url(url) = image {
+        Some(url.as_ref())
+      } else {
+        None
+      }
+    }
+
+    self
+      .iter()
+      .flat_map(|declaration| -> Box<dyn Iterator<Item = &str> + '_> {
+        match declaration {
+          StyleDeclaration::BackgroundImage(Some(images))
+          | StyleDeclaration::MaskImage(Some(images)) => {
+            Box::new(images.iter().filter_map(background_image_url))
+          }
+          StyleDeclaration::ListStyleImage(image) => {
+            Box::new(image.image().and_then(background_image_url).into_iter())
+          }
+          StyleDeclaration::Content(ContentValue::Items(items)) => {
+            Box::new(items.iter().filter_map(|item| match item {
+              ContentItem::Image(image) => background_image_url(image.as_ref()),
+              _ => None,
+            }))
+          }
+          _ => Box::new(std::iter::empty()),
+        }
+      })
+  }
+
+  /// Parses one declaration block for the given property name.
+  pub(crate) fn parse<'i>(name: &str, input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let property = PropertyId::from_kebab_case(name);
+    let start = input.position();
+
+    // Detect var() up-front; otherwise a partial parse (e.g. `0 var(--y)`)
+    // would commit before deferral. See #712.
+    if !matches!(property, PropertyId::Ignored | PropertyId::Custom) {
+      let state = input.state();
+      skip_to_bang(input);
+      let specified_value = input.slice_from(start).trim();
+      if contains_var_function(specified_value) {
+        return Ok(Self::from_parsed_declarations(
+          smallvec![StyleDeclaration::Deferred(DeferredDeclaration {
+            property,
+            specified_value: specified_value.to_owned(),
+          })],
+          false,
+        ));
+      }
+      input.reset(&state);
+    }
+
+    property
+      .parse_declarations(name, input)
+      .map(|declarations| Self::from_parsed_declarations(declarations, false))
+  }
+
+  /// Parses a declaration list as a `style` attribute is read, dropping only the declarations that fail.
+  pub fn parse_loosy(input: &str) -> Self {
+    let mut parser = Parser::new(input);
+    let mut declaration_parser = StyleDeclarationParser;
+    let mut block = Self::default();
+
+    for declarations in RuleBodyParser::new(&mut parser, &mut declaration_parser).flatten() {
+      block.append(declarations);
+    }
+    block
+  }
+}
+
+impl FromStr for StyleDeclarationBlock {
+  type Err = StyleDeclarationBlockParseError;
+
+  fn from_str(input: &str) -> Result<Self, Self::Err> {
+    let mut parser = Parser::new(input);
+    let mut declaration_parser = StyleDeclarationParser;
+    let mut block = Self::default();
+
+    for result in RuleBodyParser::new(&mut parser, &mut declaration_parser) {
+      match result {
+        Ok(declarations) => block.append(declarations),
+        Err((error, context, _)) => {
+          return Err(StyleDeclarationBlockParseError::InvalidDeclarationBlock {
+            input: input.to_owned(),
+            context: context.to_owned(),
+            reason: format!("{error:?}"),
+          });
+        }
+      }
+    }
+
+    Ok(block)
+  }
+}
+
+impl FromStr for Style {
+  type Err = StyleDeclarationBlockParseError;
+
+  fn from_str(input: &str) -> Result<Self, Self::Err> {
+    StyleDeclarationBlock::from_str(input).map(Into::into)
+  }
+}
+
+#[cfg(test)]
+#[path = "stylesheets_tests.rs"]
+mod tests;

@@ -1,6 +1,6 @@
 # Analysis contracts and recipe bindings
 
-Read actual schema and event coverage first. Archives are sealed on a timer (about every 10 minutes by default). Accepted events may not yet be published; publication time is not a guarantee that earlier client events have all arrived. Select an explicit defensible observation cutoff and describe late-arrival limitations.
+Read actual schema and event coverage first. Archives are published on a timer (about every 10 minutes by default). Accepted events may not yet be published (`slurp sync --now` publishes first, with the admin token); publication time is not a guarantee that earlier client events have all arrived. Select an explicit defensible observation cutoff and describe late-arrival limitations.
 
 Query recipes in ../queries are runnable examples over Slurp's events table. Their parameters CTE contains explicit example event names and cutoff values. Copy a recipe into the project and change that CTE for the actual product. Run with `slurp sql --file path.sql`. Choose person/account/project identity deliberately. These starter recipes use identified users and exclude empty/missing user_id; report identity coverage before interpreting results. Anonymous activity cannot establish identified-user retention.
 

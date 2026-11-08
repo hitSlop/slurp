@@ -373,7 +373,8 @@ pub fn build_with_params(
             row.clear();
         }
     }
-    for (kind, body_text) in doc.blocks {
+    for (block_index, (kind, body_text)) in doc.blocks.into_iter().enumerate() {
+        let block_line = doc.block_lines.get(block_index).copied();
         if kind == "markdown" {
             let html =
                 slurp_document::render(&body_text, &doc.params.clone().into_iter().collect());
@@ -550,6 +551,29 @@ pub fn build_with_params(
                         ..Default::default()
                     },
                 )?;
+                let label = spec["title"]
+                    .as_str()
+                    .map(|title| format!("chart \"{title}\""))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "chart for query {}",
+                            spec["query"].as_str().unwrap_or_default()
+                        )
+                    });
+                for message in &chart.warnings {
+                    warnings.push(crate::report_check::Problem::warning(
+                        block_line,
+                        &label,
+                        message.clone(),
+                    ));
+                }
+                for path in &chart.empty_data {
+                    warnings.push(crate::report_check::Problem::warning(
+                        block_line,
+                        &label,
+                        format!("no data marks remain after transforms at spec{path}"),
+                    ));
+                }
                 body.push_str(&chart.svg);
             }
             _ => bail!("unsupported block"),

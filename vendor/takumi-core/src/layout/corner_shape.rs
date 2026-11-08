@@ -1,0 +1,176 @@
+//! Superellipse `corner-shape` contours in a unit square, from `(0, 1)` to `(1, 0)` around the
+//! outer corner at `(1, 1)`.
+
+use crate::style::Superellipse;
+
+/// Control-point ratio that turns four cubics into a circle.
+pub(crate) const KAPPA: f32 = 4.0 / 3.0 * (std::f32::consts::SQRT_2 - 1.0);
+
+/// A corner outline in normalized coordinates, traversed from `(0, 1)` to `(1, 0)`.
+pub(crate) enum CornerContour {
+  /// Straight diagonal chord (`bevel`).
+  Bevel,
+  /// Two straight segments through the center point (`notch`).
+  Notch,
+  /// A single cubic Bézier: `[control1, control2, end]`.
+  Cubic([[f32; 2]; 3]),
+  /// Two cubic Bézier segments meeting at the exact superellipse midpoint.
+  Cubics([[f32; 2]; 3], [[f32; 2]; 3]),
+}
+
+/// The normalized contour for a corner shape other than `round`, which keeps the quarter ellipse.
+pub(crate) fn corner_contour(shape: Superellipse) -> CornerContour {
+  if shape.is_fully_concave() {
+    return CornerContour::Notch;
+  }
+
+  let exponent = shape.exponent();
+
+  if exponent == 1.0 {
+    return CornerContour::Bevel;
+  }
+
+  if exponent > 1.0 {
+    convex_contour(exponent)
+  } else {
+    // A concave superellipse is the inverse exponent's convex curve mirrored across the chord.
+    match convex_contour(1.0 / exponent) {
+      CornerContour::Cubic([c1, c2, _]) => {
+        CornerContour::Cubic([reflect(c2), reflect(c1), [1.0, 0.0]])
+      }
+      CornerContour::Cubics([c1, c2, mid], [c4, c5, _]) => CornerContour::Cubics(
+        [reflect(c5), reflect(c4), reflect(mid)],
+        [reflect(c2), reflect(c1), [1.0, 0.0]],
+      ),
+      contour => contour,
+    }
+  }
+}
+
+fn reflect(point: [f32; 2]) -> [f32; 2] {
+  [1.0 - point[0], 1.0 - point[1]]
+}
+
+fn convex_contour(exponent: f32) -> CornerContour {
+  if exponent == 2.0 {
+    return CornerContour::Cubic([[KAPPA, 1.0], [1.0, KAPPA], [1.0, 0.0]]);
+  }
+
+  let (a, b, half) = approximate_half_corner(f64::from(exponent));
+
+  CornerContour::Cubics(
+    [[a, 1.0], [half - b, half + b], [half, half]],
+    [[half + b, half - b], [1.0, a], [1.0, 0.0]],
+  )
+}
+
+/// The cubic fitting the first half of a convex superellipse corner, from Chromium's
+/// [`path_builder.cc`](https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/geometry/path_builder.cc):
+/// control points `(a, 1)` and `(half - b, half + b)` to `(half, half)`.
+fn approximate_half_corner(exponent: f64) -> (f32, f32, f32) {
+  const P: [f64; 7] = [
+    1.2430920942724248,
+    2.010479023614843,
+    0.32922901179443753,
+    0.2823023142212073,
+    1.3473704261055421,
+    2.9149468637949814,
+    0.9106507102917086,
+  ];
+
+  let s = exponent.log2();
+  let slope = P[0] + (P[6] - P[0]) * 0.5 * (1.0 + (P[5] * (s - P[1])).tanh());
+  let base = 1.0 / (1.0 + (slope * P[1]).exp());
+  let logistic = 1.0 / (1.0 + (-slope * (s - P[1])).exp());
+  let a = (logistic - base) / (1.0 - base);
+  let b = P[2] * (-P[3] * s.powf(P[4])).exp();
+  let half = 0.5f64.powf(1.0 / exponent);
+
+  (a as f32, b as f32, half as f32)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn superellipse_error(exponent: f32, contour: &CornerContour) -> f32 {
+    let cubics: Vec<([f32; 2], [[f32; 2]; 3])> = match contour {
+      CornerContour::Cubic(cubic) => vec![([0.0, 1.0], *cubic)],
+      CornerContour::Cubics(first, second) => {
+        vec![([0.0, 1.0], *first), (first[2], *second)]
+      }
+      _ => panic!("expected curved contour"),
+    };
+
+    let mut max_error: f32 = 0.0;
+
+    for (start, [c1, c2, end]) in cubics {
+      for step in 0..=16 {
+        let t = step as f32 / 16.0;
+        let u = 1.0 - t;
+        let x = u * u * u * start[0]
+          + 3.0 * u * u * t * c1[0]
+          + 3.0 * u * t * t * c2[0]
+          + t * t * t * end[0];
+        let y = u * u * u * start[1]
+          + 3.0 * u * u * t * c1[1]
+          + 3.0 * u * t * t * c2[1]
+          + t * t * t * end[1];
+
+        let residual = x.max(0.0).powf(exponent) + y.max(0.0).powf(exponent) - 1.0;
+
+        max_error = max_error.max(residual.abs());
+      }
+    }
+
+    max_error
+  }
+
+  #[test]
+  fn squircle_contour_stays_near_superellipse() {
+    let contour = corner_contour(crate::style::Superellipse::SQUIRCLE);
+
+    assert!(superellipse_error(4.0, &contour) < 0.05);
+  }
+
+  #[test]
+  fn convex_midpoint_is_exact() {
+    for shape in [
+      crate::style::Superellipse(0.5),
+      crate::style::Superellipse::SQUIRCLE,
+      crate::style::Superellipse(3.0),
+    ] {
+      let CornerContour::Cubics([_, _, [x, y]], _) = corner_contour(shape) else {
+        panic!("expected two cubics");
+      };
+      let expected = 0.5f32.powf(1.0 / shape.exponent());
+
+      assert!((x - expected).abs() < 1e-5);
+      assert!((y - expected).abs() < 1e-5);
+    }
+  }
+
+  #[test]
+  fn scoop_mirrors_round_across_the_chord() {
+    let CornerContour::Cubic([c1, c2, end]) = corner_contour(crate::style::Superellipse::SCOOP)
+    else {
+      panic!("expected single cubic");
+    };
+
+    assert_eq!(end, [1.0, 0.0]);
+    assert_eq!(c1, [0.0, 1.0 - KAPPA]);
+    assert_eq!(c2, [1.0 - KAPPA, 0.0]);
+  }
+
+  #[test]
+  fn bevel_and_notch_are_straight() {
+    assert!(matches!(
+      corner_contour(crate::style::Superellipse::BEVEL),
+      CornerContour::Bevel
+    ));
+    assert!(matches!(
+      corner_contour(crate::style::Superellipse::NOTCH),
+      CornerContour::Notch
+    ));
+  }
+}

@@ -1,0 +1,331 @@
+//! Backend-agnostic decoded-image storage.
+
+use std::array;
+
+#[cfg(feature = "png")]
+use png::{BitDepth, ColorType, Compression, Encoder, Filter};
+
+use tiny_skia::{IntSize, Pixmap, PixmapRef};
+
+use crate::style::math::mul_div_255;
+
+/// A decoded image as premultiplied, row-major RGBA bytes.
+#[derive(Debug, Clone)]
+pub struct ImageBuffer {
+  data: Vec<u8>,
+  width: u32,
+  height: u32,
+}
+
+impl ImageBuffer {
+  /// Wraps premultiplied RGBA bytes. Returns `None` if `data.len() != width * height * 4`.
+  pub fn from_premultiplied_rgba(data: Vec<u8>, width: u32, height: u32) -> Option<Self> {
+    (data.len() == rgba_len(width, height)?).then_some(Self {
+      data,
+      width,
+      height,
+    })
+  }
+
+  /// A single transparent pixel, for a draw with nothing to show.
+  #[cfg(any(feature = "png", feature = "gif", feature = "webp"))]
+  pub(crate) fn transparent_pixel() -> Self {
+    Self {
+      data: vec![0; 4],
+      width: 1,
+      height: 1,
+    }
+  }
+
+  /// Allocates a transparent (all-zero) buffer of the given size.
+  #[cfg(all(test, feature = "png"))]
+  pub(crate) fn new(width: u32, height: u32) -> Option<Self> {
+    Some(Self {
+      data: vec![0; rgba_len(width, height)?],
+      width,
+      height,
+    })
+  }
+
+  /// Builds a premultiplied buffer from straight-alpha RGBA bytes (row-major, 4 bytes/pixel).
+  /// Returns `None` if `raw.len() != width * height * 4`.
+  pub fn from_rgba_bytes(mut raw: Vec<u8>, width: u32, height: u32) -> Option<Self> {
+    if !has_opaque_alpha(&raw) {
+      premultiply_rgba_in_place(&mut raw);
+    }
+    Self::from_premultiplied_rgba(raw, width, height)
+  }
+
+  /// The image width in pixels.
+  pub fn width(&self) -> u32 {
+    self.width
+  }
+
+  /// The image height in pixels.
+  pub fn height(&self) -> u32 {
+    self.height
+  }
+
+  /// The premultiplied RGBA bytes, row-major.
+  pub fn data(&self) -> &[u8] {
+    &self.data
+  }
+
+  /// Mutable access to the premultiplied RGBA bytes.
+  pub fn data_mut(&mut self) -> &mut [u8] {
+    &mut self.data
+  }
+
+  /// Encodes the image as straight-alpha PNG bytes, for embedding in an SVG
+  /// `<image>` data URL. Returns `None` if encoding fails.
+  #[cfg(feature = "png")]
+  pub fn encode_png(&self) -> Option<Vec<u8>> {
+    let mut straight = self.data.clone();
+
+    demultiply_truncating_in_place(&mut straight);
+
+    let mut out = Vec::new();
+    let mut encoder = Encoder::new(&mut out, self.width, self.height);
+
+    encoder.set_color(ColorType::Rgba);
+    encoder.set_depth(BitDepth::Eight);
+    encoder.set_compression(Compression::Fast);
+    encoder.set_filter(Filter::Adaptive);
+    encoder
+      .write_header()
+      .ok()?
+      .write_image_data(&straight)
+      .ok()?;
+
+    Some(out)
+  }
+
+  /// Reads the premultiplied RGBA value at `(x, y)`, or `[0; 4]` if out of bounds.
+  pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
+    if x >= self.width || y >= self.height {
+      return [0; 4];
+    }
+    let index = ((y as usize * self.width as usize) + x as usize) * 4;
+    [
+      self.data[index],
+      self.data[index + 1],
+      self.data[index + 2],
+      self.data[index + 3],
+    ]
+  }
+}
+
+/// A zero-copy view, or `Err` when the image is empty.
+impl<'a> TryFrom<&'a ImageBuffer> for PixmapRef<'a> {
+  type Error = ();
+
+  fn try_from(buffer: &'a ImageBuffer) -> Result<Self, Self::Error> {
+    PixmapRef::from_bytes(buffer.data(), buffer.width(), buffer.height()).ok_or(())
+  }
+}
+
+/// An owned copy, or `Err` when the image is empty.
+impl TryFrom<&ImageBuffer> for Pixmap {
+  type Error = ();
+
+  fn try_from(buffer: &ImageBuffer) -> Result<Self, Self::Error> {
+    let size = IntSize::from_wh(buffer.width(), buffer.height()).ok_or(())?;
+
+    Pixmap::from_vec(buffer.data().to_vec(), size).ok_or(())
+  }
+}
+
+/// Byte length of a `width` x `height` RGBA buffer, or `None` when it overflows `usize`.
+pub fn rgba_len(width: u32, height: u32) -> Option<usize> {
+  (width as usize)
+    .checked_mul(height as usize)?
+    .checked_mul(4)
+}
+
+/// Converts one premultiplied pixel to straight alpha in integers, the same on every target.
+#[inline]
+pub fn demultiply_pixel(pixel: &mut [u8; 4]) {
+  let alpha = pixel[3] as u32;
+
+  if alpha == u8::MAX as u32 || alpha == 0 {
+    return;
+  }
+
+  let reciprocal = u64::from(DEMULTIPLY_RECIPROCALS[alpha as usize]);
+
+  for channel in &mut pixel[..3] {
+    *channel = ((u64::from(*channel as u32 * 510 + alpha) * reciprocal) >> 32) as u8;
+  }
+}
+
+/// `2^32 / (2 * alpha)` rounded up, which divides `channel * 510 + alpha` exactly for every
+/// byte, so [`demultiply_pixel`] multiplies instead of dividing.
+const DEMULTIPLY_RECIPROCALS: [u32; 256] = {
+  let mut reciprocals = [0; 256];
+  let mut alpha = 1;
+
+  while alpha < 256 {
+    reciprocals[alpha] = (1_u64 << 32).div_ceil(2 * alpha as u64) as u32;
+    alpha += 1;
+  }
+  reciprocals
+};
+
+/// Premultiplied source-over of each pixel of `src` onto `dst`, with selects instead of branches
+/// so it vectorizes.
+#[inline(always)]
+pub fn composite_premultiplied_over_row(dst: &mut [[u8; 4]], src: &[[u8; 4]]) {
+  for (dst, &src) in dst.iter_mut().zip(src) {
+    let inverse = u8::MAX - src[3];
+    let over = array::from_fn(|lane| src[lane].saturating_add(mul_div_255(dst[lane], inverse)));
+
+    *dst = if src[3] == 0 {
+      *dst
+    } else if dst[3] == 0 {
+      src
+    } else {
+      over
+    };
+  }
+}
+
+/// Converts one straight-alpha RGBA pixel to premultiplied alpha.
+#[inline(always)]
+pub fn premultiply_pixel([red, green, blue, alpha]: [u8; 4]) -> [u8; 4] {
+  if alpha == u8::MAX {
+    return [red, green, blue, alpha];
+  }
+
+  let scale = |channel: u8| mul_div_255(channel, alpha);
+
+  [scale(red), scale(green), scale(blue), alpha]
+}
+
+/// Converts premultiplied RGBA bytes to straight alpha in place, truncating
+/// where [`demultiply_pixel`] rounds.
+#[cfg(feature = "png")]
+pub(crate) fn demultiply_truncating_in_place(data: &mut [u8]) {
+  for pixel in data.as_chunks_mut::<4>().0 {
+    let alpha = pixel[3];
+    if alpha != 0 && alpha != 255 {
+      let alpha = alpha as u16;
+      pixel[0] = (pixel[0] as u16 * 255 / alpha).min(255) as u8;
+      pixel[1] = (pixel[1] as u16 * 255 / alpha).min(255) as u8;
+      pixel[2] = (pixel[2] as u16 * 255 / alpha).min(255) as u8;
+    }
+  }
+}
+
+const ALPHA_MASK_U128: u128 =
+  u128::from_ne_bytes([0, 0, 0, 0xFF, 0, 0, 0, 0xFF, 0, 0, 0, 0xFF, 0, 0, 0, 0xFF]);
+
+fn has_opaque_alpha(raw: &[u8]) -> bool {
+  let (chunks, remainder) = raw.as_chunks::<16>();
+  for chunk in chunks {
+    if u128::from_ne_bytes(*chunk) & ALPHA_MASK_U128 != ALPHA_MASK_U128 {
+      return false;
+    }
+  }
+  remainder
+    .as_chunks::<4>()
+    .0
+    .iter()
+    .all(|pixel| pixel[3] == u8::MAX)
+}
+
+#[inline(always)]
+pub(crate) fn premultiply_rgba_in_place(raw: &mut [u8]) {
+  for pixel in raw.as_chunks_mut::<4>().0 {
+    if pixel[3] != u8::MAX {
+      *pixel = premultiply_pixel(*pixel);
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{demultiply_pixel, has_opaque_alpha};
+
+  #[test]
+  fn demultiply_matches_rounded_division_for_every_byte() {
+    for alpha in 1..u8::MAX {
+      for channel in 0..=u8::MAX {
+        let mut pixel = [channel, channel, channel, alpha];
+        let divided =
+          ((u32::from(channel) * 510 + u32::from(alpha)) / (u32::from(alpha) * 2)) as u8;
+
+        demultiply_pixel(&mut pixel);
+        assert_eq!(
+          pixel,
+          [divided, divided, divided, alpha],
+          "{channel} at alpha {alpha}"
+        );
+      }
+    }
+  }
+
+  fn pixel(r: u8, g: u8, b: u8, a: u8) -> [u8; 4] {
+    [r, g, b, a]
+  }
+
+  fn flatten(pixels: &[[u8; 4]]) -> Vec<u8> {
+    pixels.iter().flatten().copied().collect()
+  }
+
+  #[test]
+  fn empty_slice_is_opaque() {
+    assert!(has_opaque_alpha(&[]));
+  }
+
+  #[test]
+  fn fully_opaque_short_under_16_bytes() {
+    let raw = flatten(&[
+      pixel(1, 2, 3, 255),
+      pixel(4, 5, 6, 255),
+      pixel(7, 8, 9, 255),
+    ]);
+    assert!(has_opaque_alpha(&raw));
+  }
+
+  #[test]
+  fn fully_opaque_exactly_one_chunk() {
+    let raw = flatten(&[pixel(1, 2, 3, 255); 4]);
+    assert!(has_opaque_alpha(&raw));
+  }
+
+  #[test]
+  fn fully_opaque_chunk_plus_tail() {
+    let mut raw = flatten(&[pixel(1, 2, 3, 255); 4]);
+    raw.extend_from_slice(&[pixel(9, 9, 9, 255), pixel(8, 8, 8, 255)].concat());
+    assert!(has_opaque_alpha(&raw));
+  }
+
+  #[test]
+  fn detects_non_opaque_inside_chunk() {
+    let mut pixels = [pixel(1, 2, 3, 255); 4];
+    pixels[2][3] = 254;
+    assert!(!has_opaque_alpha(&flatten(&pixels)));
+  }
+
+  #[test]
+  fn detects_non_opaque_in_tail() {
+    let mut raw = flatten(&[pixel(1, 2, 3, 255); 4]);
+    raw.extend_from_slice(&pixel(0, 0, 0, 0));
+    assert!(!has_opaque_alpha(&raw));
+  }
+
+  #[test]
+  fn detects_first_non_opaque() {
+    let mut pixels = [pixel(1, 2, 3, 255); 8];
+    pixels[0][3] = 0;
+    assert!(!has_opaque_alpha(&flatten(&pixels)));
+  }
+
+  #[test]
+  fn rgb_values_do_not_affect_result() {
+    let raw = flatten(&[pixel(255, 255, 255, 255); 8]);
+    assert!(has_opaque_alpha(&raw));
+    let raw = flatten(&[pixel(255, 255, 255, 0); 8]);
+    assert!(!has_opaque_alpha(&raw));
+  }
+}

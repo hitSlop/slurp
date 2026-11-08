@@ -1,0 +1,635 @@
+use std::fmt;
+
+use cssparser::{Parser, Token, match_ignore_ascii_case, serialize_string};
+
+use crate::{
+  geometry::{Point, Size},
+  path_data::PathData,
+  style::{
+    FromCss, Length, MakeComputed, ParseResult, Sides, SizingContext, SpacePair, SvgResource,
+    ToCss, ValueError, impl_css_enum, unexpected_token,
+  },
+};
+
+/// A `<fill-rule>`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum FillRule {
+  /// The default rule - counts the number of times a ray from the point crosses the shape's edges
+  #[default]
+  NonZero,
+  /// Counts the total number of crossings - if even, the point is outside
+  EvenOdd,
+}
+
+impl_css_enum!(
+  FillRule,
+  "nonzero" => FillRule::NonZero,
+  "evenodd" => FillRule::EvenOdd,
+);
+
+/// Represents radius values for circle() and ellipse() functions.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ShapeRadius {
+  /// Uses the length from the center to the closest side of the reference box
+  #[default]
+  ClosestSide,
+  /// Uses the length from the center to the farthest side of the reference box
+  FarthestSide,
+  /// A specific length value
+  Length(Length),
+}
+
+impl MakeComputed for ShapeRadius {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    if let ShapeRadius::Length(length) = self {
+      length.make_computed(sizing);
+    }
+  }
+}
+
+/// Represents a position for circle() and ellipse() functions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ShapePosition(pub SpacePair<Length>);
+
+impl MakeComputed for ShapePosition {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    self.0.make_computed(sizing);
+  }
+}
+
+impl ShapePosition {
+  /// Resolves the position to a point within `size`.
+  pub(crate) fn to_point(self, sizing: &SizingContext, size: Size<f32>) -> Point<f32> {
+    Point {
+      x: self.0.x.to_px(sizing, size.width),
+      y: self.0.y.to_px(sizing, size.height),
+    }
+  }
+}
+
+impl Default for ShapePosition {
+  fn default() -> Self {
+    Self(SpacePair::from_single(Length::Percentage(50.0)))
+  }
+}
+
+/// An `inset()` shape.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct InsetShape {
+  /// Sides of the inset.
+  pub inset: Sides<Length>,
+  /// Optional border radius for rounded corners
+  pub border_radius: Option<Sides<Length>>,
+}
+
+impl MakeComputed for InsetShape {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    self.inset.make_computed(sizing);
+    self.border_radius.make_computed(sizing);
+  }
+}
+
+/// Represents a circle() shape.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct CircleShape {
+  /// The radius
+  pub radius: ShapeRadius,
+  /// The center position of the circle
+  pub position: ShapePosition,
+}
+
+impl MakeComputed for CircleShape {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    self.radius.make_computed(sizing);
+    self.position.make_computed(sizing);
+  }
+}
+
+/// Represents an ellipse() shape.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct EllipseShape {
+  /// The horizontal radius
+  pub radius_x: ShapeRadius,
+  /// The vertical radius
+  pub radius_y: ShapeRadius,
+  /// The center position of the ellipse
+  pub position: ShapePosition,
+}
+
+impl MakeComputed for EllipseShape {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    self.radius_x.make_computed(sizing);
+    self.radius_y.make_computed(sizing);
+    self.position.make_computed(sizing);
+  }
+}
+
+/// Represents a single coordinate pair in a polygon.
+pub(crate) type PolygonCoordinate = SpacePair<Length>;
+
+/// Represents a polygon() shape.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PolygonShape {
+  /// The fill rule to use
+  pub fill_rule: Option<FillRule>,
+  /// List of coordinate pairs defining the polygon vertices
+  pub coordinates: Box<[PolygonCoordinate]>,
+}
+
+impl MakeComputed for PolygonShape {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    self.coordinates.make_computed(sizing);
+  }
+}
+
+/// Represents a path() shape using an SVG path string.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PathShape {
+  /// The fill rule to use
+  pub fill_rule: Option<FillRule>,
+  /// SVG path data string
+  pub path: Box<str>,
+}
+
+/// Represents a basic shape function for clip-path.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum BasicShape {
+  /// inset() function
+  Inset(Box<InsetShape>),
+  /// circle() function
+  Circle(Box<CircleShape>),
+  /// ellipse() function
+  Ellipse(Box<EllipseShape>),
+  /// polygon() function
+  Polygon(PolygonShape),
+  /// path() function
+  Path(PathShape),
+  /// url() reference to an SVG `clipPath` element
+  Url(SvgResource),
+}
+
+impl MakeComputed for BasicShape {
+  fn make_computed(&mut self, sizing: &SizingContext) {
+    match self {
+      BasicShape::Inset(shape) => shape.make_computed(sizing),
+      BasicShape::Circle(shape) => shape.make_computed(sizing),
+      BasicShape::Ellipse(shape) => shape.make_computed(sizing),
+      BasicShape::Polygon(shape) => shape.make_computed(sizing),
+      BasicShape::Path(_) | BasicShape::Url(_) => {}
+    }
+  }
+}
+
+impl BasicShape {
+  /// The shape's fill rule, if it has one.
+  pub fn fill_rule(&self) -> Option<FillRule> {
+    match self {
+      BasicShape::Polygon(shape) => shape.fill_rule,
+      BasicShape::Path(shape) => shape.fill_rule,
+      _ => None,
+    }
+  }
+}
+
+impl<'i> FromCss<'i> for ShapeRadius {
+  fn from_css(parser: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    if let Ok(length) = parser.try_parse(Length::from_css) {
+      return Ok(ShapeRadius::Length(length));
+    }
+
+    let ident = parser.expect_ident()?;
+    match_ignore_ascii_case! { &ident,
+      "closest-side" => Ok(ShapeRadius::ClosestSide),
+      "farthest-side" => Ok(ShapeRadius::FarthestSide),
+      _ => Err(unexpected_token!(&Token::Ident(ident.clone()))),
+    }
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["closest-side", "farthest-side", "<length>"];
+}
+
+impl ShapePosition {
+  /// Parses an optional `at <position>` clause, defaulting to the center.
+  fn parse_at<'i>(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    if input
+      .try_parse(|input| input.expect_ident_matching("at"))
+      .is_ok()
+    {
+      return Self::from_css(input);
+    }
+
+    Ok(Self::default())
+  }
+}
+
+impl FillRule {
+  /// Parses an optional leading `<fill-rule>,` of `polygon()` and `path()`.
+  fn parse_prefix<'i>(input: &mut Parser<'i>) -> ParseResult<'i, Option<Self>> {
+    let fill_rule = input.try_parse(Self::from_css).ok();
+
+    if fill_rule.is_some() {
+      input.expect_comma()?;
+    }
+
+    Ok(fill_rule)
+  }
+}
+
+impl<'i> FromCss<'i> for ShapePosition {
+  fn from_css(parser: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let first = Length::from_css(parser)?;
+    let second = parser
+      .try_parse(Length::from_css)
+      .unwrap_or(Length::Percentage(50.0));
+
+    Ok(ShapePosition(SpacePair::from_pair(first, second)))
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = Length::VALID_TOKENS;
+}
+
+impl<'i> FromCss<'i> for BasicShape {
+  fn from_css(parser: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    let token = parser.next()?;
+
+    match token {
+      Token::UnquotedUrl(url) => Ok(BasicShape::Url(SvgResource::new(url.as_ref()))),
+      Token::Function(function) => {
+        match_ignore_ascii_case! { &function,
+          "url" => parser.parse_nested_block(|input| {
+            Ok(BasicShape::Url(SvgResource::new(input.expect_string()?.as_ref())))
+          }),
+          "inset" => parser.parse_nested_block(|input| {
+            let inset = Sides::from_css(input)?;
+            let border_radius = if input.try_parse(|input| input.expect_ident_matching("round")).is_ok() {
+              Some(Sides::from_css(input)?)
+            } else {
+              None
+            };
+
+            Ok(BasicShape::Inset(Box::new(InsetShape {
+              inset,
+              border_radius,
+            })))
+          }),
+          "circle" => parser.parse_nested_block(|input| {
+            let radius = input.try_parse(ShapeRadius::from_css).unwrap_or_default();
+
+            let position = ShapePosition::parse_at(input)?;
+
+            Ok(BasicShape::Circle(Box::new(CircleShape { radius, position })))
+          }),
+          "ellipse" => parser.parse_nested_block(|input| {
+            let radius_x = ShapeRadius::from_css(input)?;
+            let radius_y = input.try_parse(ShapeRadius::from_css).unwrap_or_default();
+
+            let position = ShapePosition::parse_at(input)?;
+
+            Ok(BasicShape::Ellipse(Box::new(EllipseShape { radius_x, radius_y, position })))
+          }),
+          "polygon" => parser.parse_nested_block(|input| {
+            let fill_rule = FillRule::parse_prefix(input)?;
+
+            Ok(BasicShape::Polygon(PolygonShape {
+              fill_rule,
+              coordinates: input
+                .parse_comma_separated(PolygonCoordinate::from_css)?
+                .into_boxed_slice(),
+            }))
+          }),
+          "path" => parser.parse_nested_block(|input| {
+            let fill_rule = FillRule::parse_prefix(input)?;
+
+            let path: Box<str> = input.expect_string()?.as_ref().into();
+
+            if !PathData::parse(&path).1 {
+              return Err(ValueError::invalid("expected complete path data"));
+            }
+
+            Ok(BasicShape::Path(PathShape {
+              fill_rule,
+              path,
+            }))
+          }),
+          _ => Err(unexpected_token!(token)),
+        }
+      }
+      _ => Err(unexpected_token!(token)),
+    }
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &[
+    "<inset()>",
+    "<circle()>",
+    "<ellipse()>",
+    "<polygon()>",
+    "<path()>",
+    "<url()>",
+  ];
+}
+
+impl ToCss for ShapeRadius {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::ClosestSide => dest.write_str("closest-side"),
+      Self::FarthestSide => dest.write_str("farthest-side"),
+      Self::Length(l) => l.to_css(dest),
+    }
+  }
+}
+
+impl ToCss for ShapePosition {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    self.0.to_css(dest)
+  }
+}
+
+impl ToCss for BasicShape {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::Inset(shape) => {
+        dest.write_str("inset(")?;
+        shape.inset.to_css(dest)?;
+        if let Some(radius) = &shape.border_radius {
+          dest.write_str(" round ")?;
+          radius.to_css(dest)?;
+        }
+        dest.write_char(')')
+      }
+      Self::Circle(shape) => {
+        dest.write_str("circle(")?;
+        let mut has_radius = false;
+        if shape.radius != ShapeRadius::ClosestSide {
+          shape.radius.to_css(dest)?;
+          has_radius = true;
+        }
+        if shape.position != ShapePosition::default() {
+          if has_radius {
+            dest.write_char(' ')?;
+          }
+          dest.write_str("at ")?;
+          shape.position.to_css(dest)?;
+        }
+        dest.write_char(')')
+      }
+      Self::Ellipse(shape) => {
+        dest.write_str("ellipse(")?;
+        shape.radius_x.to_css(dest)?;
+        dest.write_char(' ')?;
+        shape.radius_y.to_css(dest)?;
+        if shape.position != ShapePosition::default() {
+          dest.write_str(" at ")?;
+          shape.position.to_css(dest)?;
+        }
+        dest.write_char(')')
+      }
+      Self::Polygon(shape) => {
+        dest.write_str("polygon(")?;
+        if let Some(rule) = shape.fill_rule {
+          rule.to_css(dest)?;
+          dest.write_str(", ")?;
+        }
+        shape.coordinates.to_css(dest)?;
+        dest.write_char(')')
+      }
+      Self::Path(shape) => {
+        dest.write_str("path(")?;
+        if let Some(rule) = shape.fill_rule {
+          rule.to_css(dest)?;
+          dest.write_str(", ")?;
+        }
+        serialize_string(&shape.path, dest)?;
+        dest.write_char(')')
+      }
+      Self::Url(resource) => resource.to_css(dest),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::assert_matches;
+
+  use Length::*;
+
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn test_parse_inset_simple() {
+    assert_eq!(
+      BasicShape::from_css_str("inset(10px)"),
+      Ok(BasicShape::Inset(Box::new(InsetShape {
+        inset: Sides([Px(10.0); 4]),
+        border_radius: None,
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_inset_with_border_radius() {
+    assert_eq!(
+      BasicShape::from_css_str("inset(10px round 5px)"),
+      Ok(BasicShape::Inset(Box::new(InsetShape {
+        inset: Sides::from(Px(10.0)),
+        border_radius: Some(Sides::from(Px(5.0))),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_inset_with_complex_border_radius() {
+    assert_eq!(
+      BasicShape::from_css_str("inset(10px 20px 30px 40px round 5px 10px 15px 20px)"),
+      Ok(BasicShape::Inset(Box::new(InsetShape {
+        inset: Sides([Px(10.0), Px(20.0), Px(30.0), Px(40.0)]),
+        border_radius: Some(Sides([Px(5.0), Px(10.0), Px(15.0), Px(20.0)])),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_circle_simple() {
+    assert_eq!(
+      BasicShape::from_css_str("circle(50px)"),
+      Ok(BasicShape::Circle(Box::new(CircleShape {
+        radius: ShapeRadius::Length(Px(50.0)),
+        position: ShapePosition::default(),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_circle_with_position() {
+    assert_eq!(
+      BasicShape::from_css_str("circle(50px at 25% 75%)"),
+      Ok(BasicShape::Circle(Box::new(CircleShape {
+        radius: ShapeRadius::Length(Px(50.0)),
+        position: ShapePosition(SpacePair {
+          x: Length::Percentage(25.0),
+          y: Length::Percentage(75.0),
+        }),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_circle_default_radius() {
+    assert_eq!(
+      BasicShape::from_css_str("circle(at 25% 75%)"),
+      Ok(BasicShape::Circle(Box::new(CircleShape {
+        radius: ShapeRadius::ClosestSide,
+        position: ShapePosition(SpacePair {
+          x: Length::Percentage(25.0),
+          y: Length::Percentage(75.0),
+        }),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_ellipse_simple() {
+    assert_eq!(
+      BasicShape::from_css_str("ellipse(50px 30px)"),
+      Ok(BasicShape::Ellipse(Box::new(EllipseShape {
+        radius_x: ShapeRadius::Length(Px(50.0)),
+        radius_y: ShapeRadius::Length(Px(30.0)),
+        position: ShapePosition::default(),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_ellipse_with_position() {
+    assert_eq!(
+      BasicShape::from_css_str("ellipse(50px 30px at 25% 75%)"),
+      Ok(BasicShape::Ellipse(Box::new(EllipseShape {
+        radius_x: ShapeRadius::Length(Px(50.0)),
+        radius_y: ShapeRadius::Length(Px(30.0)),
+        position: ShapePosition(SpacePair {
+          x: Length::Percentage(25.0),
+          y: Length::Percentage(75.0),
+        }),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_polygon_triangle() {
+    assert_matches!(
+      BasicShape::from_css_str("polygon(50% 0%, 0% 100%, 100% 100%)"),
+      Ok(BasicShape::Polygon(PolygonShape {
+        fill_rule: None,
+        coordinates: coords,
+      })) if coords.len() == 3 &&
+            coords[0] == SpacePair { x: Length::Percentage(50.0), y: Length::Percentage(0.0) } &&
+            coords[1] == SpacePair { x: Length::Percentage(0.0), y: Length::Percentage(100.0) } &&
+            coords[2] == SpacePair { x: Length::Percentage(100.0), y: Length::Percentage(100.0) }
+    );
+  }
+
+  #[test]
+  fn test_parse_polygon_with_fill_rule() {
+    assert_matches!(
+      BasicShape::from_css_str("polygon(evenodd, 50% 0%, 0% 100%, 100% 100%)"),
+      Ok(BasicShape::Polygon(PolygonShape {
+        fill_rule: Some(FillRule::EvenOdd),
+        coordinates: coords,
+      })) if coords.len() == 3
+    );
+  }
+
+  #[test]
+  fn test_parse_path() {
+    assert_eq!(
+      BasicShape::from_css_str("path('M 10 10 L 90 90')"),
+      Ok(BasicShape::Path(PathShape {
+        fill_rule: None,
+        path: "M 10 10 L 90 90".into(),
+      }))
+    );
+  }
+
+  #[test]
+  fn test_parse_url_reference() {
+    assert_eq!(
+      BasicShape::from_css_str("url(#clip)"),
+      Ok(BasicShape::Url(SvgResource::new("#clip")))
+    );
+    assert_eq!(
+      BasicShape::from_css_str("url('#clip')").map(|shape| shape.to_css_string()),
+      Ok("url(\"#clip\")".to_owned())
+    );
+  }
+
+  #[test]
+  fn an_incomplete_path_is_invalid() {
+    assert!(BasicShape::from_css_str("path('M 0 0 X')").is_err());
+    assert!(BasicShape::from_css_str("path('L 10 10')").is_err());
+  }
+
+  #[test]
+  fn test_parse_path_with_fill_rule() {
+    assert_eq!(
+      BasicShape::from_css_str("path(evenodd, 'M 10 10 L 90 90')"),
+      Ok(BasicShape::Path(PathShape {
+        fill_rule: Some(FillRule::EvenOdd),
+        path: "M 10 10 L 90 90".into(),
+      }))
+    );
+  }
+
+  #[test]
+  fn test_parse_circle_percentage_radius() {
+    assert_eq!(
+      BasicShape::from_css_str("circle(50%)"),
+      Ok(BasicShape::Circle(Box::new(CircleShape {
+        radius: ShapeRadius::Length(Length::Percentage(50.0)),
+        position: ShapePosition::default(),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_parse_circle_closest_side() {
+    assert_eq!(
+      BasicShape::from_css_str("circle(closest-side)"),
+      Ok(BasicShape::Circle(Box::new(CircleShape {
+        radius: ShapeRadius::ClosestSide,
+        position: ShapePosition::default(),
+      })))
+    );
+  }
+
+  #[test]
+  fn test_ellipse_with_equal_radii_stays_an_ellipse() {
+    let shape = BasicShape::from_css_str("ellipse(50% 50%)").unwrap();
+
+    assert!(matches!(shape, BasicShape::Ellipse(_)));
+    assert_eq!(shape.to_css_string(), "ellipse(50% 50%)");
+    assert_eq!(
+      BasicShape::from_css_str("circle(50%)")
+        .unwrap()
+        .to_css_string(),
+      "circle(50%)"
+    );
+  }
+
+  #[test]
+  fn test_parse_circle_farthest_side() {
+    assert_eq!(
+      BasicShape::from_css_str("circle(farthest-side)"),
+      Ok(BasicShape::Circle(Box::new(CircleShape {
+        radius: ShapeRadius::FarthestSide,
+        position: ShapePosition::default(),
+      })))
+    );
+  }
+}

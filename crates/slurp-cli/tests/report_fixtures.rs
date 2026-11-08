@@ -1,10 +1,11 @@
 //! Report layout and authoring-error regression tests. The fixtures are deliberately hostile: long unbroken text, wide tables,
 //! non-Latin text, empty results, 1,000-point charts, and every kind of mistake an author can make.
+mod common;
 use slurp_app::{Workspace, report, report_check};
 use std::path::{Path, PathBuf};
 
 fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
-    let exe = std::env::var_os("SLURP_TEST_DUCKDB")?;
+    let exe = common::duckdb()?;
     let temp = tempfile::tempdir().expect("test directory");
     let w = Workspace::init(
         temp.path(),
@@ -285,4 +286,87 @@ fn a_query_that_fails_only_at_run_time_is_named() {
         error.contains("query `boom`") && error.contains("line 5"),
         "{error}"
     );
+}
+
+#[test]
+fn chart_compilation_warnings_and_empty_transforms_name_their_source() {
+    let Some((temp, w)) = workspace() else { return };
+    let file = temp.path().join("diagnostics.md");
+    std::fs::write(
+        &file,
+        r#"```sql q
+SELECT 1 AS x
+```
+
+```chart
+query: q
+title: Unsupported encoding
+spec:
+  mark: bar
+  encoding:
+    x: {field: x, type: quantitative}
+    shape: {field: x, type: nominal}
+```
+
+```chart
+query: q
+title: Filtered marks
+spec:
+  mark: bar
+  transform: [{filter: 'datum.x > 10'}]
+  encoding:
+    x: {field: x, type: quantitative}
+```
+"#,
+    )
+    .unwrap();
+    let result = report::build(&w, &file, &temp.path().join("out"), false, false, false).unwrap();
+    let warnings = result["warnings"]
+        .as_array()
+        .expect("chart warnings are returned");
+    assert!(
+        warnings.iter().any(|w| w["block"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unsupported encoding")
+            && w["line"].is_number()),
+        "{result}"
+    );
+    assert!(
+        warnings.iter().any(|w| w["block"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Filtered marks")
+            && w["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no data marks remain after transforms")
+            && w["line"].is_number()),
+        "{result}"
+    );
+}
+
+#[test]
+fn png_and_pdf_both_render_unsupported_glyphs_with_the_existing_warning() {
+    let Some((temp, w)) = workspace() else { return };
+    let out = temp.path().join("multilingual");
+    let result = report::build(
+        &w,
+        &fixture("reports", "text-and-charts.md"),
+        &out,
+        false,
+        true,
+        true,
+    )
+    .unwrap();
+    assert!(
+        result["warnings"].to_string().contains("cannot be drawn"),
+        "{result}"
+    );
+    assert!(
+        std::fs::read(out.join("report.pdf"))
+            .unwrap()
+            .starts_with(b"%PDF-")
+    );
+    assert_eq!(png_size(&out.join("report.png")).0, 840 * SCALE);
 }

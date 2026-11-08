@@ -1,6 +1,7 @@
 //! Connect this computer to a self-hosted Worker: check it is a Slurp Worker, check the admin token, then save both.
 use anyhow::{Result, anyhow, bail};
 use serde_json::Value;
+use slurp_client::api::TokenScope;
 
 /// A verified connection that has been saved.
 pub struct Connected {
@@ -33,19 +34,27 @@ pub async fn verify_and_save(url: &str, token: String) -> Result<Connected> {
     if health["ok"] != true {
         bail!("{backend} is not a Slurp Worker");
     }
+    if health["apiVersion"] != 2 {
+        bail!(
+            "{backend} runs a different version of the Slurp Worker API than this CLI expects; deploy a matching Worker with slurp cloud upgrade (or install the matching CLI)"
+        );
+    }
     if health["configured"] != true {
         bail!("the Worker has no ADMIN_TOKEN configured; set the ADMIN_TOKEN secret on it first");
     }
     let who = crate::login::whoami(&backend, &token)
         .await
-        .map_err(|error| match error.code() {
-            Some(1000 | 1001) => anyhow!("the Worker rejected that admin token"),
-            _ => anyhow!("could not verify the admin token; retry when the Worker is reachable"),
+        .map_err(|error| {
+            if slurp_app::project_setup::is_rejected(&error) {
+                anyhow!("the Worker rejected that admin token")
+            } else {
+                anyhow!("could not verify the admin token; retry when the Worker is reachable")
+            }
         })?;
-    if who.scope != "admin" {
+    if who.scope != TokenScope::Admin {
         bail!(
             "that is a {} key; slurp connect needs the Worker's admin token (the ADMIN_TOKEN secret)",
-            who.scope
+            crate::login::scope_name(who.scope)
         );
     }
     let home = slurp_client::config::home()?;
@@ -53,7 +62,7 @@ pub async fn verify_and_save(url: &str, token: String) -> Result<Connected> {
     slurp_app::system::set_backend(&home, &backend)?;
     Ok(Connected {
         backend,
-        scope: who.scope,
+        scope: crate::login::scope_name(who.scope).to_owned(),
         token,
     })
 }

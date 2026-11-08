@@ -1,0 +1,83 @@
+//! Animation frames: per-frame metadata, what the canvas keeps between frames, and the size a
+//! decoded frame resamples down to.
+
+use super::MAX_IMAGE_DIMENSION;
+
+/// What a container says about one frame, read without decoding pixels.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameInfo {
+  /// Frame rectangle within the canvas, as `(x, y, width, height)`.
+  pub(crate) rect: (u32, u32, u32, u32),
+  pub(crate) duration_ms: u32,
+  /// Composites onto what is under it rather than replacing it.
+  pub(crate) blends: bool,
+  pub(crate) dispose: Dispose,
+}
+
+/// What the canvas holds once a frame has been shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dispose {
+  /// Leave the frame in place.
+  Keep,
+  /// Clear the frame rectangle.
+  Background,
+  /// Restore what was there before the frame.
+  Previous,
+}
+
+impl FrameInfo {
+  /// A single frame standing in for a stream whose metadata could not be read.
+  pub(crate) fn still() -> Self {
+    Self {
+      rect: (0, 0, u32::MAX, u32::MAX),
+      duration_ms: 1,
+      blends: false,
+      dispose: Dispose::Keep,
+    }
+  }
+
+  fn covers(&self, canvas: (u32, u32)) -> bool {
+    covers_canvas(self.rect, canvas)
+  }
+}
+
+/// Whether frame `index` needs an earlier frame, as Blink's `FindRequiredPreviousFrame` decides.
+pub(crate) fn needs_previous_frame(frames: &[FrameInfo], index: usize, canvas: (u32, u32)) -> bool {
+  let Some(frame) = frames.get(index) else {
+    return false;
+  };
+  if index == 0 || (!frame.blends && frame.covers(canvas)) {
+    return false;
+  }
+
+  // A frame restoring what came before it leaves the canvas as it found it, so
+  // it is not the starting state for anything after it.
+  let mut previous = index - 1;
+  while frames[previous].dispose == Dispose::Previous {
+    let Some(earlier) = previous.checked_sub(1) else {
+      return false;
+    };
+    previous = earlier;
+  }
+
+  match frames[previous].dispose {
+    Dispose::Keep => true,
+    Dispose::Background => {
+      !frames[previous].covers(canvas) && needs_previous_frame(frames, previous, canvas)
+    }
+    Dispose::Previous => false,
+  }
+}
+
+/// Total pixels across all frames of an animation (frames are canvas-sized).
+pub(crate) const MAX_ANIMATION_TOTAL_PIXELS: u64 =
+  4 * MAX_IMAGE_DIMENSION as u64 * MAX_IMAGE_DIMENSION as u64;
+
+/// Frames past this point are dropped from a timeline.
+pub(crate) const MAX_ANIMATION_FRAMES: usize = 1024;
+
+/// Whether a frame rectangle spans the entire canvas.
+pub(crate) fn covers_canvas(rect: (u32, u32, u32, u32), canvas: (u32, u32)) -> bool {
+  let (x, y, width, height) = rect;
+  x == 0 && y == 0 && width == canvas.0 && height == canvas.1
+}

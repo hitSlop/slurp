@@ -1,0 +1,170 @@
+use std::fmt;
+
+use cssparser::{Parser, Token};
+
+use crate::style::{
+  Animatable, FromCss, MakeComputed, ParseResult, ToCss, tw::TailwindPropertyParser,
+  unexpected_token,
+};
+
+/// Placement of a grid item along one axis.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum GridPlacement {
+  /// Auto-placed.
+  Auto,
+  /// Span count
+  Span(GridPlacementSpan),
+  /// Line index (1-based)
+  Line(i16),
+  /// Named grid area
+  Named(String),
+}
+
+impl MakeComputed for GridPlacement {}
+
+impl Animatable for GridPlacement {}
+
+impl Default for GridPlacement {
+  fn default() -> Self {
+    Self::auto()
+  }
+}
+
+impl GridPlacement {
+  /// Auto placement.
+  pub const fn auto() -> Self {
+    Self::Auto
+  }
+
+  /// Span placement
+  pub const fn span(span: u16) -> Self {
+    Self::Span(GridPlacementSpan::Span(span))
+  }
+}
+
+impl TailwindPropertyParser for GridPlacement {
+  fn parse_tw(token: &str) -> Option<Self> {
+    token.parse::<i16>().map(Self::Line).ok()
+  }
+}
+
+/// Represents a grid placement span
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum GridPlacementSpan {
+  /// Span count
+  Span(u16),
+}
+
+impl<'i> FromCss<'i> for GridPlacementSpan {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    Ok(GridPlacementSpan::Span(
+      input.expect_integer()?.max(1) as u16
+    ))
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["<integer>"];
+}
+
+impl TailwindPropertyParser for GridPlacementSpan {
+  fn parse_tw(token: &str) -> Option<Self> {
+    token.parse::<u16>().map(Self::Span).ok()
+  }
+}
+
+impl<'i> FromCss<'i> for GridPlacement {
+  fn from_css(input: &mut Parser<'i>) -> ParseResult<'i, Self> {
+    if let Ok(ident) = input.try_parse(Parser::expect_ident_cloned) {
+      if ident.eq_ignore_ascii_case("auto") {
+        return Ok(GridPlacement::auto());
+      }
+
+      if ident.eq_ignore_ascii_case("span") {
+        if let Ok(span) = input.try_parse(GridPlacementSpan::from_css) {
+          return Ok(GridPlacement::Span(span));
+        }
+
+        // Approximate: a named span counts as `span 1`, since the placement only carries a count.
+        if input.try_parse(Parser::expect_ident_cloned).is_ok() {
+          return Ok(GridPlacement::span(1));
+        }
+
+        return Err(unexpected_token!(input.next()?,));
+      }
+
+      return Ok(GridPlacement::Named(ident.to_string()));
+    }
+
+    let token = input.next()?;
+    match *token {
+      Token::Number {
+        int_value, value, ..
+      } => {
+        let v: i32 = int_value.unwrap_or(value as i32);
+        Ok(GridPlacement::Line(v as i16))
+      }
+      _ => Err(unexpected_token!(token)),
+    }
+  }
+
+  const VALID_TOKENS: &'static [&'static str] = &["auto", "span", "<number>", "<ident>"];
+}
+
+impl ToCss for GridPlacementSpan {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::Span(span) => write!(dest, "{span}"),
+    }
+  }
+}
+
+impl ToCss for GridPlacement {
+  fn to_css<W: fmt::Write>(&self, dest: &mut W) -> fmt::Result {
+    match self {
+      Self::Auto => dest.write_str("auto"),
+      Self::Span(span) => {
+        dest.write_str("span ")?;
+        span.to_css(dest)
+      }
+      Self::Line(line) => write!(dest, "{line}"),
+      Self::Named(name) => dest.write_str(name),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::style::FromCssStr;
+
+  #[test]
+  fn test_parse_placement() {
+    assert_eq!(
+      GridPlacement::from_css_str("auto"),
+      Ok(GridPlacement::auto())
+    );
+
+    assert_eq!(
+      GridPlacement::from_css_str("span 2"),
+      Ok(GridPlacement::span(2))
+    );
+
+    assert_eq!(
+      GridPlacement::from_css_str("span name"),
+      Ok(GridPlacement::span(1))
+    );
+
+    assert_eq!(GridPlacement::from_css_str("3"), Ok(GridPlacement::Line(3)));
+
+    assert_eq!(
+      GridPlacement::from_css_str("-1"),
+      Ok(GridPlacement::Line(-1))
+    );
+
+    assert_eq!(
+      GridPlacement::from_css_str("header"),
+      Ok(GridPlacement::Named("header".to_string()))
+    );
+  }
+}

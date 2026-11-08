@@ -23,7 +23,7 @@ identify('user-42', { plan: 'pro' });
 
 ## Events survive the app being closed
 
-Every event is written to AsyncStorage (the default; pass `storage` to use something else) before anything is sent. A batch is frozen to storage before its first send attempt, and is removed only after the Worker acknowledges it, so a kill, a crash or a dead network never loses an acknowledged-pending event and a retry resends the identical bytes (the Worker drops a duplicate it already stored). The visitor identity, signed-in user and session survive relaunches too.
+Every event is written to AsyncStorage (the default; pass `storage` to use something else) before anything is sent. An event is removed from storage only after the Worker acknowledges it, so a kill, a crash or a dead network never loses a queued event. After a relaunch the queue is simply sent again; if the Worker had already stored an event whose answer was lost, the repeat carries the same event `id` and the import (`slurp sync`) keeps it once. If AsyncStorage fails to save, delivery carries on from memory and the failure is reported through `onError`. The visitor identity, signed-in user and session survive relaunches too.
 
 Queued events are sent:
 
@@ -32,7 +32,7 @@ Queued events are sent:
 - when the app returns to `active`;
 - when the network comes back, if you pass NetInfo.
 
-Failures (408, 429, 5xx, no network, or no answer within `requestTimeoutMs`) back off with jitter and honor `Retry-After`, including across relaunches, and always resend the identical bytes. Events are never truncated; one larger than 1 MiB is dropped and reported through `onError`. At most `maxQueueBytes` (default **2 MiB** here, 4 MiB on the web) are kept offline, oldest dropped first and reported.
+Failures (408, 429, 5xx, no network, or no answer within `requestTimeoutMs`) back off with jitter and honor `Retry-After`, including across relaunches; the events stay queued and are resent unchanged. Events are never truncated; one larger than 1 MiB is dropped and reported through `onError`. At most `maxQueueBytes` (default **2 MiB** here, 4 MiB on the web) are kept offline, oldest dropped first and reported.
 
 ## Options
 
@@ -58,11 +58,11 @@ Every event carries `context.os` (`{name, version}`), `context.app`, `context.de
 
 ## Notes and limits
 
-- **AsyncStorage's limits are respected.** On Android AsyncStorage cannot read a single value larger than about 2 MB and holds about 6 MB in total for your whole app. The SDK saves its queue as one value, so the default storage is wrapped in `chunkedStorage`, which splits it into pieces of at most 256 KB and switches to a new set atomically (a crash leaves the old or the new value readable, never a torn mix). If you pass your own `storage`, keep the queue small (`maxQueueBytes`) or wrap it with `chunkedStorage(storage)`.
+- **AsyncStorage's limits are respected.** On Android AsyncStorage cannot read a single value larger than about 2 MB and holds about 6 MB in total for your whole app. The SDK saves its queue as one value, so the default storage is wrapped in `chunkedStorage`, which splits it into pieces of at most 256K UTF-16 characters (`chunkChars`, 262,144 UTF-16 characters: that is 256 KB only for ASCII text, and non-ASCII text takes more bytes per character) and switches to a new set atomically (a crash leaves the old or the new value readable, never a torn mix). If you pass your own `storage`, keep the queue small (`maxQueueBytes`) or wrap it with `chunkedStorage(storage)`.
 
 - It has no native modules: it uses React Native's `AppState` and `Platform`, AsyncStorage, and optional NetInfo and expo-application. It works in Expo and bare projects. `react-native` and `@react-native-async-storage/async-storage` are peer dependencies; install them in your app.
 - Hermes ships `TextEncoder` from React Native 0.74; older versions use a built-in fallback. Ids use `crypto.getRandomValues` when present and `Math.random` otherwise (they only need to be unique).
-- What was tested: the queue, relaunch recovery, lifecycle and context logic run in Node against fakes of `AppState`, `Platform`, AsyncStorage and NetInfo, and the core runs against a real Worker. It has not yet been run on a device or simulator.
+- What was tested: the queue, relaunch recovery, lifecycle and context logic run in Node against fakes of `AppState`, `Platform`, AsyncStorage and NetInfo, and the core runs against a real Worker. The shared delivery scenarios in [`sdks/conformance`](../conformance/README.md) also run through this package, on a fake AsyncStorage with a per-value limit and the chunked wrapper. It has not yet been run on a device or simulator.
 
 ## License
 

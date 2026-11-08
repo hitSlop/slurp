@@ -91,7 +91,7 @@ pub struct ApiKey {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<String>,
-    // The key itself: publishable keys only (secret keys are stored as a hash).
+    // The key itself: always for a publishable key; for a secret key only in the CreateKey answer that made it (it is stored as a hash).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
 }

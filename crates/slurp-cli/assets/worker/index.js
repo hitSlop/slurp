@@ -219,7 +219,9 @@ function publicationWake(f, cfg, now) {
 __name(publicationWake, "publicationWake");
 function retentionWake(f, cfg, now) {
   if (cfg.retentionDays <= 0 || f.oldestLiveAt === null) return null;
-  return Math.max(f.oldestLiveAt + cfg.retentionDays * DAY_MS, now + 1e3);
+  const due = f.oldestLiveAt + cfg.retentionDays * DAY_MS;
+  if (due <= now && f.retryAt !== null) return Math.max(f.retryAt, now + 1e3);
+  return Math.max(due, now + 1e3);
 }
 __name(retentionWake, "retentionWake");
 function nextWake(f, cfg, now) {
@@ -1096,7 +1098,7 @@ var hasException = /* @__PURE__ */ __name((e) => {
   const values = isObject(x) && Array.isArray(x.values) ? x.values : Array.isArray(x) ? x : [];
   return values.some((v) => isObject(v) && !(isObject(v.mechanism) && v.mechanism.synthetic === true));
 }, "hasException");
-function translateItem(item, header) {
+function translateItem(item, header, itemHash) {
   const kind = item.type;
   if (kind !== "event" && kind !== "user_report" && kind !== "feedback" && kind !== "check_in") return null;
   let payload;
@@ -1118,6 +1120,7 @@ function translateItem(item, header) {
     id = text3(header.event_id) ?? text3(payload.event_id);
   } else {
     event = kind === "check_in" ? "check_in" : "user_feedback";
+    id = itemHash ? `sentry-${itemHash}` : void 0;
   }
   const timestamp = timestampOf(payload.timestamp);
   const record = { ...id ? { id } : {}, type: "track", event, ...timestamp ? { timestamp } : {} };
@@ -1155,7 +1158,7 @@ async function ingest2(req, route, host) {
   if (!principal) return reply(403, { detail: "invalid or missing sentry_key (use the DSN Slurp prints for this project)" });
   const lines = [];
   for (const item of envelope2.items) {
-    const t = translateItem(item, envelope2.header);
+    const t = translateItem(item, envelope2.header, item.type === "event" ? void 0 : await sha256Hex(item.payload));
     if (t && "line" in t) lines.push({ n: lines.length + 1, text: t.line });
   }
   const result = await submit(host, principal, lines, { invalid: "skip", geo: requestGeo(req) });

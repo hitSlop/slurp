@@ -108,20 +108,23 @@ test('one project, many senders: init is idempotent, setup changes nothing, and 
   assert.equal(again.status, 0, again.text)
   assert.equal(run(['status', '--project', ws2, '--json']).json.project, project, 'same name, same project')
   const keys = () => run(['project', 'key', 'list', project, '--scope', 'publishable', '--json']).json.keys as any[]
-  assert.equal(keys().length, 1, 'init never makes a second key')
+  const app = () => keys().filter(k => k.source === 'default')
+  assert.equal(app().length, 1, 'init never makes a second key for the app')
   const setup = run(['project', 'setup', project, '--json']); run(['project', 'setup', project, '--json'])
-  assert.equal(setup.status, 0, setup.text); assert.equal(keys().length, 1, 'setup only shows keys, it never makes one')
-  assert.equal(setup.json.environment.SLURP_PUBLISHABLE_KEY, keys()[0].key)
+  const before = keys().length
+  assert.equal(setup.status, 0, setup.text); assert.equal(keys().length, before, 'setup only shows keys, it never makes one')
+  assert.equal(setup.json.environment.SLURP_PUBLISHABLE_KEY, app()[0].key)
   // one key per sender
-  const ios = run(['project', 'key', 'create', project, '--scope', 'publishable', '--source', 'ios', '--json']).json.key as string
-  const web = run(['project', 'key', 'create', project, '--scope', 'publishable', '--source', 'web', '--json']).json.key as string
+  const ios = run(['project', 'key', 'create', project, '--scope', 'publishable', '--source', 'ios', '--json']).json.key.key as string
+  const web = run(['project', 'key', 'create', project, '--scope', 'publishable', '--source', 'web', '--json']).json.key.key as string
   assert.equal(run(['send', 'from_ios', '--user-id', 'u1', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: ios }).json.accepted, true)
   assert.equal(run(['send', 'from_web', '--user-id', 'u2', '--to', project, '--json'], { SLURP_PUBLISHABLE_KEY: web }).json.accepted, true)
-  assert.equal(run(['send', 'from_cli', '--user-id', 'u3', '--project', ws, '--json']).json.accepted, true)
+  const fromCli = run(['send', 'from_cli', '--user-id', 'u3', '--project', ws, '--json'])
+  assert.equal(fromCli.json?.accepted, true, fromCli.text)
   await publish(w.base, project)
   assert.equal(run(['sync', '--project', ws2, '--json']).status, 0)
   const q = run(['sql', "SELECT sender, count(*) n FROM events WHERE event LIKE 'from_%' GROUP BY sender ORDER BY sender", '--project', ws2, '--json']).json
-  assert.deepEqual(q.rows, [['default', 1], ['ios', 1], ['web', 1]], 'each event carries the name of the key that sent it')
+  assert.deepEqual(q.rows, [['cli', 1], ['ios', 1], ['web', 1]], 'each event carries the source of the key that sent it; slurp send is the cli source')
   // revoking one sender's key stops that sender only
   const iosKey = keys().find(k => k.source === 'ios')
   run(['project', 'key', 'revoke', project, iosKey.keyId, '--json'])

@@ -528,6 +528,11 @@ fn validate_record(line: &str) -> Result<()> {
         bail!("id must be 1 to 256 bytes");
     }
     if let Some(timestamp) = text("timestamp")? {
+        // Upper-case T and Z only, like the Worker: DuckDB cannot read the lower-case forms RFC 3339 also allows.
+        anyhow::ensure!(
+            !timestamp.contains(['t', 'z']),
+            "timestamp must be RFC 3339"
+        );
         chrono::DateTime::parse_from_rfc3339(timestamp)
             .map_err(|_| anyhow!("timestamp must be RFC 3339"))?;
     }
@@ -756,18 +761,8 @@ mod tests {
     /// bytes for nesting depth, lone surrogates, duplicate keys and number forms; the CLI parses JSON), but that list is kept
     /// here, by name, so a new difference is noticed.
     ///
-    /// The last four are the fixture's old-contract vectors: no field name is reserved any more (the contract says server
-    /// metadata lives outside the record), and the contract's "RFC 3339 string" does not say a capital `T` is required. When
-    /// `backend/fixtures/canonical/records.json` is rewritten to the new contract, this list is what to re-check.
-    const LENIENT: &[&str] = &[
-        "duplicate key via escape at depth 2",
-        "reserved received_at",
-        "reserved received_seq",
-        "client supplied context.geo",
-        "duplicate top-level id",
-        "duplicate key at depth 2",
-        "timestamp lowercase t",
-    ];
+    /// It is empty: the CLI and the Worker agree on every vector today.
+    const LENIENT: &[&str] = &[];
 
     #[test]
     fn the_cli_never_refuses_what_the_worker_accepts_and_its_leniency_is_listed() {

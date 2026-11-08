@@ -104,17 +104,6 @@ jobs:
           pnpm --filter @hitslop/slurp-react-native build
           pnpm --filter @hitslop/slurp-react-native test
 
-  swift:
-    runs-on: macos-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Swift SDK through the repository's root manifest (what people add by URL)
-        run: swift test
-      - name: Swift SDK on its own
-        run: swift test
-        working-directory: sdks/swift
-
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 15

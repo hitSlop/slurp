@@ -35,7 +35,7 @@ Rules every part follows:
   - **Optional fields, type-checked when present:**
     - `type`: `"track"` or `"identify"`, default `track`
     - `id`: a string of 1-256 UTF-8 bytes
-    - `timestamp`: an RFC 3339 string with a valid calendar date and time
+    - `timestamp`: an RFC 3339 string with a valid calendar date and time, with upper-case `T` and `Z` (DuckDB cannot read the lower-case forms)
     - `data` and `context`: objects
     - `user_id`, `anonymous_id` and `session_id`: non-empty strings
     - `event`: when present, a string of 1-200 Unicode code points

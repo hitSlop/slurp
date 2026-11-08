@@ -78,7 +78,8 @@ test('items are mapped or dropped on purpose; messages are not errors; gzip and 
   const byEvent = (e: string) => lines.filter(l => l.event === e)
   assert.equal(lines.length, 4, 'message, user feedback, check-in and the legacy error; sessions, transactions, attachments and client reports are dropped')
   assert.equal(byEvent('message').length, 1); assert.equal(byEvent('user_feedback')[0].data.comments, 'it broke')
-  assert.ok(!('id' in byEvent('user_feedback')[0]) && !('id' in byEvent('check_in')[0]), 'items with no id of their own have none')
+  // Items with no id of their own get a hash of their exact bytes, so a retried envelope is recognised as a copy at import.
+  for (const e of ['user_feedback', 'check_in']) assert.match(byEvent(e)[0].id, /^sentry-[0-9a-f]{64}$/, `${e} carries a payload-hash id`)
   assert.equal(byEvent('check_in')[0].data.monitor_slug, 'nightly'); assert.equal(byEvent('error')[0].id, id('3'))
 })
 

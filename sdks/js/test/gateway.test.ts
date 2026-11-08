@@ -1,6 +1,4 @@
-// NOTE: re-verified in integration. This runs against a real Worker whose contract (docs/contracts.md) is being rewritten, so it was only
-// updated for the new SDK delivery rules (saved queue instead of frozen batches, no Slurp-Duplicate, archive envelopes). It has not been
-// run since, and the archive listing and download calls near the end still use the earlier client and must follow the new routes.
+// The SDK against the real Worker (docs/contracts.md): delivery through a fault-injecting proxy, then the archives read back.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
@@ -12,8 +10,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { gunzipSync } from 'node:zlib'
-import { Project, Archive } from '../../../backend/src/slurp.gen.ts'
-import { admin, debug, startWorker, type Worker } from '../../../backend/test/harness.ts'
+import { call } from '../../../backend/src/client.ts'
+import { ADMIN_TOKEN, startWorker, type Worker } from '../../../backend/test/harness.ts'
 import { createClient, memoryStorage, version } from '../src/index.ts'
 import type { SlurpClient } from '../src/index.ts'
 import { fileStorage } from '../src/node.ts'
@@ -47,10 +45,8 @@ test('durable delivery, backpressure, splitting and permanent auth failure leave
   // The real Worker under wrangler dev (set BASE to use a running or deployed one; it must allow a 1800 byte body limit).
   worker = await startWorker({ MAX_BODY_BYTES: String(maxBody), GROUP_COMMIT_MS: '20' })
   const publicUrl = worker.base
-  const alice = admin
-  const account = new Project(publicUrl, fetch)
-  const project = await account.createProject({ name: 'sdk_delivery' }, alice)
-  const secret = await account.createKey({ project: project.project.id, scope: 'secret' }, alice)
+  const project = await call(publicUrl, ADMIN_TOKEN, 'CreateProject', { name: 'sdk_delivery' })
+  const secret = { key: (await call(publicUrl, ADMIN_TOKEN, 'CreateKey', { project: project.project.id, scope: 'secret' })).key.key! }
   const records: {
     method: string | undefined; body: Buffer; at: number; forwarded: boolean
     status: number; headers: Record<string, string>; authorization: string | undefined; contentType: string | undefined; queryKey: boolean
@@ -107,11 +103,9 @@ test('durable delivery, backpressure, splitting and permanent auth failure leave
   const errors: { message: string; dropped: number }[] = []
   const onError = (error: Error, dropped: number) => { errors.push({ message: error.message, dropped }) }
   const drain = (client: SlurpClient) => until(async () => { await client.flush(); return client.pending === 0 }, 'SDK did not drain')
-  const archive = new Archive(publicUrl, fetch)
   const publish = async (previous = 0) => {
-    await debug(publicUrl, 'seal', project.project.id) // the alarm interval is long; seal on demand
-    const coverage = await archive.getCoverage({ project: project.project.id }, alice)
-    const published = Number(coverage.coverage?.latestPublished ?? 0)
+    // The alarm interval is long; publish on demand, as `slurp sync --now` does.
+    const published = (await call(publicUrl, ADMIN_TOKEN, 'Publish', { project: project.project.id })).coverage.last ?? 0
     assert.ok(published > previous, 'nothing new was published')
     return published
   }
@@ -347,13 +341,13 @@ test('durable delivery, backpressure, splitting and permanent auth failure leave
   assert.deepEqual(proxyErrors, [])
   await publish(firstPublished)
   const archived: Record<string, any>[] = []
-  let after: string | undefined
+  let after: number | undefined
   let pages = 0
   do {
-    const page = await archive.listObjects({ project: project.project.id, after, limit: 1 }, { Authorization: `Bearer ${secret.key}` })
+    const page = await call(publicUrl, secret.key, 'ListArchives', { project: project.project.id, after, limit: 1 })
     pages++
-    for (const object of page.objects) {
-      const response = await fetch(object.url)
+    for (const object of page.archives) {
+      const response = await fetch(`${publicUrl}/v1/projects/${project.project.id}/archives/${object.seq}`, { headers: { Authorization: `Bearer ${secret.key}` } })
       assert.equal(response.status, 200)
       const compressed = Buffer.from(await response.arrayBuffer())
       assert.equal(compressed.byteLength, object.size)
@@ -362,7 +356,7 @@ test('durable delivery, backpressure, splitting and permanent auth failure leave
       assert.equal(raw.at(-1), '\n')
       archived.push(...raw.trimEnd().split('\n').map(line => JSON.parse(line)))
     }
-    after = page.nextAfter
+    after = page.next
   } while (after)
   assert.equal(pages, 2)
   // The Worker stores every request as sent, so a replayed request (the lost response) is in the archive twice; the import dedupes by (source, id).

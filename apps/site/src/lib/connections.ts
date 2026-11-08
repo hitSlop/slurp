@@ -5,8 +5,8 @@ export const current:Connection[]=[
  {name:'JavaScript / TypeScript',logo:'javascript',description:'Browser and Node event capture with a durable queue.',install:'npm install @hitslop/slurp-sdk',status:'Works today',href:'/docs/#capture'},
  {name:'Feedback widget',icon:'help',description:'A drop-in "Feedback" button for web pages: a small form with a message, an optional rating and email. Each submission is a feedback event next to what the person did.',install:"import { mountFeedback } from '@hitslop/slurp-sdk/feedback'",status:'Works today',href:'/connections/#sdks'},
  {name:'React Native / Expo',logo:'reactnative',description:'Events survive the app being killed and are sent when it goes to the background.',install:'npm install @hitslop/slurp-react-native',status:'Preview',href:'/connections/#sdks'},
- {name:'Swift',logo:'swift',description:'iOS, macOS, tvOS and watchOS. Events are written to disk before they are sent.',install:'Xcode: add github.com/hitSlop/slurp',status:'Preview',href:'/connections/#sdks'},
  {name:'Segment',logo:'segment',description:'Keep your Segment SDK and change its host to your Worker.',install:'writeKey: slurp_pk_… · host: your Worker',status:'Works today',href:'/connections/#sdks'},
+ {name:'Swift (via Segment)',logo:'swift',description:"iOS, macOS, tvOS and watchOS with Segment's analytics-swift, pointed at your Worker. Set both apiHost and cdnHost.",install:'.apiHost("your-worker/v1").cdnHost("your-worker/v1")',status:'Works today',href:'/connections/#sdks'},
  {name:'Sentry',description:'Keep your Sentry SDK and change the DSN. Errors are stored whole and read with SQL.',install:'dsn: https://slurp_pk_…@your-worker/1',logo:'sentry',status:'Works today',href:'/connections/#sdks'},
  {name:'Python',description:'Keep the Segment or Sentry Python SDK and change the host or the DSN. No extra package.',install:'analytics.host = "https://your-worker" · sentry_sdk.init(dsn="https://slurp_pk_…@your-worker/1")',logo:'python',status:'Works today',href:'/connections/#sdks'},
  {name:'MCP',description:'Let Claude Code, Cursor, Codex, Claude Desktop or Windsurf read your events: describe the schema, run read-only SQL in a sandbox, sync and build reports.',install:'claude mcp add slurp -- slurp mcp',icon:'agent',status:'Works today',href:'/docs/#agent'},
@@ -16,7 +16,7 @@ export const current:Connection[]=[
  {name:'RevenueCat',description:'App Store and Google Play purchases, renewals, cancellations and refunds arrive as events, with a revenue view in SQL.',install:'slurp project webhook PROJECT revenuecat',logo:'revenuecat',status:'Preview',href:'/docs/#webhooks'},
  {name:'Stripe',description:'Payments and subscriptions arrive as events.',install:'slurp project webhook PROJECT stripe --secret whsec_…',logo:'stripe',status:'Preview',href:'/docs/#webhooks'},
  {name:'Webhooks',description:'Any tool that can POST: the payload is stored whole as an event, named by you, optionally signed.',install:'slurp project webhook PROJECT generic',icon:'webhook',status:'Preview',href:'/docs/#webhooks'},
- {name:'HTTP API',description:'Send canonical events as NDJSON to your configured backend.',icon:'globe',status:'Works today',href:'/docs/#http'},
+ {name:'HTTP API',description:'POST one JSON object, or NDJSON lines, to /v1/events with a publishable key. Only event is required.',icon:'globe',status:'Works today',href:'/docs/#http'},
  ...['Claude Code','Codex','Cursor'].map((name,i):Connection=>({name,description:'Run the Slurp CLI and query your local DuckDB data.',logo:['claude','codex','cursor'][i],status:'Works today',href:'/docs/#agent'}))
 ];
 export const groups:ConnectionGroup[]=[
@@ -37,10 +37,10 @@ export const worksWith:WorksWith[]=[
  {name:'Web',note:'browser SDK',group:'capture',icon:'globe',slug:'googlechrome',color:'4285F4',logoColor:'white'},
  {name:'Node.js',note:'SDK',group:'capture',logo:'nodejs',slug:'nodedotjs',color:'5FA04E',logoColor:'white'},
  {name:'React Native',note:'preview SDK',group:'capture',logo:'reactnative',slug:'react',color:'61DAFB',logoColor:'white'},
- {name:'Swift',note:'preview SDK',group:'capture',logo:'swift',slug:'swift',color:'F05138',logoColor:'white'},
  {name:'HTTP API',note:'any language',group:'capture',icon:'webhook',slug:'curl',color:'073551',logoColor:'white'},
  {name:'Feedback form',note:'web widget',group:'capture',icon:'help',color:'E8002A'},
  {name:'Segment',note:'change the host',group:'keep',logo:'segment',color:'52BD94'},
+ {name:'Swift',note:'via Segment',group:'keep',logo:'swift',slug:'swift',color:'F05138',logoColor:'white'},
  {name:'Sentry',note:'change the DSN',group:'keep',logo:'sentry',slug:'sentry',color:'362D59',logoColor:'white'},
  {name:'Python',note:'via Segment or Sentry',group:'keep',logo:'python',slug:'python',color:'3776AB',logoColor:'white'},
  {name:'Rust',note:'coming soon',group:'soon',logo:'rust',slug:'rust',color:'9CA3AF',logoColor:'white'},

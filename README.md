@@ -21,10 +21,10 @@
   <img src="https://img.shields.io/badge/Web-browser%20SDK-4285F4?style=flat-square&labelColor=1f2327&logo=googlechrome&logoColor=white" alt="Web: browser SDK">
   <img src="https://img.shields.io/badge/Node.js-SDK-5FA04E?style=flat-square&labelColor=1f2327&logo=nodedotjs&logoColor=white" alt="Node.js: SDK">
   <img src="https://img.shields.io/badge/React%20Native-preview%20SDK-61DAFB?style=flat-square&labelColor=1f2327&logo=react&logoColor=white" alt="React Native: preview SDK">
-  <img src="https://img.shields.io/badge/Swift-preview%20SDK-F05138?style=flat-square&labelColor=1f2327&logo=swift&logoColor=white" alt="Swift: preview SDK">
   <img src="https://img.shields.io/badge/HTTP%20API-any%20language-073551?style=flat-square&labelColor=1f2327&logo=curl&logoColor=white" alt="HTTP API: any language">
   <img src="https://img.shields.io/badge/Feedback%20form-web%20widget-E8002A?style=flat-square&labelColor=1f2327" alt="Feedback form: web widget"><br>
   <b>Keep using</b>&nbsp; <img src="https://img.shields.io/badge/Segment-change%20the%20host-52BD94?style=flat-square&labelColor=1f2327&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIwLjk3ZW0iIGhlaWdodD0iMWVtIiB2aWV3Qm94PSIwIDAgMjU2IDI2NSI%2BPHBhdGggZmlsbD0iIzRmYjU4YiIgZD0ibTIzMy41NiAxNDEuOTI3bC4xNy4wMTNsMTcuODkyIDEuODdhNC45MyA0LjkzIDAgMCAxIDMuMjI1IDEuNzA3bC4xMzMuMTYzbC0uMTcuMDg1YTQuOTMgNC45MyAwIDAgMSAxLjAyIDMuNzRhMTMzLjI3IDEzMy4yNyAwIDAgMS00MS42MDQgODEuMDgzYTEyOC44NiAxMjguODYgMCAwIDEtODcuNjI5IDM0LjM4YTEyNy41IDEyNy41IDAgMCAxLTQ2LjE1Ni04LjU3bC0uODAyLS4zMTJhNC43MiA0LjcyIDAgMCAxLTIuNjg2LTIuNTMzbC0uMDc3LS4xODdhNC45IDQuOSAwIDAgMS0uMDgzLTMuNjZsNy4wNjItMTcuMjNhNC44NDYgNC44NDYgMCAwIDEgNi4xMTgtMi43OTlsLjE2My4wNmMzNi4wOTcgMTMuOTM5IDc2Ljk4IDYuMDg5IDEwNS4zNDktMjAuMjI3YTEwNC40NiAxMDQuNDYgMCAwIDAgMzIuODkxLTYzLjMyYTQuOTMgNC45MyAwIDAgMSA1LjAxMy00LjI3em0tMTkwLjA4IDY0LjMxbC4yNTEtLjAwMmwuMjUzLjAwMmM4LjEyLjA5MyAxNC42NTggNi42NTkgMTQuNzQ2IDE0Ljc0OXYuMjUzbC0uMDAyLjI1MmMtLjE0MSA4LjI4NC02Ljk3IDE0Ljg4Ni0xNS4yNTQgMTQuNzQ1cy0xNC44ODUtNi45Ny0xNC43NDUtMTUuMjU0Yy4xMzktOC4xMTUgNi42OTUtMTQuNjE1IDE0Ljc1LTE0Ljc0NU00LjkzIDE0Ny4wODJoMTQ2LjMxNmE0Ljk3MyA0Ljk3MyAwIDAgMSA0LjkyOCA0Ljg0NGwuMDAyLjE3MXYxOC4zMTZhNC45NzQgNC45NzQgMCAwIDEtNC43NiA1LjAxbC0uMTcuMDA1SDQuOTNBNC45NzUgNC45NzUgMCAwIDEgMCAxNzAuNTg0di0xOC42NTlhNC45NzUgNC45NzUgMCAwIDEgNC43NTUtNC44Mzh6TTE2OS41NiA3LjMxMWE0Ljk3IDQuOTcgMCAwIDEgMi44NDggMi42MzVhNS4xIDUuMSAwIDAgMSAwIDMuODY3bC02LjM3NSAxNi45OTlhNC44NDUgNC44NDUgMCAwIDEtNi4xNjIgMi45NzRBMTAxLjIzIDEwMS4yMyAwIDAgMCA2Mi4xMyA1MS4yNTJhMTA1LjI3IDEwNS4yNyAwIDAgMC0zNC41MDcgNTQuOTlhNC45MyA0LjkzIDAgMCAxLTQuNzYgMy42OThoLTEuMTA1TDQuMjUgMTA1LjczM2E0LjkgNC45IDAgMCAxLTMuMTAzLTIuMjk1aC0uMDg1QTQuOTMgNC45MyAwIDAgMSAuNTEgOTkuNTdhMTMzLjQgMTMzLjQgMCAwIDEgNDQuNDEtNzAuMjA0Qzc5LjczOS43IDEyNy4wMTktNy42NjYgMTY5LjU2IDcuMzExbS02NC44MDcgNzMuNDM0SDI1MS4wN2E0Ljk3IDQuOTcgMCAwIDEgNC45MjIgNC42N2wuMDA4LjE3NHYxOC4zMTdhNC45NzMgNC45NzMgMCAwIDEtNC43NiA1LjAxbC0uMTcuMDA1SDEwNC43NTRhNC45NyA0Ljk3IDAgMCAxLTQuODg2LTQuODQybC0uMDAyLS4xNzNWODUuNzU5YTQuOTcgNC45NyAwIDAgMSA0LjcxNS01LjAwOHptMTAxLjU3Mi01NS44ODNsLjI1Mi0uMDAybC4yNTMuMDAyYzguMTIuMDkzIDE0LjY1OCA2LjY1OSAxNC43NDYgMTQuNzQ4di4yNTNxMCAuMTI4LS4wMDIuMjUzYy0uMTQgOC4yODQtNi45NyAxNC44ODUtMTUuMjU0IDE0Ljc0NGMtOC4yODQtLjE0LTE0Ljg4NS02Ljk3LTE0Ljc0NC0xNS4yNTNjLjEzOC04LjExNiA2LjY5NC0xNC42MTYgMTQuNzQ5LTE0Ljc0NSIvPjwvc3ZnPg%3D%3D" alt="Segment: change the host">
+  <img src="https://img.shields.io/badge/Swift-via%20Segment-F05138?style=flat-square&labelColor=1f2327&logo=swift&logoColor=white" alt="Swift: via Segment">
   <img src="https://img.shields.io/badge/Sentry-change%20the%20DSN-362D59?style=flat-square&labelColor=1f2327&logo=sentry&logoColor=white" alt="Sentry: change the DSN">
   <img src="https://img.shields.io/badge/Python-via%20Segment%20or%20Sentry-3776AB?style=flat-square&labelColor=1f2327&logo=python&logoColor=white" alt="Python: via Segment or Sentry"><br>
   <b>Coming</b>&nbsp; <img src="https://img.shields.io/badge/Rust-coming%20soon-9CA3AF?style=flat-square&labelColor=1f2327&logo=rust&logoColor=white" alt="Rust: coming soon">
@@ -52,7 +52,7 @@ No servers to run, no data leaving your account. The Cloudflare Free plan is eno
   <img src="docs/assets/slurp-workbench.png" width="900" alt="Diagram: connections send events to Cloudflare R2; your coding agent syncs them into a local DuckDB file, runs SQL analysis, generates a report, ships a product fix and updates the tracking, which collects new signals.">
 </p>
 
-Your coding agent owns the whole span: it pulls the data, analyzes it with SQL, writes the report, ships the fix and updates the tracking so the next round of signals arrives. Today the JavaScript SDK and HTTP capture work; the other inputs in the picture (bug reports, chat, crashes, analytics tools, more SDKs) are on the roadmap, see [Connections](https://slurp.run/connections/).
+Your coding agent owns the whole span: it pulls the data, analyzes it with SQL, writes the report, ships the fix and updates the tracking so the next round of signals arrives. Today the JavaScript and React Native SDKs, HTTP, the Segment and Sentry SDKs you already use (Swift and Python included) and GitHub, Stripe and RevenueCat webhooks work; the other inputs in the picture (bug reports, chat, readable crash traces, other analytics tools, more SDKs) are on the roadmap, see [Connections](https://slurp.run/connections/).
 
 ## What your agent generates
 
@@ -84,7 +84,7 @@ The [source of the first one](examples/demo/export-health.md) is a plain Markdow
 
 *Vendor prices read from their public pricing pages on November 6, 2026; they change, so check before deciding. Mixpanel is yearly billing. Amplitude does not publish paid event prices, and Mixpanel and OpenPanel direct high volumes to sales.*
 
-The Slurp row is the Cloudflare bill for running your own Worker, not a Slurp fee: 20 events per request, about 320 bytes stored per event, 12 months of archives kept, at Cloudflare's list prices (the Workers Free plan covers you until about 50K requests a day). The 1B and 10B figures are ranges, extrapolated from load tests of about 5,000 events a second per source, not months of running those volumes; about two thirds of the bill is R2 storage, so event size and retention matter most. Details: [docs/self-hosting.md](docs/self-hosting.md#costs-and-limits).
+The Slurp row is the Cloudflare bill for running your own Worker, not a Slurp fee: 20 events per request, about 320 bytes stored per event, 12 months of archives kept, at Cloudflare's list prices (the Workers Free plan covers you until about 50K requests a day). The 1B and 10B figures are ranges, extrapolated from load tests of about 5,000 events a second per project, not months of running those volumes; about two thirds of the bill is R2 storage, so event size and retention matter most. Details: [docs/self-hosting.md](docs/self-hosting.md#costs-and-limits).
 <!-- pricing:end -->
 
 ## Quickstart
@@ -104,21 +104,21 @@ slurp setup                  # once per computer: library folder and DuckDB
 cd /path/to/your/app
 slurp init --name "My app"   # connects this app, opens its quickstart page with your keys
 slurp send signed_up --user-id demo_alice --data '{"demo":true}'
-slurp sync                   # archives are sealed about every 10 minutes
+slurp sync --now             # publishes what the Worker has buffered (admin token), then imports it
 slurp sql 'SELECT event, count(*) AS n FROM events GROUP BY event'
 ```
 
-Each project is one event stream on your Worker (many senders can write to it: a website, an app, a webhook) bound to one DuckDB file, stored locally or on an external drive. SQL, report definitions and project metadata stay with your app. No daemon is required. DuckDB 2.x is used for analysis.
+Each project is one event stream on your Worker (many sources can write to it: a website, an app, a webhook) bound to one DuckDB file, stored locally or on an external drive. SQL, report definitions and project metadata stay with your app. No daemon is required. DuckDB 2.x is used for analysis.
 
 ## Send events
 
-Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the next archive seal (about 10 minutes by default). You do not make the endpoint or the key by hand: `slurp init` creates your project on the Worker together with its first publishable key, and prints your ingest URL and that key. Those two values are all an SDK needs. A publishable key can only send events, so it is safe in a web page or an app. `slurp project setup PROJECT` shows them again, and `slurp project key create PROJECT --scope publishable --name ios` makes one key per sender. [Where they come from](docs/sdks.md#where-the-endpoint-and-key-come-from).
+Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the Worker next publishes an archive (about 10 minutes by default, or at once with `slurp sync --now`). You do not make the endpoint or the key by hand: `slurp init` creates your project on the Worker together with its first publishable key, and prints your ingest URL and that key. Those two values are all an SDK needs. A publishable key can only send events, so it is safe in a web page or an app. `slurp project setup PROJECT` shows them again, and `slurp project key create PROJECT --scope publishable --source ios` makes one key per source (`web`, `ios`, `github`...), and the source is stamped on every event as `sender`. [Where they come from](docs/sdks.md#where-the-endpoint-and-key-come-from).
 
 | Send from | Install | Status |
 |---|---|---|
 | **JavaScript / TypeScript** (browser, Node) | `npm install @hitslop/slurp-sdk` | Published |
 | **React Native / Expo** | `npm install @hitslop/slurp-react-native @react-native-async-storage/async-storage` | Tested against fakes; not yet run on a device |
-| **Swift** (iOS, macOS, tvOS, watchOS) | Xcode: add the package `https://github.com/hitSlop/slurp` | Unit tested and run against a local Worker; not yet in an app on a device |
+| **Swift** (iOS, macOS, tvOS, watchOS) | Segment's `analytics-swift` (Xcode: add `https://github.com/segmentio/analytics-swift`), with both hosts set to your Worker (below) | There is no Slurp Swift SDK |
 | **Segment SDKs** you already use | Change the host to your Worker (below) | Verified with analytics-node, analytics-next, analytics-swift and `segment-analytics-python` |
 | **Sentry SDKs** you already use | Change the DSN to your Worker (below) | Verified with `@sentry/node`, `@sentry/browser` and `sentry-sdk` for Python |
 | **Python** | `pip install segment-analytics-python` or `sentry-sdk`, then change the host or DSN | Both run unmodified against a Worker on Python 3.9, 3.12 and 3.14; there is no native Python SDK |
@@ -153,14 +153,17 @@ screen('Home');
 track('purchase_completed', { total: 49 });
 ```
 
-**Swift**: events are written to disk before they are sent:
+**Swift** (iOS, macOS): use Segment's `analytics-swift` and point it at your Worker. Set **both** `apiHost` and `cdnHost`: without `cdnHost` the SDK fetches its settings from Segment's CDN and can send events there instead.
 
 ```swift
-import Slurp
+import Segment
 
-SlurpClient.configure(.init(key: "slurp_pk_…", endpoint: URL(string: "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events")!))
-SlurpClient.shared.screen("Home")
-SlurpClient.shared.track("purchase_completed", ["total": 49])
+let configuration = Configuration(writeKey: "slurp_pk_…")
+    .apiHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1")
+    .cdnHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1")
+let analytics = Analytics(configuration: configuration)
+analytics.screen(title: "Home")
+analytics.track(name: "purchase_completed", properties: ["total": 49])
 ```
 
 **GitHub, Stripe, RevenueCat or any webhook?** `slurp project webhook PROJECT github` prints a URL and a secret to paste into the provider. Releases, deployments, payments and app purchases then arrive as events (named for the sender, stored whole), a `releases` view lists GitHub releases and deployments so a metric change can be lined up with the release behind it, and a `revenue` view lists RevenueCat purchases and renewals. Preview: [docs/webhooks.md](docs/webhooks.md).
@@ -172,8 +175,6 @@ SlurpClient.shared.track("purchase_completed", ["total": 49])
 const analytics = new Analytics({ writeKey: 'slurp_pk_…', host: 'https://slurp.YOUR-SUBDOMAIN.workers.dev', path: '/v1/batch' });
 // Browser (@segment/analytics-next)
 const [analytics] = await AnalyticsBrowser.load({ writeKey: 'slurp_pk_…', cdnURL: 'https://slurp.YOUR-SUBDOMAIN.workers.dev' });
-// Swift (analytics-swift)
-let config = Configuration(writeKey: "slurp_pk_…").apiHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1").cdnHost("slurp.YOUR-SUBDOMAIN.workers.dev/v1")
 ```
 
 **Already using Sentry?** Change the DSN. Errors are stored whole as `error` events and read with the `errors` view; there is no symbolication or issue UI. The DSN's public key is your publishable key as is (the setup page shows the finished DSN):
@@ -186,24 +187,24 @@ Sentry.init({ dsn: 'https://slurp_pk_…@slurp.YOUR-SUBDOMAIN.workers.dev/1' });
 SELECT group_key, any_value(exception_type) AS type, count(*) AS n FROM errors GROUP BY group_key ORDER BY n DESC;
 ```
 
-**The CLI**, from your app's folder, with the project's saved key (handy for testing, scripts and cron jobs):
+**The CLI**, from your app's folder (handy for testing, scripts and cron jobs). It asks your Worker for the publishable key of the `cli` source, so the events carry `sender = 'cli'`; this needs the saved admin connection (or `SLURP_PUBLISHABLE_KEY`):
 
 ```sh
 slurp send signed_up --user-id user_42 --data '{"plan":"pro"}'
 slurp identify user_42 --data '{"plan":"pro"}'
-slurp send --stdin < events.ndjson        # NDJSON records from a file or a pipeline
+slurp send --stdin < events.ndjson        # NDJSON records from a file or a pipeline (give each an "id")
+slurp sync --now                          # publish what the Worker has buffered, then import it
 ```
 
-**HTTP from any language**: POST newline-delimited JSON to `/v1/events`:
+**HTTP from any language**: POST one JSON object to `/v1/events`. Only `event` is required:
 
 ```sh
-curl -X POST "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events" \
-  -H "Authorization: Bearer slurp_pk_…" \
-  -H "Content-Type: application/x-ndjson" \
-  --data-binary $'{"id":"evt_1","type":"track","event":"signed_up","timestamp":"2026-11-07T12:00:00Z","user_id":"user_42","data":{"plan":"pro"}}\n'
+curl -X POST "https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events?key=slurp_pk_…" --data-binary '{"event":"signed_up"}'
+# the Worker answers {"ok":true,"accepted":1}
+slurp sync --now    # publish it and import it, to see it right away
 ```
 
-Retrying the exact same bytes is safe: the Worker answers `Slurp-Duplicate: 1`. The event format is described in [docs/architecture.md](docs/architecture.md#contracts).
+The key can also go in an `Authorization: Bearer slurp_pk_…` header. Send several records as NDJSON, one object per line; if any line is invalid nothing is stored and the `400` lists every bad line. Add an `id` (and `user_id`, `timestamp`, `data`) when you have them: a record without an `id` is a new event every time it is sent, while the same `id` from the same source is stored once, so give each event an `id` to make a retry safe (the SDKs and `slurp send` always do). The record format is in [docs/contracts.md](docs/contracts.md#sending-events-post-v1events).
 
 ## Connect your agent
 
@@ -212,7 +213,7 @@ slurp agent setup --out .agents/skills/slurp        # skills for any coding agen
 claude mcp add slurp -- slurp mcp --project "$PWD" # or MCP: Claude Code, Cursor, Codex, Claude Desktop, Windsurf
 ```
 
-`slurp mcp` lets an AI client describe the schema, run read-only SQL (in a sandbox that cannot read local files), sync and build reports; `--allow-send` also lets it send events, tagged `context.source = "mcp"`. To post results to your team, `slurp notify slack --channel C0123ABCD --file report/report.png --text "Weekly report"` (Slack bot token) or `slurp notify discord ...` (webhook), run from cron for a scheduled report. Tools, config for each client and a schedule recipe: [docs/integrations.md](docs/integrations.md).
+`slurp mcp` lets an AI client describe the schema, run read-only SQL (in a sandbox that cannot read local files), sync and build reports; `--allow-send` also lets it send events, with `sender = 'mcp'` (filter them out with `WHERE sender <> 'mcp'`). To post results to your team, `slurp notify slack --channel C0123ABCD --file report/report.png --text "Weekly report"` (Slack bot token) or `slurp notify discord ...` (webhook), run from cron for a scheduled report. Tools, config for each client and a schedule recipe: [docs/integrations.md](docs/integrations.md).
 
 ## Community
 
@@ -224,7 +225,7 @@ Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bu
 |---|---|
 | `backend/` | The Worker (TypeScript): ingest, archives, control plane. Self-contained so it can be deployed on its own. |
 | `crates/` | Rust CLI (`slurp-cli`), client and archive reader (`slurp-client`), Markdown reports (`slurp-document`, `slurp-render`) |
-| `sdks/` | SDKs: [`js`](sdks/js), [`react-native`](sdks/react-native), [`swift`](sdks/swift) (the root `Package.swift` exposes it to Swift Package Manager) |
+| `sdks/` | SDKs: [`js`](sdks/js), [`react-native`](sdks/react-native) and the delivery scenarios every SDK runs ([`conformance`](sdks/conformance)) |
 | `apps/site` | The public site (home, docs, self-host page, cost comparison) |
 | `apps/setup` | The private offline setup page `slurp init` opens (built into the CLI as `setup.html`) |
 | `docs/` | [Documentation](docs/README.md) |
@@ -235,13 +236,15 @@ Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bu
 pnpm install                      # website, landing, SDK
 pnpm --filter slurp-setup build   # the quickstart page the CLI embeds (crates/slurp-cli/assets/setup.html)
 pnpm --filter slurp-site build
-cargo test --project
+SLURP_TEST_DUCKDB=$HOME/.slurp/bin/duckdb cargo test --workspace   # includes a check that backend/src/api.gen.ts is current
 (cd backend && npm install && npm test)   # Worker tests under wrangler dev, incl. the real CLI
 (cd sdks/js && node --test test/*.test.ts)
-backend/api/generate.sh --check   # regenerate webrpc clients (needs Go; webrpc-gen is pinned in the script)
+SLURP_UPDATE_BINDINGS=1 cargo test -p slurp-client api_bindings   # regenerate backend/src/api.gen.ts after changing crates/slurp-client/src/api.rs
 ```
 
-The CLI contract test needs `cargo build -p slurp-cli` and a DuckDB 2 executable (`SLURP_DUCKDB`, default `~/.slurp/bin/duckdb`); it skips cleanly without them.
+The control API types are defined once, in Rust (`crates/slurp-client/src/api.rs`), and exported to TypeScript. The wire contracts are in [docs/contracts.md](docs/contracts.md).
+
+The native CLI tests need a DuckDB 2 executable in `SLURP_TEST_DUCKDB`: on a developer machine they are skipped without it, and in CI (`CI` is set) a missing one fails the run. The CLI contract test in `backend/` needs `cargo build -p slurp-cli` and `SLURP_DUCKDB` (default `~/.slurp/bin/duckdb`); it skips cleanly without them.
 
 ## License
 

@@ -15,7 +15,7 @@
   "cloudflare": {
     "bindings": {
       "ADMIN_TOKEN": {
-        "description": "Secret bearer token that controls this deployment. Make it long and random (openssl rand -base64 32). You will give it to `slurp cloud connect`."
+        "description": "Secret bearer token that controls this deployment. Make it long and random (openssl rand -base64 32). After the deploy, run `slurp connect <your Worker URL> --token-stdin` and give it this token."
       },
       "ARCHIVE": {
         "description": "R2 bucket that stores your sealed event archives."

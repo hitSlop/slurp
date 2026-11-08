@@ -12,6 +12,8 @@ export interface FeedbackOptions {
   label?: string
   title?: string
   placeholder?: string
+  /** Message shown after feedback is queued. */
+  thankYou?: string
   /** Show a 1 to 5 rating. Default true. */
   ratings?: boolean
   /** Ask for an email address (optional for the person). Default false. */
@@ -206,7 +208,7 @@ export function mountFeedback(options: FeedbackOptions = {}): FeedbackHandle {
       return
     }
     form.setAttribute('hidden', '')
-    thanks = element('p', { class: 'thanks', role: 'status' }, 'Thank you! We read every message.')
+    thanks = element('p', { class: 'thanks', role: 'status' }, options.thankYou ?? 'Thank you! We read every message.')
     panel.insertBefore(thanks, credit ?? null) // the thank-you sits above the credit line
     timer = setTimeout(() => { show(false); reset() }, 2500)
   })

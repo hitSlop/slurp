@@ -181,7 +181,7 @@ events(sender, id, type, event, timestamp, user_id, anonymous_id, session_id, da
 _slurp.identity(version, backend, project)   -- the binding of this database to one project on one Worker
 _slurp.deliveries(project, sequence, sha256, bytes, imported_at, PRIMARY KEY(project, sequence))
 _slurp.problems(kind 'conflict'|'invalid'|'gap', sender, id, archive_seq, line, record, detail, seen_at,
-                PRIMARY KEY(kind, archive_seq, line))   -- a gap row uses archive_seq = from, line = 0
+                PRIMARY KEY(kind, archive_seq, line))   -- a gap row uses archive_seq = from, line = 0, record = {"from":n,"to":m}
 ```
 
 **Per archive**, after its size and SHA-256 match the listing:
@@ -200,7 +200,7 @@ _slurp.problems(kind 'conflict'|'invalid'|'gap', sender, id, archive_seq, line, 
      - A copy with a different fingerprint is a `conflict` problem.
    - Insert the events and the receipt.
    - Replaying an archive changes nothing.
-3. **A `gap` from `ListArchives`** is written as a problem, and sync continues.
+3. **A `gap` from `ListArchives`** is written as a problem, and sync continues. `slurp sync`, `slurp status` and `slurp health` then report `history_incomplete: {from, to}` (the span of every gap) and print a prominent warning: those events are lost.
 
 **Fatal sync errors** (the only ones):
 - a download failure, after retries

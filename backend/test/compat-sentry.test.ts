@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict'
 import { gzipSync } from 'node:zlib'
 import { after, before, test } from 'node:test'
-import { debug, newProject, readArchives, startWorker, type Worker } from './harness.ts'
+import { archived, newProject, randomName as name, records, startWorker, type Worker } from './harness.ts'
 import { parseEnvelope } from '../src/compat/sentry.ts'
 
 let w: Worker
 before(async () => { w = await startWorker() })
 after(async () => { await w.stop() })
-const name = (p: string) => `${p}_${Math.random().toString(16).slice(2, 8)}`
-const archive = async (s: { id: string; sk: string }) => { await debug(w.base, 'seal', s.id); return (await readArchives(w.base, s.id, s.sk)).flatMap(a => a.lines) }
+const archive = async (s: { id: string; sk: string }) => records(await archived(w.base, s))
 const enc = (...parts: (string | object)[]) => parts.map(p => (typeof p === 'string' ? p : JSON.stringify(p))).join('\n') + '\n'
 const post = (path: string, body: string | Uint8Array, headers: Record<string, string> = {}) =>
   fetch(`${w.base}${path}`, { method: 'POST', headers, body: body as BodyInit })
@@ -20,7 +19,7 @@ const errorEvent = (id: string, extra: object = {}) => ({
 })
 
 test('a publishable key is only word characters, so every Sentry SDK accepts it as a DSN public key', () => {
-  const pk = `slurp_pk_${'a1'.repeat(8)}_${'0f'.repeat(24)}`
+  const pk = `slurp_pk_${'a1'.repeat(8)}_ios_${'0f'.repeat(24)}`
   assert.match(pk, /^\w+$/)
 })
 
@@ -54,7 +53,7 @@ test('credentials: header, query string, envelope DSN all carry the publishable 
   assert.equal((await post('/api/1/envelope/', body('b'.repeat(32), `http://${key}@host.test/1`))).status, 200, 'DSN in the envelope header')
   assert.equal((await post('/api/1/envelope/', body('c'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${s.pk}` })).status, 200, 'the key as is (there is no encoding)')
   assert.equal((await post('/api/1/envelope/', body('d'.repeat(32)))).status, 403, 'no credentials')
-  assert.equal((await post('/api/1/envelope/', body('e'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${`slurp_pk_${'0'.repeat(16)}_${'0'.repeat(48)}`}` })).status, 403)
+  assert.equal((await post('/api/1/envelope/', body('e'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${`slurp_pk_${'0'.repeat(16)}_default_${'0'.repeat(48)}`}` })).status, 403)
   assert.equal((await post('/api/1/envelope/', body('f'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${s.sk}` })).status, 403, 'secret keys never work')
   const other = await newProject(w.base, name('sentryother'))
   assert.equal((await post(`/api/1/envelope/?sentry_key=${key}`, body('g'.repeat(32)), { 'x-sentry-auth': `Sentry sentry_key=${other.pk}` })).status, 403, 'credentials must agree')
@@ -79,16 +78,16 @@ test('items are mapped or dropped on purpose; messages are not errors; gzip and 
   const byEvent = (e: string) => lines.filter(l => l.event === e)
   assert.equal(lines.length, 4, 'message, user feedback, check-in and the legacy error; sessions, transactions, attachments and client reports are dropped')
   assert.equal(byEvent('message').length, 1); assert.equal(byEvent('user_feedback')[0].data.comments, 'it broke')
+  assert.ok(!('id' in byEvent('user_feedback')[0]) && !('id' in byEvent('check_in')[0]), 'items with no id of their own have none')
   assert.equal(byEvent('check_in')[0].data.monitor_slug, 'nightly'); assert.equal(byEvent('error')[0].id, id('3'))
 })
 
-test('a timestamp that is not a real time never fails the request: the next candidate or the arrival time is used', async () => {
+test('a timestamp that is not a real time is left out: neither sent_at nor the arrival time is used', async () => {
   const s = await newProject(w.base, name('sentry_time'))
   const headers = { 'x-sentry-auth': `Sentry sentry_version=7, sentry_client=x/1, sentry_key=${s.pk}` }
-  const sentAt = '2026-11-07T10:00:00.000Z'
   const id = (n: number) => n.toString(16).padStart(32, '0')
   // 1e300 is a valid JSON number whose date is not valid; the other items in the envelope must still be stored.
-  const res = await post('/api/1/envelope/', enc({ sent_at: sentAt }, // no event_id here: it would be every item's id
+  const res = await post('/api/1/envelope/', enc({ sent_at: '2026-11-07T10:00:00.000Z' }, // no event_id here: it would be every item's id
     { type: 'event' }, errorEvent(id(1), { timestamp: 1e300 }),
     { type: 'event' }, errorEvent(id(2), { timestamp: -1e300 }),
     { type: 'event' }, errorEvent(id(3), { timestamp: 'not a date' }),
@@ -97,24 +96,18 @@ test('a timestamp that is not a real time never fails the request: the next cand
   assert.equal(res.status, 200)
   const byId = new Map((await archive(s)).map(l => [l.id, l]))
   assert.equal(byId.size, 5, 'every item was kept')
-  for (const n of [1, 2, 3, 4]) assert.equal(byId.get(id(n)).timestamp, sentAt, `item ${n} falls back to the envelope's sent_at`)
+  for (const n of [1, 2, 3, 4]) assert.ok(!('timestamp' in byId.get(id(n))), `item ${n} has no timestamp`)
   assert.equal(byId.get(id(5)).timestamp, new Date(1794075640500).toISOString(), 'a good timestamp is untouched')
-  // With no sent_at either, it is the arrival time.
-  const before = Date.now()
-  const solo = await post('/api/1/envelope/', enc({ event_id: id(6) }, { type: 'event' }, errorEvent(id(6), { timestamp: 1e300 })), headers)
-  assert.equal(solo.status, 200)
-  const arrived = Date.parse((await archive(s)).find(l => l.id === id(6)).timestamp)
-  assert.ok(arrived >= before - 1000 && arrived <= Date.now() + 1000)
 })
 
-test('retries dedupe; an oversize event is dropped without failing the request; malformed input is 400; CORS preflight', async () => {
+test('a retried envelope is stored again for the importer to skip; an oversize event is dropped without failing the request; malformed input is 400; CORS preflight', async () => {
   const s = await newProject(w.base, name('sentryedge'))
   const auth = { 'x-sentry-auth': `Sentry sentry_key=${s.pk}` }
   const body = enc({ event_id: 'a'.repeat(32) }, { type: 'event' }, errorEvent('a'.repeat(32)))
   for (let n = 0; n < 2; n++) assert.equal((await post('/api/1/envelope/', body, auth)).status, 200)
   const huge = enc({ event_id: 'b'.repeat(32) }, { type: 'event' }, errorEvent('b'.repeat(32), { extra: { blob: 'x'.repeat(1_100_000) } }))
   assert.equal((await post('/api/1/envelope/', huge, auth)).status, 200)
-  assert.deepEqual((await archive(s)).map(l => l.id), ['a'.repeat(32)])
+  assert.deepEqual((await archive(s)).map(l => l.id), ['a'.repeat(32), 'a'.repeat(32)], 'the Worker has no dedupe; the importer drops the copy by (sender, id)')
   assert.equal((await post('/api/1/envelope/', '{"event_id":"x"}\n{"type":"event","length":500}\n{}', auth)).status, 400)
   assert.equal((await post('/api/1/envelope/', 'garbage', auth)).status, 400)
   const pre = await fetch(`${w.base}/api/1/envelope/`, { method: 'OPTIONS' })

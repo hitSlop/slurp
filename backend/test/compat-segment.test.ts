@@ -1,16 +1,15 @@
 import assert from 'node:assert/strict'
 import { gzipSync } from 'node:zlib'
 import { after, before, test } from 'node:test'
-import { debug, newProject, readArchives, startWorker, type Worker } from './harness.ts'
+import { archived, newProject, randomName as name, records, startWorker, type Worker } from './harness.ts'
 
 let w: Worker
 before(async () => { w = await startWorker() })
 after(async () => { await w.stop() })
-const name = (p: string) => `${p}_${Math.random().toString(16).slice(2, 8)}`
 const basic = (key: string) => `Basic ${Buffer.from(`${key}:`).toString('base64')}`
 const send = (path: string, body: unknown, headers: Record<string, string> = {}, raw?: BodyInit) =>
   fetch(`${w.base}${path}`, { method: 'POST', headers, body: raw ?? JSON.stringify(body) })
-const archive = async (s: { id: string; sk: string }) => { await debug(w.base, 'seal', s.id); return (await readArchives(w.base, s.id, s.sk)).flatMap(a => a.lines) }
+const archive = async (s: { id: string; sk: string }) => records(await archived(w.base, s))
 
 test('single-event endpoints: Basic auth with the publishable key, text/plain bodies (Analytics.js)', async () => {
   const s = await newProject(w.base, name('segsingle'))
@@ -49,21 +48,27 @@ test('batch endpoints /v1/batch (Node) and /v1/b (Swift): key in the body, no Au
   assert.equal((await send('/v1/b', batch('s'), { 'content-type': 'application/json; charset=utf-8' })).status, 200)
   const lines = await archive(s)
   assert.deepEqual(lines.map(l => l.id).sort(), ['n-1', 'n-2', 's-1', 's-2'])
-  assert.equal(lines.find(l => l.id === 'n-2').timestamp, '2026-11-07T10:00:05.000Z', 'a missing timestamp falls back to the batch sentAt')
+  assert.ok(!('timestamp' in lines.find(l => l.id === 'n-2')), 'a missing timestamp is left out: not sentAt, not the arrival time')
+  assert.equal(lines.find(l => l.id === 'n-1').timestamp, '2026-11-07T10:00:00.000Z')
 })
 
-test('a timestamp that is not a real time is replaced by sentAt or the arrival time, not stored as an impossible date', async () => {
+test('a timestamp that is not a real time is left out, originalTimestamp is the second choice, and sentAt is never used', async () => {
   const s = await newProject(w.base, name('segtime'))
   const auth = { authorization: basic(s.pk), 'content-type': 'text/plain' }
   const events = [1e300, 8.64e15, 'garbage', '+275760-09-13T00:00:00.000Z'].map((timestamp, i) => ({ messageId: `bad-${i}`, type: 'track', event: 'x', userId: 'u', timestamp }))
-  const res = await send('/v1/batch', { batch: [...events, { messageId: 'good', type: 'track', event: 'x', userId: 'u', timestamp: '2026-11-07T10:00:00.000Z' }], sentAt: '2026-11-07T11:00:00.000Z' }, auth)
+  const res = await send('/v1/batch', { batch: [...events,
+    { messageId: 'good', type: 'track', event: 'x', userId: 'u', timestamp: '2026-11-07T10:00:00.000Z' },
+    { messageId: 'orig', type: 'track', event: 'x', userId: 'u', originalTimestamp: '2026-11-07T09:00:00.000Z' },
+    { messageId: 'both', type: 'track', event: 'x', userId: 'u', timestamp: '2026-11-07T10:30:00.000Z', originalTimestamp: '2026-11-07T09:00:00.000Z' }], sentAt: '2026-11-07T11:00:00.000Z' }, auth)
   assert.equal(res.status, 200)
   const byId = new Map((await archive(s)).map(l => [l.id, l]))
-  for (let i = 0; i < events.length; i++) assert.equal(byId.get(`bad-${i}`).timestamp, '2026-11-07T11:00:00.000Z', `event ${i} uses sentAt`)
+  for (let i = 0; i < events.length; i++) assert.ok(!('timestamp' in byId.get(`bad-${i}`)), `event ${i} has no timestamp`)
   assert.equal(byId.get('good').timestamp, '2026-11-07T10:00:00.000Z')
+  assert.equal(byId.get('orig').timestamp, '2026-11-07T09:00:00.000Z')
+  assert.equal(byId.get('both').timestamp, '2026-11-07T10:30:00.000Z', 'timestamp wins over originalTimestamp')
 })
 
-test('a retried batch is deduplicated and a bad event does not cost the rest of its batch', async () => {
+test('a bad event does not cost the rest of its batch, and a retried batch is stored again for the importer to skip', async () => {
   const s = await newProject(w.base, name('segretry'))
   const body = { writeKey: s.pk, batch: [
     { type: 'track', messageId: 'ok-1', event: 'Good', userId: 'u1', timestamp: '2026-11-07T10:00:00Z' },
@@ -74,21 +79,24 @@ test('a retried batch is deduplicated and a bad event does not cost the rest of 
   ] }
   const first = await send('/v1/batch', { ...body, sentAt: '2026-11-07T10:00:01Z' })
   assert.equal(first.status, 200); assert.deepEqual(await first.json(), { success: true, accepted: 1, rejected: 4 })
-  const retry = await send('/v1/batch', { ...body, sentAt: '2026-11-07T10:00:09Z' }) // new sentAt, same events
+  const retry = await send('/v1/batch', { ...body, sentAt: '2026-11-07T10:00:09Z' }) // new sentAt, same events: the same record
   assert.equal(retry.status, 200)
-  assert.deepEqual((await archive(s)).map(l => l.id), ['ok-1'], 'stored once, not twice')
+  const lines = await archive(s)
+  assert.deepEqual(lines.map(l => l.id), ['ok-1', 'ok-1'], 'the Worker has no dedupe; the importer drops the copy by (sender, id)')
+  assert.equal(JSON.stringify(lines[0]), JSON.stringify(lines[1]), 'both copies are the same record')
   const nothing = await send('/v1/batch', { writeKey: s.pk, batch: [{ type: 'track', messageId: 'z' }] })
   assert.equal(nothing.status, 400, 'a request with no valid event is a 400, which Segment SDKs drop rather than retry')
   assert.equal((await send('/v1/batch', { writeKey: s.pk, batch: [] })).status, 200)
 })
 
-test('events without a messageId get a stable derived id; gzip bodies are accepted', async () => {
+test('only what the protocol supplies is stored: an event without a messageId has no id; gzip bodies are accepted', async () => {
   const s = await newProject(w.base, name('seggz'))
-  const body = { writeKey: s.pk, batch: [{ type: 'track', event: 'NoId', userId: 'u1', timestamp: '2026-11-07T10:00:00Z', properties: { a: 1 } }] }
+  const body = { writeKey: s.pk, batch: [{ type: 'track', event: 'NoId', userId: 'u1', properties: { a: 1 }, context: { geo: { city: 'mine' } } }] }
   const raw = gzipSync(JSON.stringify(body))
-  for (let n = 0; n < 2; n++) assert.equal((await send('/v1/batch', null, { 'content-type': 'application/json', 'content-encoding': 'gzip' }, raw)).status, 200)
-  const lines = await archive(s)
-  assert.equal(lines.length, 1); assert.match(lines[0].id, /^segment-[0-9a-f]{64}$/)
+  assert.equal((await send('/v1/batch', null, { 'content-type': 'application/json', 'content-encoding': 'gzip' }, raw)).status, 200)
+  const [line] = await archive(s)
+  assert.ok(!('id' in line) && !('timestamp' in line))
+  assert.deepEqual(line.context, { geo: { city: 'mine' }, compat: 'segment' }, 'a context.geo from the client is just a field')
 })
 
 test('auth: only publishable keys, never secret ones; unknown keys are refused; malformed bodies are 400', async () => {

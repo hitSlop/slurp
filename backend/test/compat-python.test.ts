@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, test, type TestContext } from 'node:test'
-import { debug, newProject, readArchives, startWorker, type Worker } from './harness.ts'
+import { archived, envelopes, newProject, randomName as name, records, startWorker, type Worker } from './harness.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const compat = join(here, '../../sdks/compat/python')
@@ -34,7 +34,6 @@ async function setup() {
 }
 after(async () => { if (w) await w.stop(); if (scratch) rmSync(scratch, { recursive: true, force: true }) })
 
-const name = (p: string) => `${p}_${Math.random().toString(16).slice(2, 8)}`
 async function run(t: TestContext, scenario: string, key?: string) {
   if (!python) { t.skip(why); return null }
   const p = await newProject(w.base, name(`py_${scenario.replace(/-/g, '_')}`))
@@ -42,9 +41,8 @@ async function run(t: TestContext, scenario: string, key?: string) {
   const r = spawnSync(python, [join(compat, 'run.py'), scenario], { cwd: compat, encoding: 'utf8', env: { PATH: process.env.PATH!, BASE: w.base, KEY: key ?? p.pk } })
   assert.equal(r.status, 0, r.stderr)
   const summary = JSON.parse(r.stdout.trim().split('\n').pop()!)
-  await debug(w.base, 'seal', p.id)
-  const lines = (await readArchives(w.base, p.id, p.sk)).flatMap(a => a.lines)
-  return { summary, lines }
+  const arcs = await archived(w.base, p)
+  return { summary, lines: records(arcs), senders: envelopes(arcs).map(e => e.sender) }
 }
 const by = (lines: any[], type: string, event?: string) => lines.filter(l => l.type === type && (event === undefined || l.event === event))
 
@@ -55,7 +53,7 @@ for (const scenario of ['segment', 'segment-gzip']) {
     assert.deepEqual(got.summary.errors, [], 'the SDK reported no errors')
     const { lines } = got
     assert.equal(lines.length, 4)
-    assert.ok(lines.every(l => l.sender === 'default' && l.user_id === 'user_42'))
+    assert.ok(lines.every(l => l.user_id === 'user_42') && got.senders.every(s => s === 'default'))
     assert.deepEqual(by(lines, 'identify')[0].data, { plan: 'pro', email: 'ada@example.com' })
     assert.equal(by(lines, 'track', 'signed_up')[0].data.total, 49)
     assert.equal(by(lines, 'track', 'exported')[0].anonymous_id, 'anon-1')
@@ -82,7 +80,7 @@ test('sentry-sdk for Python: a real exception and a message arrive whole, with t
   const error = by(lines, 'track', 'error')[0], message = by(lines, 'track', 'message')[0]
   assert.ok(error && message, `events: ${lines.map(l => l.event)}`)
   assert.equal(lines.length, 2, 'only the two events: sessions and client reports are accepted and dropped')
-  assert.ok(lines.every(l => l.user_id === 'user_42' && l.sender === 'default'))
+  assert.ok(lines.every(l => l.user_id === 'user_42') && got.senders.every(s => s === 'default'))
   assert.equal(error.data.exception.values[0].type, 'ZeroDivisionError')
   assert.ok(error.data.exception.values[0].stacktrace.frames.some((f: any) => f.function === 'charge' && f.in_app === true), 'the traceback names the function that failed')
   assert.deepEqual([error.data.release, error.data.environment, error.data.tags.feature], ['shop@1.4.0', 'test', 'checkout'])

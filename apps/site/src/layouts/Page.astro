@@ -26,7 +26,8 @@ import {trackSections} from '../../../../packages/web-shared/rail.js';
 const rail=document.querySelector('.rail');
 trackSections(rail);
 const index=rail?.querySelector('details');
-if(index && matchMedia('(max-width:900px)').matches) index.open=false;
+// Sections is a sidebar list on a wide screen and a collapsed disclosure on a narrow one, including when the window is resized.
+if(index){const narrow=matchMedia('(max-width:900px)');index.open=!narrow.matches;narrow.addEventListener('change',e=>{index.open=!e.matches})}
 </script>
 <style is:global>
 .price-pill{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:-6px 0 4px;padding:8px 12px;border-radius:9px;background:#fff;border:1.5px solid var(--red);text-decoration:none;color:var(--ink);font:650 12px var(--body);box-shadow:0 4px 14px #e8002a1a}
@@ -47,7 +48,8 @@ if(index && matchMedia('(max-width:900px)').matches) index.open=false;
 .nav-feedback{display:none;align-items:center;gap:8px;border:1px solid var(--rail-rule);border-radius:9px;background:#fff;font:600 13px var(--body);color:var(--ink);cursor:pointer;line-height:1.45}
 .nav-feedback .icon{width:16px;height:16px}
 @media(max-width:900px){
-.shell .rail{padding:12px 16px 4px;gap:4px 12px;align-items:center}
+/* Not pinned: a header this tall would cover a phone's screen as you read. It scrolls away with the page. */
+.shell .rail{position:static;padding:12px 16px 4px;gap:4px 12px;align-items:center}
 .shell .rail .rail-links{display:none}
 .shell .rail .brand{flex:none;display:flex;align-items:center;min-height:44px}
 .shell .price-pill{margin:0 0 0 auto;padding:0 12px;min-height:44px;align-items:center;justify-content:center}

@@ -94,7 +94,7 @@ Each project is one event stream on your Worker (many senders can write to it: a
 
 ## Send events
 
-Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the next archive seal (about 10 minutes by default). `slurp init` prints your real ingest URL and publishable key; a publishable key can only send events, so it is safe in a web page.
+Every way lands in the same place: your Worker accepts the event durably, and `slurp sync` can read it after the next archive seal (about 10 minutes by default). You do not make the endpoint or the key by hand: `slurp init` creates your project on the Worker together with its first publishable key, and prints your ingest URL and that key. Those two values are all an SDK needs. A publishable key can only send events, so it is safe in a web page or an app. `slurp project setup PROJECT` shows them again, and `slurp project key create PROJECT --scope publishable --name ios` makes one key per sender. [Where they come from](docs/sdks.md#where-the-endpoint-and-key-come-from).
 
 | Send from | Install | Status |
 |---|---|---|

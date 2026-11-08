@@ -2,7 +2,25 @@
 
 Slurp takes events from its own SDKs, from plain HTTP, and from the Segment and Sentry SDKs you may already use: point them at your Worker and change nothing else. Everything lands in the same archive, and `slurp sync` pulls it into one DuckDB table.
 
-Your values come from `slurp init` (or the setup page it opens): the **ingest URL** (`https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events`) and the **publishable key** (`slurp_pk_…`, ingest-only, safe in a web page or an app). Below, `WORKER` is your Worker's origin (`https://slurp.YOUR-SUBDOMAIN.workers.dev`) and `HOST` is the same without `https://`.
+Every SDK takes two values, the **ingest URL** and the **publishable key** (see below for where they come from). Below, `WORKER` is your Worker's origin (`https://slurp.YOUR-SUBDOMAIN.workers.dev`) and `HOST` is the same without `https://`.
+
+## Where the endpoint and key come from
+
+You never make either by hand. Run `slurp init` inside your app: it creates the project on your Worker, and the Worker creates the project's first **publishable key** in the same step (named `default`). `slurp init` then prints, and the setup page it opens shows, the two values:
+
+- **Ingest URL**: your Worker's address plus `/v1/events`, for example `https://slurp.YOUR-SUBDOMAIN.workers.dev/v1/events`.
+- **Publishable key**: `slurp_pk_<project>_<random>`. It can only add events to that one project, so it is safe in a web page or an app. The key itself says which project the events belong to and which sender they come from; there is no third value to pass.
+
+Print them again whenever you need them, and make more:
+
+```sh
+slurp project setup PROJECT                      # the ingest URL and the project's publishable keys; changes nothing
+slurp project key list PROJECT --scope publishable
+slurp project key create PROJECT --scope publishable --name ios    # one key per sender
+slurp project key revoke PROJECT KEY_ID                            # stops that key at once
+```
+
+Give each place that sends its own key (`web`, `ios`, `github`): the name you choose is stamped on every event it sends as `sender`, so a query can tell them apart. The other two credentials are not for apps: a **secret key** (`slurp_sk_…`) reads one project's archives, for bots, and the **admin token** controls the whole Worker and stays on your machine. [How the connection works](connection.md) explains all three.
 
 ## What works
 

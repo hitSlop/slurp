@@ -5,14 +5,17 @@ import { init, track } from '@hitslop/slurp-sdk';
 import { slurpEndpoint, slurpKey } from './links.mjs';
 import { clickEvent, pageContext, pageProperties } from './measure.ts';
 
+// Previews and local servers must not add to the real project's data: there the feedback form opens and sends nothing.
+const production = !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 if (slurpKey) {
   const page = () => ({ origin: location.origin, pathname: location.pathname, search: location.search });
-  init({ key: slurpKey, endpoint: slurpEndpoint, context: () => pageContext(page(), document.referrer, document.title) });
-  track('page_view', pageProperties(page(), document.referrer));
+  if (production) init({ key: slurpKey, endpoint: slurpEndpoint, context: () => pageContext(page(), document.referrer, document.title) });
+  const record = (event: string, data?: Record<string, unknown>): string => (production ? track(event, data) : '');
+  record('page_view', pageProperties(page(), document.referrer));
   document.addEventListener('click', (event) => {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]') : null;
     const click = clickEvent(target);
-    if (click) track(click.event, click.properties);
+    if (click) record(click.event, click.properties);
   }, true);
   // The widget is not needed to read the page, so it loads after it. On a phone its floating button would sit on top of the text, so
   // there it is hidden and the "Feedback" entry in the header opens the same form.
@@ -26,6 +29,7 @@ if (slurpKey) {
       title: 'Send feedback about Slurp',
       placeholder: 'What is confusing, missing or broken?',
       data: () => ({ path: location.pathname }),
+      client: { track: record },
       button: !compact.matches,
     });
     for (const entry of document.querySelectorAll<HTMLElement>('[data-feedback-open]')) entry.hidden = !compact.matches;

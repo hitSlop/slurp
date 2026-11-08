@@ -1,0 +1,26 @@
+{
+  "coverage": {
+    "first": 1,
+    "last": 2,
+    "lastAt": "2026-11-08T17:28:18.580Z",
+    "pending": false
+  },
+  "archives": [
+    {
+      "seq": 1,
+      "size": 159,
+      "sha256": "585f28a6280a866b45e9c9bf70f905de047581335b2b816822599d3886b1d0c2",
+      "events": 1,
+      "createdAt": "2026-11-08T17:28:18.189Z",
+      "format": 1
+    },
+    {
+      "seq": 2,
+      "size": 182,
+      "sha256": "234b79c8e48cbcdf192a4f94fd3163aaff9588192f5ef1762ef608317d7e3031",
+      "events": 2,
+      "createdAt": "2026-11-08T17:28:18.580Z",
+      "format": 1
+    }
+  ]
+}

@@ -4,7 +4,7 @@ purpose: Who visits slurp.run, where they come from, and whether they try Slurp
 
 # slurp.run, measured by Slurp
 
-This site sends its own events to a Slurp Worker in the maintainers' Cloudflare account: one `page_view` per page load, the `deploy_clicked` and `install_copied` clicks, and the feedback widget. This report is the same kind of file your agent writes for your product. Everything here is one SQL query over the synced DuckDB file; `slurp report build dogfood/reports/site.md` regenerates it.
+This site sends its own events to a Slurp Worker in the maintainers' Cloudflare account: one `page_view` per page load, the `deploy_clicked` and `install_copied` clicks, and the feedback widget. This report is the same kind of file your agent writes for your product. Everything here is one SQL query over the synced DuckDB file; `slurp report build slurp/reports/site.md` regenerates it.
 
 ```sql headline
 SELECT

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "anonymousId": "01a1bc34-83f0-7690-a698-2c6eeb042733",
+  "sessionId": "01a1bc34-83f3-7fff-9130-ea7ffff3a432",
+  "lastActivity": 1794158920692,
+  "userId": "fixture-user",
+  "queue": [
+    "{\"id\":\"01a1bc34-83f3-7afb-84a3-ae1c2b73dbfd\",\"type\":\"identify\",\"timestamp\":\"2026-11-08T17:28:40.691Z\",\"user_id\":\"fixture-user\",\"anonymous_id\":\"01a1bc34-83f0-7690-a698-2c6eeb042733\",\"session_id\":\"01a1bc34-83f3-7fff-9130-ea7ffff3a432\",\"data\":{\"plan\":\"fixture\"},\"context\":{\"library\":{\"name\":\"@hitslop/slurp-sdk\",\"version\":\"0.2.0\"},\"runtime\":{\"name\":\"node\",\"version\":\"v26.5.0\"}}}",
+    "{\"id\":\"01a1bc34-83f4-7fda-bb93-2d9f790c090a\",\"type\":\"track\",\"event\":\"fixture_queued\",\"timestamp\":\"2026-11-08T17:28:40.692Z\",\"user_id\":\"fixture-user\",\"anonymous_id\":\"01a1bc34-83f0-7690-a698-2c6eeb042733\",\"session_id\":\"01a1bc34-83f3-7fff-9130-ea7ffff3a432\",\"data\":{\"value\":1},\"context\":{\"library\":{\"name\":\"@hitslop/slurp-sdk\",\"version\":\"0.2.0\"},\"runtime\":{\"name\":\"node\",\"version\":\"v26.5.0\"}}}"
+  ],
+  "retryAt": 0,
+  "attempts": 0
+}

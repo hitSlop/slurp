@@ -1,0 +1,23 @@
+{
+  "release": "0.2.0",
+  "commit": "24f81fe226cd62e1e7dafa60748c03221666aed8",
+  "workerBuild": "dc13b9a06862",
+  "project": "prj_f6b852d834403188",
+  "backend": "http://127.0.0.1:8879",
+  "expected": {
+    "events": 2,
+    "receipts": 2,
+    "problems": 1,
+    "fixture_labels": 1,
+    "sdkQueued": 2
+  },
+  "sha256": {
+    "archive-1.ndjson.gz": "585f28a6280a866b45e9c9bf70f905de047581335b2b816822599d3886b1d0c2",
+    "archive-2.ndjson.gz": "234b79c8e48cbcdf192a4f94fd3163aaff9588192f5ef1762ef608317d7e3031",
+    "archives.json": "0ed3e25d12b95e92cf9a74fe088334272c1dae462f6a21c271dba20a29885425",
+    "database.duckdb": "e0aca61b4e79abe2224351a95bd9819b47e68856c54d17c257ca6c2c2c30c2c9",
+    "project.sql": "07ed94915e17c00472ca3daf21bd1172ae947dc4ded58a2114f126e9e224d73e",
+    "registry.sql": "e9a735c1643ead5a63b9caf4631495b6115c5ef375b02e4c5a75ad25680ffee1",
+    "sdk-state.json": "5f7be404ac1767fde64be1d9da5510a14a0163e6864aac4954706f052c09ccaa"
+  }
+}

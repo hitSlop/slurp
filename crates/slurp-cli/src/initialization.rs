@@ -89,6 +89,7 @@ fn shell(value: &str) -> String {
 
 #[derive(Default)]
 struct Handoff {
+    access: Option<(String, api::WhoamiResponse)>,
     key: Option<String>,
     ingest_url: Option<String>,
     installed: bool,
@@ -433,6 +434,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
                 ingest_url,
                 installed: install,
                 notes,
+                ..Default::default()
             },
         );
     }
@@ -455,6 +457,7 @@ pub fn run(root: &Path, options: Options, machine_output: bool) -> Result<Value>
             ingest_url,
             installed: options.install_skills,
             notes,
+            ..Default::default()
         },
     )
 }
@@ -471,17 +474,24 @@ fn finish(
         mut ingest_url,
         installed,
         notes,
+        access,
     } = handoff;
     let home = config::home()?;
     let bound = bound_environment(&workspace.backend, &workspace.project);
+    let mut teammate = access
+        .as_ref()
+        .is_some_and(|(_, who)| who.scope == api::TokenScope::Secret);
     let mut warnings = Vec::new();
     if key.is_none() && bound {
         key = environment("SLURP_PUBLISHABLE_KEY").filter(|key| key.starts_with("slurp_pk_"));
     }
     if key.is_none() {
         // The Worker knows every publishable key, so nothing is kept on this machine. Without a connection the page simply has no key.
-        match fetch_key(&workspace.backend, &workspace.project) {
-            Ok(fetched) => key = Some(fetched),
+        match fetch_key(&workspace.backend, &workspace.project, access) {
+            Ok((fetched, scope)) => {
+                key = fetched;
+                teammate = scope == api::TokenScope::Secret;
+            }
             Err(_) => warnings.push("Could not read the project's publishable key from your Worker; run slurp project setup to see it.".to_owned()),
         }
     }
@@ -498,9 +508,13 @@ fn finish(
     } else {
         format!("slurp --project {}", shell(&root.to_string_lossy()))
     };
-    let commands = format!(
-        "{prefix} sync\n{prefix} sql 'SELECT event, count(*) AS n FROM events GROUP BY event'"
-    );
+    let commands = if teammate {
+        format!("{prefix} sync")
+    } else {
+        format!(
+            "{prefix} sync\n{prefix} sql 'SELECT event, count(*) AS n FROM events GROUP BY event'"
+        )
+    };
     let context = PageContext {
         project_name: root
             .file_name()
@@ -555,14 +569,37 @@ fn finish(
 }
 
 /// The project's publishable key for source `default`, read from the Worker with this machine's saved connection.
-fn fetch_key(backend: &str, project: &str) -> Result<String> {
-    let token = login::token(backend)?;
+fn fetch_key(
+    backend: &str,
+    project: &str,
+    access: Option<(String, api::WhoamiResponse)>,
+) -> Result<(Option<String>, api::TokenScope)> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let (token, who) = match access {
+        Some(access) => access,
+        None => {
+            let token = login::project_token(backend, project)?;
+            let who = runtime
+                .block_on(login::whoami(backend, &token))
+                .map_err(project_setup::service_error)?;
+            (token, who)
+        }
+    };
+    if who.scope == api::TokenScope::Secret {
+        ensure!(
+            who.project.as_deref() == Some(project),
+            "this secret key belongs to a different project"
+        );
+        return Ok((None, api::TokenScope::Secret));
+    }
+    ensure!(
+        who.scope == api::TokenScope::Admin,
+        "a project secret or admin token is required"
+    );
     let client = project_setup::Api::new(backend, &token)?;
-    tokio::runtime::Runtime::new()?.block_on(project_setup::source_key(
-        &client,
-        project,
-        DEFAULT_SOURCE,
-    ))
+    runtime
+        .block_on(project_setup::source_key(&client, project, DEFAULT_SOURCE))
+        .map(|key| (Some(key), api::TokenScope::Admin))
 }
 
 fn join_binding(root: &Path, home: &Path, options: &Options, ui: &Terminal) -> Result<Value> {
@@ -667,7 +704,14 @@ fn join_binding(root: &Path, home: &Path, options: &Options, ui: &Terminal) -> R
             Workspace::init_bound(home, root, &binding, Some(database), engine)?
         }
     };
-    let mut result = finish(root, &saved, options, ui, Handoff::default())?;
-    result["next_steps"] = json!("slurp sync");
-    Ok(result)
+    finish(
+        root,
+        &saved,
+        options,
+        ui,
+        Handoff {
+            access: Some((token, who)),
+            ..Default::default()
+        },
+    )
 }

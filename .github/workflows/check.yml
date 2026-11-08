@@ -83,7 +83,7 @@ jobs:
           ! ldd target/debug/slurp | grep -i dbus
       - run: npm run typecheck
         working-directory: backend
-      - name: Worker tests (wrangler dev, local R2 and Durable Objects, real CLI)
+      - name: Worker tests (workerd via Vitest), then the real CLI and Python SDKs against wrangler dev
         run: npm test
         working-directory: backend
         timeout-minutes: 10
@@ -121,7 +121,7 @@ jobs:
       - run: npm ci
         working-directory: backend
       - name: analytics-swift against the Worker
-        run: node --test --test-concurrency=1 --test-force-exit --test-timeout=600000 --experimental-strip-types test/compat-swift.test.ts
+        run: node --test --test-concurrency=1 --test-force-exit --test-timeout=600000 --experimental-strip-types test/http/compat-swift.test.ts
         working-directory: backend
         timeout-minutes: 25
         env:

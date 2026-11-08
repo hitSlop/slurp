@@ -47,7 +47,7 @@ if (!existsSync(bin)) throw new Error(`no CLI at ${bin}; run cargo build -p slur
 if (!existsSync(duckdb)) throw new Error(`no DuckDB at ${duckdb}; set SLURP_DUCKDB`)
 
 if (mode === 'all' || mode === 'data') {
-  const { startWorker, ADMIN_TOKEN } = await import('../../backend/test/harness.ts')
+  const { startWorker, ADMIN_TOKEN, publish } = await import('../../backend/test/http/worker.ts')
   rmSync(work, { recursive: true, force: true })
   for (const d of ['home', 'user', 'app']) mkdirSync(join(work, d), { recursive: true })
   const worker = await startWorker({ GROUP_COMMIT_MS: '0', SEAL_INTERVAL_MS: '3600000' })
@@ -59,14 +59,13 @@ if (mode === 'all' || mode === 'data') {
     const key = json(['source', 'setup', source, '--json']).publishable_key
     const events = generate()
     console.log(`posting ${events.length} synthetic events to the Worker...`)
-    const admin = { Authorization: `Bearer ${ADMIN_TOKEN}` }
     for (let i = 0; i < events.length; i += 800) {
       const body = events.slice(i, i + 800).map(e => JSON.stringify(e)).join('\n') + '\n'
       const res = await fetch(`${worker.base}/v1/events`, { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body })
       if (res.status !== 200) throw new Error(`ingest ${res.status}: ${await res.text()}`)
-      if ((i / 800) % 12 === 11) await fetch(`${worker.base}/__debug/seal/${source}`, { headers: admin })
+      if ((i / 800) % 12 === 11) await publish(worker.base, source)
     }
-    for (;;) { const sealed = await (await fetch(`${worker.base}/__debug/seal/${source}`, { headers: admin })).json(); if (!sealed) break }
+    await publish(worker.base, source)
     const synced = json(['sync', '--workspace', ws, '--json'])
     console.log(`synced: ${synced.downloaded} archives, ${synced.imported} events`)
     const count = json(['sql', 'SELECT count(*) AS n FROM events', '--workspace', ws, '--json']).rows[0][0]

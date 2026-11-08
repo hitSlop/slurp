@@ -9,8 +9,9 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "bundle": "node scripts/bundle.mjs",
+    "test": "vitest run && npm run test:http",
     "test:worker": "vitest run",
-    "test": "node --test --test-concurrency=1 --test-force-exit --test-timeout=240000 --experimental-strip-types test/*.test.ts"
+    "test:http": "node --test --test-concurrency=1 --test-force-exit --test-timeout=600000 --experimental-strip-types test/http/*.test.ts"
   },
   "cloudflare": {
     "bindings": {

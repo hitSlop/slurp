@@ -1,5 +1,5 @@
 // Contract test: the real Rust CLI against the real Worker (wrangler dev). Skips when the CLI binary or DuckDB 2 is missing.
-//   cargo build -p slurp-cli && npm test
+//   cargo build -p slurp-cli && npm run test:http
 // Written against docs/contracts.md while the CLI is being rewritten in parallel: the CLI commands and flags below are the intended
 // ones (a key has a source; a webhook is rotated by revoking its key and connecting again; sync --now publishes) and may need small
 // adjustments when the two are integrated.
@@ -11,9 +11,9 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
-import { ADMIN_TOKEN, call, publish, startWorker, type Worker } from './harness.ts'
+import { ADMIN_TOKEN, call, publish, startWorker, type Worker } from './worker.ts'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
+const root = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 // Built at run time so the test value does not look like a real Stripe secret to secret scanners.
 const STRIPE_SECRET = ['whsec', '0123456789abcdef'.repeat(2)].join('_')
 const bin = process.env.SLURP_BIN ?? join(root, 'target/debug/slurp')

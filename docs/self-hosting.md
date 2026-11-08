@@ -81,7 +81,7 @@ Plain variables in `backend/wrangler.jsonc` (`vars`); change and run `wrangler d
 | `ARCHIVE_RETRY_MS` | `5000` | 1 | If writing an archive to R2 fails, the first retry comes after this long, then doubles up to `SEAL_INTERVAL_MS` and keeps trying until R2 answers. A quiet project publishes by itself once R2 is back. Not in `wrangler.jsonc`; add it to `vars` to change it. |
 | `GEO` | `on` | | `on` or `off`, for the whole Worker. When on, each event's envelope carries the visitor's `city`, `country` and `region` from Cloudflare. `off` stores none. |
 
-Secret: `ADMIN_TOKEN` (at least 20 characters). `DEBUG` enables `/__debug` routes for tests; never set it on a real deployment.
+Secret: `ADMIN_TOKEN` (at least 20 characters).
 
 ## Security
 

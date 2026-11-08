@@ -170,7 +170,7 @@ These are parsed once, in `backend/src/config.ts`. An empty, non-numeric, non-fi
 | `ARCHIVE_RETRY_MS` | 5000 | 1 | First retry after an R2 failure. It doubles up to `SEAL_INTERVAL_MS`, forever |
 | `GEO` | `on` | | `on` or `off` |
 
-Also: `ADMIN_TOKEN` (a secret), `DEBUG=1` (test-only `/__debug` routes) and `SLURP_BUILD`.
+Also: `ADMIN_TOKEN` (a secret) and `SLURP_BUILD`.
 
 ## Local import (CLI)
 

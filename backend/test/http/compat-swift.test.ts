@@ -10,10 +10,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, test, type TestContext } from 'node:test'
-import { archived, call, ADMIN_TOKEN, envelopes, newProject, randomName as name, records, startWorker, type Worker } from './harness.ts'
+import { archived, call, ADMIN_TOKEN, envelopes, newProject, randomName as name, records, startWorker, type Worker } from './worker.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const compat = join(here, '../../sdks/compat/swift')
+const compat = join(here, '../../../sdks/compat/swift')
 let w: Worker, binary: string | undefined, why = ''
 const scratch = mkdtempSync(join(tmpdir(), 'slurp-compat-swift-'))
 

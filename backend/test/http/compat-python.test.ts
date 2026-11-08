@@ -8,10 +8,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, test, type TestContext } from 'node:test'
-import { archived, envelopes, newProject, randomName as name, records, startWorker, type Worker } from './harness.ts'
+import { archived, envelopes, newProject, randomName as name, records, startWorker, type Worker } from './worker.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const compat = join(here, '../../sdks/compat/python')
+const compat = join(here, '../../../sdks/compat/python')
 let w: Worker, python: string | undefined, why = '', scratch: string | undefined
 
 before(async () => {
@@ -64,11 +64,11 @@ for (const scenario of ['segment', 'segment-gzip']) {
   })
 }
 
-test('segment-analytics-python with a wrong write key: the SDK reports the 401 once and drops the batch instead of retrying', async t => {
+test('segment-analytics-python with a wrong write key: the SDK reports the 400 once and drops the batch instead of retrying', async t => {
   const got = await run(t, 'segment-wrong-key')
   if (!got) return
   assert.equal(got.summary.errors.length, 1)
-  assert.match(got.summary.errors[0].error, /401/)
+  assert.match(got.summary.errors[0].error, /400/)
   assert.equal(got.summary.errors[0].items, 4)
   assert.equal(got.lines.length, 0, 'nothing was stored')
 })

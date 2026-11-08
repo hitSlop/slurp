@@ -363,6 +363,31 @@ fn a_retention_gap_is_one_problem_however_often_it_is_read() {
 }
 
 #[test]
+fn a_retention_gap_makes_status_and_health_report_history_incomplete() {
+    let Some((_temp, w)) = workspace() else {
+        return;
+    };
+    assert!(w.status().unwrap().get("history_incomplete").is_none());
+    assert!(
+        slurp_app::health::run(&w)
+            .unwrap()
+            .get("history_incomplete")
+            .is_none()
+    );
+    w.record_gap(&slurp_client::api::Gap { from: 3, to: 4 })
+        .unwrap();
+    w.record_gap(&slurp_client::api::Gap { from: 6, to: 7 })
+        .unwrap();
+    let expected = json!({"from": 3, "to": 7});
+    let status = w.status().unwrap();
+    assert_eq!(status["history_incomplete"], expected);
+    assert_eq!(
+        slurp_app::health::run(&w).unwrap()["history_incomplete"],
+        expected
+    );
+}
+
+#[test]
 fn receipts_of_another_project_stop_a_sync_before_any_request() {
     let Some((_temp, w)) = workspace() else {
         return;

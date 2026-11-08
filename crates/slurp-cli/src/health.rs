@@ -226,7 +226,9 @@ pub fn run(w: &Workspace) -> Result<Value> {
     }
     let problems = problems(w)?;
     findings.extend(import_problems(&problems));
-    Ok(
-        json!({"events": events, "checks": 5, "ok": findings.is_empty(), "findings": findings, "problems": problems}),
-    )
+    let mut result = json!({"events": events, "checks": 5, "ok": findings.is_empty(), "findings": findings, "problems": problems});
+    if let Some(incomplete) = w.history_incomplete()? {
+        result["history_incomplete"] = incomplete;
+    }
+    Ok(result)
 }

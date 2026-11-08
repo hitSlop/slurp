@@ -17,6 +17,7 @@ pub enum Kind {
     Sync,
     Sql,
     Health,
+    Status,
 }
 
 pub fn configure(mode: &str, json: bool) {
@@ -80,10 +81,36 @@ fn publication(value: &Value, out: &mut dyn Write) -> io::Result<()> {
     }
 }
 
+/// A prominent line when retention deleted archives before this computer synced them; those events cannot be recovered.
+fn history_incomplete(value: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let range = &value["history_incomplete"];
+    let (Some(from), Some(to)) = (range["from"].as_u64(), range["to"].as_u64()) else {
+        return Ok(());
+    };
+    let which = if from == to {
+        format!("archive {from} was")
+    } else {
+        format!("archives {from}\u{2013}{to} were")
+    };
+    writeln!(
+        out,
+        "History incomplete: {which} deleted by retention before this computer synced them; those events are lost.\n"
+    )
+}
+
 pub fn render(kind: Kind, value: &Value, width: usize, out: &mut dyn Write) -> io::Result<()> {
     match kind {
         Kind::Sql => table(value, width.max(16), out),
+        Kind::Status => {
+            history_incomplete(value, out)?;
+            let mut rest = value.clone();
+            if let Some(fields) = rest.as_object_mut() {
+                fields.remove("history_incomplete");
+            }
+            general(&rest, 0, out)
+        }
         Kind::Health => {
+            history_incomplete(value, out)?;
             let events = value["events"].as_u64().unwrap_or(0);
             let findings = value["findings"].as_array().cloned().unwrap_or_default();
             if findings.is_empty() {
@@ -176,6 +203,9 @@ pub fn render(kind: Kind, value: &Value, width: usize, out: &mut dyn Write) -> i
                 writeln!(out, "No published batches yet. No events imported.")?;
             } else {
                 writeln!(out, "Already caught up. No new events imported.")?;
+            }
+            if value["gaps"].as_u64().unwrap_or(0) > 0 {
+                history_incomplete(value, out)?;
             }
             publication(value, out)
         }
@@ -456,6 +486,48 @@ mod tests {
                 && out.contains("3 invalid lines:")
                 && out.contains("1 gap:")
         );
+    }
+
+    #[test]
+    fn a_retention_gap_is_a_prominent_line_on_status_health_and_the_sync_that_found_it() {
+        let line = "History incomplete: archives 3\u{2013}7 were deleted by retention before this computer synced them; those events are lost.";
+        let incomplete = json!({"from": 3, "to": 7});
+        let out = text(
+            Kind::Status,
+            json!({"project": "prj_x", "history_incomplete": incomplete}),
+            80,
+        );
+        assert!(
+            out.starts_with(line) && out.contains("project: prj_x"),
+            "{out}"
+        );
+        assert!(!out.contains("from:"), "{out}");
+        let out = text(
+            Kind::Health,
+            json!({"events": 1, "findings": [], "history_incomplete": incomplete}),
+            80,
+        );
+        assert!(out.starts_with(line), "{out}");
+        let out = text(
+            Kind::Sync,
+            json!({"downloaded": 1, "gaps": 1, "pending": false, "history_incomplete": incomplete}),
+            80,
+        );
+        assert!(out.contains(line), "{out}");
+        // A sync that found no new gap does not repeat it; status and health do.
+        let out = text(
+            Kind::Sync,
+            json!({"downloaded": 1, "gaps": 0, "pending": false, "history_incomplete": incomplete}),
+            80,
+        );
+        assert!(!out.contains("History incomplete"), "{out}");
+        let out = text(
+            Kind::Status,
+            json!({"history_incomplete": {"from": 3, "to": 3}}),
+            80,
+        );
+        assert!(out.contains("archive 3 was deleted"), "{out}");
+        assert!(!text(Kind::Status, json!({"project": "prj_x"}), 80).contains("History"));
     }
 
     #[test]

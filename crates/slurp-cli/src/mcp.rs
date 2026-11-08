@@ -221,11 +221,7 @@ impl Server {
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value> {
         let w = &self.workspace;
         match name {
-            "status" => Ok(json!({
-                "version": w.version, "project": w.project, "backend": w.backend, "database": w.database,
-                "events": w.execute("SELECT count(*) AS count FROM events", true)?,
-                "last_delivery": w.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1", true)?,
-            })),
+            "status" => w.status(),
             "describe_schema" => describe_schema(w),
             "sql" => {
                 let query = string_arg(args, "query")?;

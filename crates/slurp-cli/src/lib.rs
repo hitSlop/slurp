@@ -392,21 +392,50 @@ impl Workspace {
     pub fn import(&self, seq: u64, sha: &str, bytes: u64, path: &Path) -> Result<ImportStats> {
         import::import_archive(self, seq, sha, bytes, path)
     }
-    /// Record archives that retention deleted before they were read. Safe to repeat.
+    /// Record archives that retention deleted before they were read. Safe to repeat. The row's `record` keeps the whole range
+    /// (`{"from":3,"to":7}`), since a gap row's key holds only where it starts.
     pub fn record_gap(&self, gap: &slurp_client::api::Gap) -> Result<()> {
         let detail = format!(
             "archives {} to {} were deleted by retention before they were read",
             gap.from, gap.to
         );
+        let range = json!({"from": gap.from, "to": gap.to}).to_string();
         self.execute(
             &format!(
-                "INSERT INTO _slurp.problems(kind, sender, id, archive_seq, line, record, detail) VALUES('gap', NULL, NULL, {}, 0, NULL, {}) ON CONFLICT DO NOTHING",
+                "INSERT INTO _slurp.problems(kind, sender, id, archive_seq, line, record, detail) VALUES('gap', NULL, NULL, {}, 0, {}, {}) ON CONFLICT DO NOTHING",
                 gap.from,
+                literal(&range),
                 literal(&detail)
             ),
             false,
         )?;
         Ok(())
+    }
+    /// The archives retention deleted before this database read them, as `{"from": n, "to": m}` (the union of every gap
+    /// recorded), or `None` when nothing is missing. Those events are lost; every status-like output reports this.
+    pub fn history_incomplete(&self) -> Result<Option<Value>> {
+        let rows = self.execute(
+            "SELECT min(archive_seq)::BIGINT AS \"from\", max(coalesce(try_cast(json_extract_string(record, '$.to') AS BIGINT), archive_seq))::BIGINT AS \"to\" FROM _slurp.problems WHERE kind = 'gap' HAVING count(*) > 0",
+            true,
+        )?;
+        Ok(rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|row| json!({"from": row["from"], "to": row["to"]})))
+    }
+    /// The workspace at a glance: binding, event count, import problems, the last receipt, and `history_incomplete` when
+    /// retention deleted archives before they were read.
+    pub fn status(&self) -> Result<Value> {
+        let mut status = json!({
+            "version": self.version, "project": self.project, "backend": self.backend, "database": self.database,
+            "events": self.execute("SELECT count(*) AS count FROM events", true)?,
+            "problems": self.execute("SELECT kind, count(*) AS count FROM _slurp.problems GROUP BY kind ORDER BY kind", true)?,
+            "last_delivery": self.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1", true)?,
+        });
+        if let Some(incomplete) = self.history_incomplete()? {
+            status["history_incomplete"] = incomplete;
+        }
+        Ok(status)
     }
     /// Ask the Worker to publish everything it has buffered now (`Publish`). Needs the admin token.
     ///
@@ -513,7 +542,7 @@ impl Workspace {
                 last_at: None,
                 pending: false,
             });
-        Ok(json!({
+        let mut result = json!({
             "downloaded": downloaded,
             "imported": imported,
             "duplicates": duplicates,
@@ -525,6 +554,10 @@ impl Workspace {
             "has_published_archives": coverage.last.is_some(),
             "pending": coverage.pending,
             "published_now": now,
-        }))
+        });
+        if let Some(incomplete) = self.history_incomplete()? {
+            result["history_incomplete"] = incomplete;
+        }
+        Ok(result)
     }
 }

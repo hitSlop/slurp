@@ -190,6 +190,7 @@ fn main() -> std::process::ExitCode {
         Operation::Sync { .. } => output::Kind::Sync,
         Operation::Sql { .. } => output::Kind::Sql,
         Operation::Health => output::Kind::Health,
+        Operation::Doctor | Operation::Status => output::Kind::Status,
         _ => output::Kind::General,
     };
     match run(cli) {
@@ -382,9 +383,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
             std::process::exit(0);
         }
-        Operation::Doctor | Operation::Status => Ok(
-            json!({"version":w.version,"project":w.project,"backend":w.backend,"database":w.database,"events":w.execute("SELECT count(*) AS count FROM events",true)?,"problems":w.execute("SELECT kind, count(*) AS count FROM _slurp.problems GROUP BY kind ORDER BY kind",true)?,"last_delivery":w.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1",true)?}),
-        ),
+        Operation::Doctor | Operation::Status => w.status(),
         Operation::Health => slurp_app::health::run(&w),
         Operation::Describe => w.execute("DESCRIBE events", true),
         Operation::Sql {

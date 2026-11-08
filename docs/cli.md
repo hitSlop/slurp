@@ -299,3 +299,14 @@ Each machine keeps credentials, its database location, and its DuckDB executable
 In a fresh clone, run `slurp setup`, then `slurp init`. Supply an admin token or a secret key for the bound project. Scripts can use `slurp init --token-stdin --yes`. An admin creates a teammate key with `slurp project key create PROJECT --scope secret --name alice`. That key can sync and publish its project's archives with `slurp sync --now`.
 
 A missing registered database is never recreated automatically. Reconnect its drive, or explicitly run `slurp init --reset-local` to preserve the old registration and choose storage again. Existing database files are kept.
+
+### Setup connection status
+
+`slurp setup --no-connect` prepares local storage without contacting the Worker.
+Its JSON result reports `credentials_present` from local credentials and
+`connection_checked` for whether this run verified the Worker. `connected` is true
+only after successful verification during this run; false with
+`connection_checked: false` means the connection was not checked. Saved credentials
+are retained, and `missing` includes `login` only when no backend credentials exist.
+Joining a project with a project secret finishes with sync instructions; creating
+or reopening a project as its admin also provides the SDK quickstart key.

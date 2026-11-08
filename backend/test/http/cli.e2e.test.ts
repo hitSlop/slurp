@@ -47,6 +47,16 @@ test('connect verifies the Worker and the token, then saves them', { skip }, asy
   // saved: later commands need neither SLURP_TOKEN nor --backend
   assert.equal(run(['whoami']).json.scope, 'admin')
   assert.equal(run(['project', 'list']).status, 0)
+  const setup = run(['setup', '--library', join(home, 'library'), '--duckdb', duckdb, '--no-connect', '--no-open', '--json'])
+  assert.equal(setup.status, 0, setup.text)
+  assert.equal(setup.json.connection_checked, false)
+  assert.equal(setup.json.credentials_present, true)
+  assert.deepEqual(setup.json.missing, [])
+  const checked = run(['setup', '--library', join(home, 'library'), '--duckdb', duckdb, '--no-open', '--json'])
+  assert.equal(checked.status, 0, checked.text)
+  assert.equal(checked.json.connected, true)
+  assert.equal(checked.json.connection_checked, true)
+  assert.equal(checked.json.credentials_present, true)
 })
 
 test('whoami says what any key is, connect only accepts the admin token, and logout forgets the saved token', { skip }, async () => {
@@ -74,6 +84,11 @@ test('init -> send -> sync (gzip archive) -> sql, idempotent, with geo and exact
   assert.equal(setup.status, 0, setup.text)
   const init = run(['init', '--name', 'Contract App', '--project', ws, '--data-dir', join(ws, 'data'), '--duckdb', duckdb, '--no-open', '--no-install-skills', '--no-agent-notes', '--json'])
   assert.equal(init.status, 0, init.text)
+  const ownerRepeat = run(['init', '--project', ws, '--no-open', '--json'])
+  assert.equal(ownerRepeat.status, 0, ownerRepeat.text)
+  assert.deepEqual(ownerRepeat.json.warnings, [])
+  const ownerKey = (await call(w.base, ADMIN_TOKEN, 'SourceKey', { project: init.json.project, source: 'default' })).key.key!
+  assert.ok(readFileSync(ownerRepeat.json.setup_page, 'utf8').includes(ownerKey))
   const source = run(['status', '--project', ws, '--json']).json.project as string
   assert.match(source, /^prj_/)
   for (const i of [1, 2, 3]) assert.equal(run(['send', 'signed_up', '--user-id', `u${i}`, '--data', '{"amount":12345678901234567890}', '--project', ws, '--json']).json.accepted, true)
@@ -216,6 +231,12 @@ test('a teammate initializes a committed clone, syncs with a saved project key, 
   const env = { SLURP_HOME: join(home, 'teammate-home') }
   const init = run(['init', '--project', clone, '--token-stdin', '--duckdb', duckdb, '--yes', '--no-open', '--json'], env, key.key + '\n', clone)
   assert.equal(init.status, 0, init.text)
+  assert.deepEqual(init.json.warnings, [])
+  assert.equal(init.json.next_steps, 'slurp sync')
+  const repeated = run(['init', '--project', clone, '--yes', '--no-open', '--json'], env, undefined, clone)
+  assert.equal(repeated.status, 0, repeated.text)
+  assert.deepEqual(repeated.json.warnings, [])
+  assert.equal(repeated.json.next_steps, 'slurp sync')
   assert.equal(readFileSync(join(clone, 'slurp/slurp.toml'), 'utf8'), original)
   const sync = run(['sync', '--now', '--project', clone, '--json'], env, undefined, clone)
   assert.equal(sync.status, 0, sync.text)
@@ -235,6 +256,10 @@ test('a teammate initializes a committed clone, syncs with a saved project key, 
   const rejected = run(['init', '--project', clone, '--token-stdin', '--duckdb', duckdb, '--yes'], badHome, (await call(w.base, ADMIN_TOKEN, 'SourceKey', { project, source: 'default' })).key.key + '\n', clone)
   assert.notEqual(rejected.status, 0)
   assert.match(rejected.text, /can only send events/)
+  const other = await call(w.base, ADMIN_TOKEN, 'CreateProject', { name: 'wrong_teammate_project' })
+  const wrongKey = (await call(w.base, ADMIN_TOKEN, 'CreateKey', { project: other.project.id, scope: 'secret' })).key.key!
+  const wrong = run(['init', '--project', clone, '--token-stdin', '--duckdb', duckdb, '--yes'], badHome, wrongKey + '\n', clone)
+  assert.notEqual(wrong.status, 0); assert.match(wrong.text, /different project/)
   await call(w.base, ADMIN_TOKEN, 'RevokeKey', { project, keyId: key.keyId })
   const revoked = run(['sync', '--project', clone, '--json'], env, undefined, clone)
   assert.notEqual(revoked.status, 0); assert.match(revoked.text, /rejected or revoked/)

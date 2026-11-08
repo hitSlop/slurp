@@ -225,10 +225,46 @@ fn prepare_library(selected: Library) -> Result<PathBuf> {
     Ok(selected.path)
 }
 
-fn configured_status(home: &Path, saved: &system::Settings) -> Value {
+// Presence is a local fact; verification is only known after an explicit connection check.
+fn connection_status(backend: &str, verified: Option<bool>) -> Result<Value> {
+    let present = match slurp_client::connection::resolve(backend, None) {
+        Ok(_) => true,
+        Err(error)
+            if error
+                .downcast_ref::<slurp_client::connection::NotConnected>()
+                .is_some() =>
+        {
+            false
+        }
+        Err(error) => return Err(error),
+    };
+    let next = match verified {
+        Some(true) => "This computer is ready. Run slurp init inside your app's folder.",
+        Some(false) => {
+            "Worker verification failed; run slurp connect <worker-url> to check the connection again."
+        }
+        None if present => {
+            "Local setup is ready. Worker connection not checked; run slurp init inside your app's folder."
+        }
+        None => {
+            "Worker connection not checked. Run slurp connect <worker-url> when ready, then run slurp init inside your app's folder."
+        }
+    };
+    Ok(
+        json!({"connected":verified.unwrap_or(false),"connection_checked":verified.is_some(),"credentials_present":present,"missing":if present {Vec::<&str>::new()} else {vec!["login"]},"next_steps":next}),
+    )
+}
+
+fn configured_status(
+    home: &Path,
+    saved: &system::Settings,
+    verified: Option<bool>,
+) -> Result<Value> {
     let library_available = saved.library_dir.as_ref().is_some_and(|path| path.is_dir());
     let duckdb_available = saved.duckdb.as_ref().is_some_and(|path| path.is_file());
-    json!({"already_configured":true,"home":home,"config":home.join("config.toml"),"backend":saved.backend,"library_dir":saved.library_dir,"duckdb":saved.duckdb,"library_available":library_available,"duckdb_available":duckdb_available,"local_ready":library_available && duckdb_available,"authenticated":null,"next_steps":"Run slurp init inside your app. Reconnect unavailable storage before syncing or querying."})
+    let mut result = connection_status(saved.backend_url(), verified)?;
+    result.as_object_mut().context("setup result")?.extend(json!({"already_configured":true,"home":home,"config":home.join("config.toml"),"backend":saved.backend,"library_dir":saved.library_dir,"duckdb":saved.duckdb,"library_available":library_available,"duckdb_available":duckdb_available,"local_ready":library_available && duckdb_available,"authenticated":null}).as_object().context("machine settings")?.clone());
+    Ok(result)
 }
 
 fn settings_menu(
@@ -238,12 +274,12 @@ fn settings_menu(
     no_open: bool,
 ) -> Result<Value> {
     if !ui.interactive {
-        return Ok(configured_status(home, &saved));
+        return configured_status(home, &saved, None);
     }
     ui.heading("Slurp is already configured on this computer.")?;
     let mut connected = None;
     loop {
-        let status = configured_status(home, &saved);
+        let status = configured_status(home, &saved, connected)?;
         ui.note(
             "Machine settings",
             &format!(
@@ -296,9 +332,7 @@ fn settings_menu(
         match choice.as_str() {
             "done" => {
                 ui.success("Run slurp init inside your app to connect a project.")?;
-                let mut result = configured_status(home, &saved);
-                result["connected"] = json!(connected);
-                return Ok(result);
+                return configured_status(home, &saved, connected);
             }
             "guide" => {
                 guide(ui, no_open)?;
@@ -494,13 +528,8 @@ pub fn run(options: Options, machine_output: bool) -> Result<Value> {
                 "machine preferences saved; Worker connection incomplete; rerun slurp setup to continue",
             )?;
     }
-    let next = if options.no_connect {
-        "Run slurp connect <worker-url> when ready, then run slurp init inside your app's folder."
-    } else {
-        "This computer is ready. Run slurp init inside your app's folder."
-    };
-    ui.success(next)?;
-    Ok(
-        json!({"home":home,"config":home.join("config.toml"),"library_dir":library_path,"duckdb":executable,"connected":!options.no_connect,"local_ready":true,"missing":if options.no_connect {vec!["login"]}else{Vec::<&str>::new()},"next_steps":next}),
-    )
+    let mut result = connection_status(&backend, (!options.no_connect).then_some(true))?;
+    ui.success(result["next_steps"].as_str().context("setup next steps")?)?;
+    result.as_object_mut().context("setup result")?.extend(json!({"home":home,"config":home.join("config.toml"),"library_dir":library_path,"duckdb":executable,"local_ready":true}).as_object().context("machine settings")?.clone());
+    Ok(result)
 }

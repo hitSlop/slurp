@@ -1,6 +1,6 @@
 # SDK delivery conformance
 
-This is what a Slurp SDK implements to deliver events: a durable queue, one send loop, and a fixed reaction to every answer. Wire formats (the record, the request, the responses, the credentials) are in [`docs/contracts.md`](../../docs/contracts.md): read "Credentials", "Sending events" and "SDK delivery" there first. [`delivery.json`](delivery.json) holds the executable scenarios; every SDK runs all of them (the JS and React Native runners are `sdks/js/test/conformance-runner.ts`, the Swift one is in `sdks/swift/Tests`). When you find a delivery bug, add a scenario there before you fix it.
+This is what a Slurp SDK implements to deliver events: a durable queue, one send loop, and a fixed reaction to every answer. Wire formats (the record, the request, the responses, the credentials) are in [`docs/contracts.md`](../../docs/contracts.md): read "Credentials", "Sending events" and "SDK delivery" there first. [`delivery.json`](delivery.json) holds the executable scenarios; every SDK runs all of them (the JS and React Native runners are `sdks/js/test/conformance-runner.ts`). When you find a delivery bug, add a scenario there before you fix it.
 
 The design rests on one fact: **the Worker does not deduplicate requests, the import does** (by source and event id). So an SDK only has to make sure that every record is eventually sent at least once, with the same `id` every time. It does not have to resend identical request bytes, so it keeps no frozen batches: a request is just the first lines of the queue.
 
@@ -88,4 +88,4 @@ The request **timeout** (default 30 s) aborts the request and counts as a networ
 
 `delivery.json` documents its own format in its `description`. A new SDK needs: a way to make a client with options and a fake `fetch` that answers from a script, a storage the runner can make fail or slow, and a way to restart (close, then create another client on the same storage). Run the scenarios in order; each is independent. The scenarios that take real time are the `Retry-After` ones (about 1 to 2 s each) and the flush-timer one (about 1 s).
 
-Not covered by scenarios because they need a real page or app: page-hide keepalive (see `sdks/js/test/delivery.test.ts`), and the app lifecycle hooks of React Native and Swift.
+Not covered by scenarios because they need a real page or app: page-hide keepalive (see `sdks/js/test/delivery.test.ts`), and the app lifecycle hooks of React Native.

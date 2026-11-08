@@ -1,0 +1,11 @@
+# Generated files we commit on purpose. GitHub leaves them out of the language bar and collapses them in diffs.
+# The setup page is built into one file (fonts included) and embedded in the CLI; CI checks it is current.
+crates/slurp-cli/assets/setup.html linguist-generated=true
+# The Worker the CLI deploys, bundled from backend/ (node backend/scripts/bundle.mjs).
+crates/slurp-cli/assets/worker/** linguist-generated=true
+# Sample reports the site serves: each one is a standalone built HTML file.
+apps/site/public/reports/** linguist-generated=true
+# Clients generated from backend/api/slurp.ridl (backend/api/generate.sh).
+backend/src/slurp.gen.ts linguist-generated=true
+crates/slurp-client/src/slurp.gen.rs linguist-generated=true
+pnpm-lock.yaml linguist-generated=true

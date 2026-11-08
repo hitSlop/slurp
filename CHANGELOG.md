@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: report PNGs cut their charts off.** `slurp report build --png`, `slurp notify` images and MCP report builds drew each chart clipped to the top-left quarter of its plot: bars started at half height, lines and areas stopped part-way. Charts now draw whole and stay sharp at 2x.
+
 ## 0.1.2
 
 - **The agent skill and the setup page cover every way to send events.** `slurp agent setup` now teaches an agent where the endpoint and key come from (`slurp init` creates the project and its first publishable key; `slurp project setup` shows them again), the web feedback widget, the Segment and Sentry SDKs in Python, and the GitHub, RevenueCat, Stripe and generic webhooks with the `releases` and `revenue` views. A test keeps it that way.

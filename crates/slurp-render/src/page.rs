@@ -8,9 +8,12 @@ pub const PAGE_WIDTH: u32 = 840;
 /// the image is shared in chat or email. The layout is still 840 px wide; the PNG is `PAGE_WIDTH * PNG_SCALE` pixels wide.
 pub const PNG_SCALE: u32 = 2;
 
-/// Takumi draws an inline `<svg>` at the page's device pixel ratio twice: its box is laid out at the right size, but the
-/// drawing inside it is scaled by an extra PNG_SCALE, so a chart shows only its top-left corner. Widening each `viewBox` by
-/// the same factor cancels that, and the chart fills its box exactly as it does at 1x. Verified by `svg_fills_its_box_at_png_scale`.
+/// Takumi does not draw an inline `<svg>` correctly at a device pixel ratio above 1. Its box is laid out at the right size, but the
+/// drawing inside is scaled by an extra PNG_SCALE, so a chart shows only its top-left corner. Widening the `viewBox` by the same factor
+/// cancels that for simple drawings, but a chart's marks (bars, areas, lines) are still clipped to the top-left quarter of the plot:
+/// bars stop at half their height and lines at half their width. An SVG drawn as an `<img>` is laid out at its CSS size and drawn
+/// whole at full density, so every chart that has a pixel size is handed over as one. A drawing without one (an icon sized by CSS)
+/// keeps the widened `viewBox`. Verified by `svg_fills_its_box_at_png_scale` and `chart_marks_are_not_clipped_at_png_scale`.
 pub(crate) fn fit_svgs_to_density(html: &str, scale: u32) -> String {
     if scale <= 1 {
         return html.to_owned();
@@ -18,18 +21,55 @@ pub(crate) fn fit_svgs_to_density(html: &str, scale: u32) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(start) = rest.find("<svg") {
-        let (before, tag_and_after) = rest.split_at(start);
+        let (before, tail) = rest.split_at(start);
         out.push_str(before);
-        let Some(end) = tag_and_after.find('>') else {
-            out.push_str(tag_and_after);
+        let Some(open_end) = tail.find('>') else {
+            out.push_str(tail);
             return out;
         };
-        let (tag, after) = tag_and_after.split_at(end + 1);
-        out.push_str(&scale_view_box(tag, scale));
-        rest = after;
+        let open = &tail[..=open_end];
+        match (tail.find("</svg>"), pixel_size(open)) {
+            (Some(close), Some((width, height))) if !open.ends_with("/>") => {
+                let close = close + "</svg>".len();
+                out.push_str(&svg_image(&tail[..close], open, width, height));
+                rest = &tail[close..];
+            }
+            _ => {
+                out.push_str(&scale_view_box(open, scale));
+                rest = &tail[open.len()..];
+            }
+        }
     }
     out.push_str(rest);
     out
+}
+
+/// The value of `name="..."` in an opening tag, matched as a whole attribute name (so `stroke-width` is not `width`).
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!(" {name}=\"");
+    let at = tag.find(&key)? + key.len();
+    let len = tag[at..].find('"')?;
+    Some(&tag[at..at + len])
+}
+
+fn pixel_size(open: &str) -> Option<(f64, f64)> {
+    let number = |name: &str| {
+        attribute(open, name)?
+            .trim_end_matches("px")
+            .parse::<f64>()
+            .ok()
+    };
+    let (width, height) = (number("width")?, number("height")?);
+    (width > 0.0 && height > 0.0).then_some((width, height))
+}
+
+fn svg_image(svg: &str, open: &str, width: f64, height: f64) -> String {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let class = attribute(open, "class").unwrap_or_default();
+    format!(
+        "<img class=\"{class}\" width=\"{width}\" height=\"{height}\" style=\"max-width:100%;height:auto\" src=\"data:image/svg+xml;base64,{}\">",
+        STANDARD.encode(svg)
+    )
 }
 
 fn scale_view_box(tag: &str, scale: u32) -> String {

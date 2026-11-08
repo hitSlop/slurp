@@ -2998,6 +2998,7 @@ dependencies = [
 name = "slurp-render"
 version = "0.1.2"
 dependencies = [
+ "base64 0.22.1",
  "hex",
  "rquickjs",
  "serde",

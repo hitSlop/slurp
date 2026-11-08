@@ -56,12 +56,15 @@ function presentedToken(req, allowQueryKey = false) {
   return token;
 }
 __name(presentedToken, "presentedToken");
+var projectOfKey = /* @__PURE__ */ __name((token) => {
+  const hex = PUBLISHABLE_KEY.exec(token)?.[1] ?? SECRET_KEY.exec(token)?.[1];
+  return hex ? "prj_" + hex : null;
+}, "projectOfKey");
 async function authenticate(env, token) {
   if (!token) return null;
   if (isAdmin(token, env)) return { kind: "admin" };
-  const hex = PUBLISHABLE_KEY.exec(token)?.[1] ?? SECRET_KEY.exec(token)?.[1];
-  if (!hex) return null;
-  const project = "prj_" + hex;
+  const project = projectOfKey(token);
+  if (!project) return null;
   const principal = await env.PROJECT.get(env.PROJECT.idFromName(project)).authorize(token);
   return principal ? { kind: "key", project, ...principal } : null;
 }
@@ -239,7 +242,7 @@ var Publisher = class {
   armed = null;
   inflight = null;
   /** Test hooks (DEBUG only). */
-  faults = { archive: false, afterPut: false };
+  faults = { archive: false, afterPut: false, alarm: false };
   ctx;
   env;
   db;
@@ -276,22 +279,32 @@ var Publisher = class {
       oldestLiveAt: this.db.one("SELECT created_at t FROM manifest WHERE deleted_at IS NULL ORDER BY seq LIMIT 1")?.t ?? null
     };
   }
-  /** Set (or clear) the alarm for `nextWake`. The only place that touches the alarm, and only when the time changes: each write bills a row. */
+  /**
+   * Set (or clear) the alarm for `nextWake`. The only place that touches the alarm, and only when the time changes: each write bills a row.
+   * The cache of what is armed changes only once the platform has accepted the write: a failed write throws and leaves it as it was, so
+   * the next call tries again instead of believing an alarm exists.
+   */
   async rearm() {
     const now = Date.now();
     const want = nextWake(this.facts(), this.cfg, now);
     const cur = this.armed;
     if (want === null) {
       if (cur === null) return;
+      await this.alarmWrite(() => this.ctx.storage.deleteAlarm());
       this.armed = null;
-      this.db.alarmWrites++;
-      await this.ctx.storage.deleteAlarm();
     } else {
       if (cur === want || cur !== null && cur <= now && want <= now) return;
+      await this.alarmWrite(() => this.ctx.storage.setAlarm(want));
       this.armed = want;
-      this.db.alarmWrites++;
-      await this.ctx.storage.setAlarm(want);
     }
+  }
+  async alarmWrite(write) {
+    if (this.faults.alarm) {
+      this.faults.alarm = false;
+      throw new Error("injected alarm failure");
+    }
+    await write();
+    this.db.alarmWrites++;
   }
   /** Learn what the platform has armed (when the object starts, and as an alarm begins). */
   async syncAlarm() {
@@ -408,6 +421,7 @@ var Publisher = class {
     else if (published) this.clearFailures();
     await this.rearm();
   }
+  /** Record a failed publication: count it and schedule the retry (`retry_at`), backing off. */
   fail(error, now) {
     const failures = Number(this.setting("failures") ?? 0) + 1;
     const { archiveRetryMs, sealIntervalMs } = this.cfg;
@@ -759,7 +773,7 @@ function normalizeGeo(cf) {
   return Object.keys(geo).length === 0 ? null : geo;
 }
 __name(normalizeGeo, "normalizeGeo");
-var envelope = /* @__PURE__ */ __name((receivedAtMs, sender, geoJson, record) => `{"received_at":"${new Date(receivedAtMs).toISOString()}","sender":${JSON.stringify(sender)}${geoJson ? `,"geo":${geoJson}` : ""},"record":${record}}
+var envelope = /* @__PURE__ */ __name((receivedAtMs, sender, geoJson, record) => `{"received_at":"${new Date(receivedAtMs).toISOString()}","sender":${JSON.stringify(sender)}${geoJson ? `,"geo":${geoJson}` : ""},"record":${record.replace(/[\r\n]/g, " ")}}
 `, "envelope");
 
 // src/compat/common.ts
@@ -768,7 +782,7 @@ var json = /* @__PURE__ */ __name((status, body, extra = {}) => Response.json(bo
 var preflight = /* @__PURE__ */ __name((methods, allowHeaders) => new Response(null, { status: 204, headers: { ...CORS, "access-control-allow-methods": methods, "access-control-allow-headers": allowHeaders, "access-control-max-age": "86400" } }), "preflight");
 async function publishable(host, token) {
   const auth = token?.startsWith("slurp_pk_") ? await host.authenticate(token) : null;
-  return auth?.kind === "key" && auth.scope === "publishable" ? { project: auth.project, source: auth.source } : null;
+  return auth?.kind === "key" && auth.scope === "publishable" ? { project: auth.project, token, source: auth.source } : null;
 }
 __name(publishable, "publishable");
 var requestGeo = /* @__PURE__ */ __name((req) => normalizeGeo(req.cf), "requestGeo");
@@ -816,7 +830,6 @@ async function submit(host, sender, lines, opts) {
     else if (opts.invalid === "fail") break;
   }
   if (rejected.length && opts.invalid === "fail") return json(400, { error: "invalid records", rejected });
-  if (valid.length === 0) return { accepted: 0, rejected };
   const result = await host.ingest(sender, valid, opts.geo);
   return result.ok ? { accepted: result.accepted, rejected } : ingestFailure(result);
 }
@@ -1241,6 +1254,8 @@ async function debugRoute(req, env, auth) {
       return fault("archive");
     case "fail-after-put":
       return fault("after-put");
+    case "fail-alarm":
+      return fault("alarm");
     case "heal-archive":
       await stub.fault("archive", false);
       return ok();
@@ -1296,16 +1311,18 @@ var native = {
     if (req.method === "OPTIONS") return preflight("POST, OPTIONS", "Authorization, Content-Type");
     if (req.method !== "POST") return json(405, { error: "method not allowed" }, { Allow: "POST, OPTIONS" });
     const token = presentedToken(req, true);
-    const auth = await host.authenticate(token);
-    if (!auth) return json(401, { error: "invalid key" });
-    if (auth.kind !== "key" || auth.scope !== "publishable") return json(403, { error: "publishable key required" });
+    if (!token) return json(401, { error: "invalid key" });
+    const project = projectOfKey(token);
+    if (!project) {
+      return await host.authenticate(token) ? json(403, { error: "publishable key required" }) : json(401, { error: "invalid key" });
+    }
     let body;
     try {
       body = await readBounded(req, host.cfg.maxBodyBytes, { gunzip: false });
     } catch (e) {
       return e instanceof BodyTooLarge ? json(413, { error: "body too large" }) : json(400, { error: "unreadable body" });
     }
-    const result = await submit(host, { project: auth.project, source: auth.source }, splitLines(body), { invalid: "fail", geo: requestGeo(req) });
+    const result = await submit(host, { project, token }, splitLines(body), { invalid: "fail", geo: requestGeo(req) });
     return result instanceof Response ? result : json(200, { ok: true, accepted: result.accepted });
   }
 };
@@ -1496,9 +1513,15 @@ var ProjectDO = class extends DurableObject2 {
     return this.ready ? this.db.one("SELECT secret FROM webhooks WHERE provider=?", provider)?.secret ?? null : null;
   }
   // ---- ingest ----
-  /** Accept validated record lines from `source`: wrap each in an envelope, commit them, and answer once they are durable. */
-  async ingest(source, lines, geo) {
-    if (!this.ready) return { ok: false, status: 503, reason: "unavailable", retryAfter: 5 };
+  /**
+   * The only way events enter: check the presented key here, at enqueue (so a key revoked while its body was uploading gets nothing
+   * stored), take the source from the stored key, wrap each line in an envelope, commit them, and answer once they are durable.
+   */
+  async ingest(token, lines, geo) {
+    const principal = await this.authorize(token);
+    if (!principal) return { ok: false, status: 401, reason: "invalid key", retryAfter: 0 };
+    if (principal.scope !== "publishable") return { ok: false, status: 403, reason: "publishable key required", retryAfter: 0 };
+    const source = principal.source;
     if (lines.length === 0) return { ok: true, accepted: 0 };
     const atMs = Date.now();
     const geoJson = this.cfg.geo && geo ? JSON.stringify(geo) : null;
@@ -1550,12 +1573,14 @@ var ProjectDO = class extends DurableObject2 {
       for (const item of q) item.done({ ok: false, status: 503, reason: "unavailable", retryAfter: 5 });
       return;
     }
-    for (const item of q) item.done({ ok: true, accepted: item.lines.length });
     try {
       await this.publisher.rearm();
     } catch (e) {
-      console.error("could not set the alarm", e);
+      console.error("the alarm could not be set; the requests were answered 503 so their senders retry", e);
+      for (const item of q) item.done({ ok: false, status: 503, reason: "unavailable", retryAfter: 5 });
+      return;
     }
+    for (const item of q) item.done({ ok: true, accepted: item.lines.length });
   }
   // ---- archives ----
   async alarm() {
@@ -1569,7 +1594,17 @@ var ProjectDO = class extends DurableObject2 {
   /** Publish everything buffered now, then report where archives stand. Throws if R2 fails. */
   async publish() {
     await this.flush();
-    await this.publisher.publishAll();
+    try {
+      await this.publisher.publishAll();
+    } catch (e) {
+      this.publisher.fail(e, Date.now());
+      try {
+        await this.publisher.rearm();
+      } catch (a) {
+        console.error("could not set the alarm after a failed publish", a);
+      }
+      throw e;
+    }
     await this.publisher.rearm();
     return this.coverage();
   }
@@ -1603,6 +1638,7 @@ var ProjectDO = class extends DurableObject2 {
   async fault(which, on) {
     if (which === "flush") this.failFlush = on;
     else if (which === "archive") this.publisher.faults.archive = on;
+    else if (which === "alarm") this.publisher.faults.alarm = on;
     else this.publisher.faults.afterPut = on;
   }
   async sweep() {
@@ -1636,7 +1672,7 @@ var ADAPTERS = [native, segment, sentry, hooks];
 var makeHost = /* @__PURE__ */ __name((env) => ({
   cfg: configOf(env),
   authenticate: /* @__PURE__ */ __name((token) => authenticate(env, token), "authenticate"),
-  ingest: /* @__PURE__ */ __name((sender, lines, geo) => projectStub(env, sender.project).ingest(sender.source, lines, geo), "ingest"),
+  ingest: /* @__PURE__ */ __name((sender, lines, geo) => projectStub(env, sender.project).ingest(sender.token, lines, geo), "ingest"),
   webhookSecret: /* @__PURE__ */ __name((project, provider) => Promise.resolve(projectStub(env, project).webhookSecret(provider)), "webhookSecret")
 }), "makeHost");
 async function purge(req, env, ctx) {

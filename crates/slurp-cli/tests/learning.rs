@@ -30,6 +30,40 @@ fn skill_installation_is_complete_repeatable_and_preserves_edits() {
     skills::install(&out, true, true).expect("explicit replacement");
 }
 
+/// An agent that reads only the skill must be able to set up every way events arrive: where the key comes from, the feedback
+/// widget, the Segment and Sentry SDKs (Python included), the mobile SDKs and each webhook provider.
+#[test]
+fn the_skill_teaches_every_way_to_send_events() {
+    let temp = tempfile::tempdir().expect("skill root");
+    let out = temp.path().join("slurp");
+    skills::install(&out, false, true).expect("install bundle");
+    let skill = std::fs::read_to_string(out.join("SKILL.md")).expect("skill");
+    for needed in [
+        "slurp project setup",
+        "slurp project key create",
+        "mountFeedback",
+        "@hitslop/slurp-sdk/feedback",
+        "event = 'feedback'",
+        "segment-analytics-python",
+        "sentry_sdk.init",
+        "@hitslop/slurp-react-native",
+        "SlurpClient.configure",
+        "slurp project webhook YOUR_PROJECT_ID github",
+        "slurp project webhook YOUR_PROJECT_ID revenuecat",
+        "slurp project webhook YOUR_PROJECT_ID stripe",
+        "Idempotency-Key",
+        "`revenue` view",
+    ] {
+        assert!(
+            skill.contains(needed),
+            "the skill does not mention {needed}"
+        );
+    }
+    let instrument = std::fs::read_to_string(temp.path().join("slurp-instrument/SKILL.md"))
+        .expect("instrument skill");
+    assert!(instrument.contains("feedback widget"));
+}
+
 #[test]
 fn skill_installation_rejects_symlink_resources() {
     use std::os::unix::fs::symlink;

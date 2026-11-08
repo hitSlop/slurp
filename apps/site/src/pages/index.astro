@@ -35,8 +35,9 @@ const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'}
 <p class="eyebrow">The feedback loop for your coding agent</p>
 <h1>You already have a data science expert.<br/><span class="hot">Your coding agent.</span></h1>
 <p class="lede">Slurp collects events and user feedback in your own Cloudflare account. <code>slurp sync</code> pulls them to your laptop (or an external SSD) as a DuckDB file. Your agent analyzes them with SQL, finds what to fix and ships the change.</p>
+<aside class="free" id="start" aria-labelledby="free-title"><span class="free-mark" aria-hidden="true"><Icon name="cloud"/></span><div><h2 id="free-title">Start free.</h2><p>Cloudflare's free plan covers about <strong>{count(freePlanEventsPerMonth())} events a month</strong>. Slurp itself costs nothing.</p></div></aside>
 <div class="actions"><DeployButton id="home" cli={false}/><a class="btn" href="#loop">See the workflow</a><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
-<p class="free-note"><strong>Free to start.</strong> Cloudflare's free plan covers about {count(freePlanEventsPerMonth())} events a month. <button type="button" class="free-cli" data-deploy-open="home">Install with the CLI instead ↗</button></p>
+<p class="free-note">Prefer a terminal? <button type="button" class="free-cli" data-deploy-open="home">Install with the CLI instead ↗</button></p>
 <WorksWith/>
 <p class="loopline" aria-label="The loop: events and feedback, then DuckDB, then your agent, then a better product"><span>events + feedback</span><i>→</i><span class="duck-word"><DuckDb size={14}/>DuckDB</span><i>→</i><span>your agent</span><i>→</i><span class="hot">a better product</span></p>
 </div>
@@ -109,6 +110,13 @@ slurp report open ./report`}/>
 .hero .actions{margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px}
 .hero .actions .btn{box-sizing:border-box;height:39px;padding-block:0;display:inline-flex;align-items:center}
 .hero .actions .hero-links{margin-left:2px}
+.free{display:flex;align-items:center;gap:16px;margin:24px 0 18px;padding:16px 22px 16px 18px;border-radius:14px;background:linear-gradient(135deg,#fff4f5,#ffe8ec);border:1.5px solid #f6b8c3;box-shadow:0 8px 24px #e8002a14}
+.free-mark{flex:none;display:grid;place-items:center;width:54px;height:54px;border-radius:14px;background:#fff;border:1px solid #fbd3b4;color:#f6821f}
+.free-mark :global(.icon){width:32px;height:32px;stroke-width:1.7}
+.free h2{margin:0;font:800 clamp(26px,3vw,36px)/1 var(--display);font-stretch:75%;color:var(--red)}
+.free p{margin:6px 0 0;font:500 16px/1.4 var(--body);color:var(--ink)}
+.free strong{font-weight:800}
+@media(max-width:560px){.free{align-items:flex-start;gap:12px;padding:14px}.free-mark{width:44px;height:44px;border-radius:11px}.free-mark :global(.icon){width:26px;height:26px}.free p{font-size:15px}}
 .free-note{margin:14px 0 0;font:500 13.5px/1.5 var(--body);color:var(--muted)}.free-note strong{color:var(--ink);font-weight:700}
 .free-cli{position:relative;border:0;background:none;padding:0;font:inherit;color:var(--ink);text-decoration:underline;text-underline-offset:3px;cursor:pointer;white-space:nowrap}
 .free-cli::after{content:'';position:absolute;inset:-12px -6px}.free-cli:hover{color:var(--red)}

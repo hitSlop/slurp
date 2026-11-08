@@ -1,5 +1,6 @@
 export const icons = {
  home:'M3 10 12 3l9 7M5 9v12h5v-7h4v7h5V9',
+ cloud:'M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z',
  docs:'M5 3h10l4 4v14H5zM14 3v5h5M8 12h8M8 16h6',
  connections:'M8 9V5a3 3 0 0 1 6 0v4M5 9h12v4a6 6 0 0 1-6 6v3M8 12h6',
  pricing:'M12 2v20M17 6H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H6',

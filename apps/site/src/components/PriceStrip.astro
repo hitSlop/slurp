@@ -1,9 +1,9 @@
 ---
-import {cloudflareCost,openpanelCost,posthogCost,money,count,headlineVolume,assumptions} from '../lib/pricing.mjs';
+import {cloudflareCost,openpanelCost,posthogCost,money,count,headlineVolume,assumptions,freePlanEventsPerMonth} from '../lib/pricing.mjs';
 const cf=cloudflareCost(headlineVolume),op=openpanelCost(headlineVolume)!,ph=posthogCost(headlineVolume);
 ---
 <section class="price" id="price" aria-labelledby="price-title">
-<div class="lead"><p class="eyebrow">Monthly USD · {count(headlineVolume)} events</p><h2 id="price-title">{count(headlineVolume).replace('M',' million')} events.<br/>About ${Math.round(cf)} a month.<sup>*</sup></h2></div>
+<div class="lead"><p class="eyebrow">Monthly USD · {count(headlineVolume)} events</p><h2 id="price-title">{count(headlineVolume).replace('M',' million')} events.<br/>About ${Math.round(cf)} a month.<sup>*</sup></h2><p class="free-line"><b>Start free:</b> Cloudflare's free plan covers about {count(freePlanEventsPerMonth())} events a month, and Slurp adds no fee.</p></div>
 <ul class="tiles">
 <li class="us"><b>Slurp</b><strong>{money(cf)}</strong><span>Estimated bill for your own Cloudflare account</span></li>
 <li><b>OpenPanel Cloud</b><strong>{money(op)}</strong><span>Managed analytics</span></li>
@@ -15,6 +15,8 @@ const cf=cloudflareCost(headlineVolume),op=openpanelCost(headlineVolume)!,ph=pos
 .price{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:12px 28px;align-items:center;margin:34px 0 8px;padding:22px 26px;border-radius:12px;background:var(--rail);border:1px solid var(--rail-rule)}
 .price .lead .eyebrow{margin-bottom:8px}
 .price h2{margin:0;font-size:clamp(30px,3.6vw,46px);line-height:.95;color:var(--red)}
+.price .free-line{margin:12px 0 0;font:500 14px/1.45 var(--body);color:var(--ink)}
+.price .free-line b{color:var(--red);font-weight:800}
 .price sup{font-size:.5em;vertical-align:top;margin-left:2px}
 .tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;list-style:none;padding:0;margin:0}
 .tiles li{display:flex;flex-direction:column;gap:3px;padding:12px 14px;border-radius:9px;background:#fff;border:1px solid var(--rule)}

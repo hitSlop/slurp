@@ -16,7 +16,9 @@ Use DuckDB 2.x. Run saved queries with `slurp sql --file query.sql`. Preserve me
 
 Inside an initialized app or its subfolders, use `slurp send EVENT` and `slurp identify USER_ID`. The nearest parent project supplies the project and (via your saved Worker connection) its publishable key; no database is needed to send. Every event carries the name of the key that sent it as `sender`. `--project` selects an exact project folder; `--to PROJECT` sends to a project by id or name instead. Never guess a project from the global registry.
 
-To bring in GitHub releases and deploys or Stripe events, an owner runs `slurp project webhook PROJECT github` (or `stripe`, `generic`) and pastes the URL and secret into the provider; the events then carry `sender = 'github'` and the `releases` view lists releases and deployments, so a metric change can be lined up with the release that caused it. Never put the printed secret in a skill or in Git.
+To bring in GitHub releases and deploys, Stripe events or RevenueCat purchases, an owner runs `slurp project webhook PROJECT github` (or `stripe`, `revenuecat`, `generic`) and pastes the URL and secret into the provider; the events then carry `sender = 'github'` (or the provider's name), the `releases` view lists releases and deployments so a metric change can be lined up with the release that caused it, and the `revenue` view lists RevenueCat purchases, renewals and refunds (filter `environment = 'PRODUCTION'`). Never put the printed secret in a skill or in Git.
+
+User feedback is an event too: the web feedback widget (`mountFeedback` from `@hitslop/slurp-sdk/feedback`) sends one `feedback` event per submission with `data.message`, an optional `data.rating` and `data.email`; read them with `SELECT timestamp, data->>'message', data->>'rating' FROM events WHERE event = 'feedback'`. Treat messages as personal data: summarize and quote sparingly, and keep emails out of reports and chat. The snippets under "Instrument and connect" show the widget, the Segment and Sentry SDKs (Python included), the React Native and Swift SDKs and the webhooks.
 
 Human onboarding uses `slurp setup` once per computer, then `slurp init` in each app. Setup configures a library and DuckDB and signs in; it never creates a project. Init creates a project by name (or joins the existing project with that name) and opens a local quickstart page with its SDK snippet. Project IDs (`prj_…`) are an advanced scripting interface.
 
@@ -30,7 +32,7 @@ HTTP 429 and 503 are retryable: honor `Retry-After` and back off. HTTP 401 and 4
 
 ## Instrument and connect
 
-Install the SDK with npm install @hitslop/slurp-sdk. Replace placeholders with source setup values. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup HTML is private.
+Install the SDK with npm install @hitslop/slurp-sdk. Replace placeholders with the setup values of your project: `slurp init` creates the project and its first publishable key and prints the ingest URL and that key (`slurp project setup PROJECT` prints them again). An app sends events with exactly those two values; the key itself says which project and which sender it is for. To collect what users say, mount the feedback widget (below); to keep a Segment or Sentry SDK the app already uses, change its host or DSN; to bring in GitHub, Stripe or RevenueCat, use a webhook. Producers use publishable keys; remote bots use separately named secret read keys. Keep credentials in secret stores, never in skills or Git. The personalized setup HTML is private.
 
 ### sdk
 
@@ -44,6 +46,32 @@ init({
 
 track('signed_up', { plan: 'pro' });
 await flush(); // Node: flush before exiting
+```
+
+### senders
+
+```sh
+# slurp init creates your project and its first publishable key, and prints the ingest URL and that key.
+# Print them again, and make one key per sender (web, ios, github): its name is stamped on every event as `sender`.
+slurp project setup YOUR_PROJECT_ID
+slurp project key list YOUR_PROJECT_ID --scope publishable
+slurp project key create YOUR_PROJECT_ID --scope publishable --name ios
+```
+
+### feedback
+
+```js
+import { init } from '@hitslop/slurp-sdk';
+import { mountFeedback } from '@hitslop/slurp-sdk/feedback';
+
+init({ endpoint: 'YOUR_INGEST_URL', key: 'YOUR_PUBLISHABLE_KEY' });
+
+// A "Feedback" button that opens a small form (message, optional 1-5 rating, optional email).
+// Each submission is one `feedback` event: data.message, data.rating, data.email, plus whatever data() returns.
+mountFeedback({ askEmail: true, data: () => ({ screen: location.pathname }) });
+// Options: label, title, placeholder, ratings, askEmail, position, accent, theme ('light' | 'dark' | 'auto'),
+// button: false (open it yourself with the returned open()), poweredBy: false (hide the small "Powered by Slurp" link).
+// Read it later: SELECT timestamp, data->>'message', data->>'rating' FROM events WHERE event = 'feedback'
 ```
 
 ### sync
@@ -127,6 +155,34 @@ let config = Configuration(writeKey: "YOUR_PUBLISHABLE_KEY").apiHost("YOUR_HOST/
 // Already use Sentry? Keep the SDK and change the DSN.
 // The public key in the DSN is your publishable key as is.
 Sentry.init({ dsn: 'https://YOUR_PUBLISHABLE_KEY@YOUR_HOST/1' });
+```
+
+### python
+
+```python
+# Python: keep the Segment or Sentry SDK you use. There is no Slurp package for Python.
+# segment-analytics-python (pip install segment-analytics-python)
+import segment.analytics as analytics
+analytics.write_key = 'YOUR_PUBLISHABLE_KEY'
+analytics.host = 'YOUR_ORIGIN'   # the SDK adds /v1/batch
+analytics.track('user_42', 'signed_up', {'plan': 'pro'})
+analytics.flush()                # in scripts, before the process exits
+
+# sentry-sdk (pip install sentry-sdk)
+import sentry_sdk
+sentry_sdk.init(dsn='https://YOUR_PUBLISHABLE_KEY@YOUR_HOST/1')
+```
+
+### webhooks
+
+```sh
+# An owner runs one of these; each prints a URL and a secret to paste into the provider. Never put the secret in Git.
+# Events carry sender = the provider name. GitHub: releases and deployments -> the `releases` view.
+# RevenueCat: purchases and renewals -> the `revenue` view (filter environment = 'PRODUCTION').
+slurp project webhook YOUR_PROJECT_ID github
+slurp project webhook YOUR_PROJECT_ID revenuecat    # paste the secret as RevenueCat's Authorization header value
+slurp project webhook YOUR_PROJECT_ID stripe --secret whsec_...   # Stripe issues its own secret
+slurp project webhook YOUR_PROJECT_ID generic       # any tool that can POST; send an Idempotency-Key header so retries are one event
 ```
 
 ### mcp

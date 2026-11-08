@@ -4,7 +4,7 @@ import Icon from '../components/Icon.astro';
 import archivo from '../../../../packages/web-shared/assets/Archivo-wdth.woff2?url';
 import mascot from '../../../../packages/web-shared/assets/mascot.png';
 import logo from '../../../../packages/web-shared/assets/logo.png';
-import {cloudflareCost,headlineVolume,count} from '../lib/pricing.mjs';
+import {cloudflareCost,headlineVolume,count,freePlanEventsPerMonth} from '../lib/pricing.mjs';
 import {githubUrl,discordUrl,siteUrl,slurpKey,defaultBranch} from '../lib/links.mjs';
 const pill=`$${Math.round(cloudflareCost(headlineVolume))}`;
 const {title,description,current,sections=[]}=Astro.props;
@@ -18,7 +18,7 @@ const ogAlt='Slurp: you already have a data science expert, your coding agent. E
 const community=[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href);
 ---
 <!doctype html><html lang="en"><head><link rel="icon" type="image/png" href="/favicon.png"/><meta charset="utf-8"/><meta name="viewport" content="width=device-width"/><meta name="description" content={description}/><meta name="referrer" content="no-referrer"/><link rel="canonical" href={canonical}/><meta property="og:type" content="website"/><meta property="og:site_name" content="Slurp"/><meta property="og:title" content={ogTitle}/><meta property="og:description" content={description}/><meta property="og:url" content={canonical}/><meta property="og:image" content={ogImage}/><meta property="og:image:type" content="image/png"/><meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/><meta property="og:image:alt" content={ogAlt}/><meta name="twitter:card" content="summary_large_image"/><meta name="twitter:title" content={ogTitle}/><meta name="twitter:description" content={description}/><meta name="twitter:image" content={ogImage}/><meta name="twitter:image:alt" content={ogAlt}/>
-<link rel="preload" href={archivo} as="font" type="font/woff2" crossorigin/><title>{title} · Slurp</title></head><body><a class="skip" href="#main">Skip to content</a><div class="shell"><aside class="rail"><a class="brand" href="/" aria-label="Slurp home"><img src={logo.src} width="100" height="48" alt="Slurp"/></a><a class="price-pill" href="/self-host/#cost" aria-label={`Pricing: ${count(headlineVolume)} events a month is about ${pill} of Cloudflare costs`}><span>{count(headlineVolume)} events</span><strong>≈ {pill}/mo</strong></a>{slurpKey&&<button type="button" aria-label="Send feedback" class="nav-feedback" data-feedback-open hidden><Icon name="help"/><span>Feedback</span></button>}<nav class="primary-nav" aria-label="Main">{[{id:'home',href:'/',label:'Home',icon:'home'},{id:'docs',href:'/docs/',label:'Docs',icon:'docs'},{id:'connections',href:'/connections/',label:'Connections',icon:'connections'},{id:'self-host',href:'/self-host/',label:'Self-host',icon:'pricing'}].map(item=><a href={item.href} aria-current={current===item.id?'page':undefined}><Icon name={item.icon}/><span>{item.label}</span></a>)}</nav><details class="section-index" open><summary>Sections</summary><nav class="toc" aria-label="On this page">{sections.map((s: {id:string,label:string},i:number)=><a href={'#'+s.id}>{String(i+1).padStart(2,'0')} · {s.label}</a>)}</nav></details>{community.length>0&&<nav class="rail-links" aria-label="Community">{community.map(l=><a href={l.href} rel="noopener"><Icon name={l.icon}/><span>{l.label}</span></a>)}</nav>}<div class="rail-help"><img src={mascot.src} alt="" width="40" height="28"/><strong>Need a hand?</strong><a href="/docs/">Read the setup guide ↗</a><p>Your data. Your agent.</p></div></aside><main id="main" class="content"><slot/><footer><a class="brand" href="/" aria-label="Slurp home"><img src={logo.src} alt="Slurp"/></a><span>The feedback loop for your coding agent.</span>{slurpKey&&githubUrl&&<span class="measured">This site is measured with Slurp itself. <a href={`${githubUrl}/tree/${defaultBranch}/dogfood`} rel="noopener">See how ↗</a></span>}{community.length>0&&<span class="footer-links">{community.map(l=><a href={l.href} rel="noopener" aria-label={l.label}><Icon name={l.icon}/></a>)}</span>}<a href="/docs/">Get started ↗</a></footer></main></div></body></html>
+<link rel="preload" href={archivo} as="font" type="font/woff2" crossorigin/><title>{title} · Slurp</title></head><body><a class="skip" href="#main">Skip to content</a><div class="shell"><aside class="rail"><a class="brand" href="/" aria-label="Slurp home"><img src={logo.src} width="100" height="48" alt="Slurp"/></a><a class="price-pill" href="/#start" aria-label={`Start free: Cloudflare's free plan covers about ${count(freePlanEventsPerMonth())} events a month. ${count(headlineVolume)} events a month is about ${pill} of Cloudflare costs`}><b class="pill-free"><Icon name="cloud"/>Start free</b><span class="pill-sub"><i>about </i>{count(freePlanEventsPerMonth())} events/month free</span><small>{count(headlineVolume)} events ≈ {pill}/mo</small></a>{slurpKey&&<button type="button" aria-label="Send feedback" class="nav-feedback" data-feedback-open hidden><Icon name="help"/><span>Feedback</span></button>}<nav class="primary-nav" aria-label="Main">{[{id:'home',href:'/',label:'Home',icon:'home'},{id:'docs',href:'/docs/',label:'Docs',icon:'docs'},{id:'connections',href:'/connections/',label:'Connections',icon:'connections'},{id:'self-host',href:'/self-host/',label:'Self-host',icon:'pricing'}].map(item=><a href={item.href} aria-current={current===item.id?'page':undefined}><Icon name={item.icon}/><span>{item.label}</span></a>)}</nav><details class="section-index" open><summary>Sections</summary><nav class="toc" aria-label="On this page">{sections.map((s: {id:string,label:string},i:number)=><a href={'#'+s.id}>{String(i+1).padStart(2,'0')} · {s.label}</a>)}</nav></details>{community.length>0&&<nav class="rail-links" aria-label="Community">{community.map(l=><a href={l.href} rel="noopener"><Icon name={l.icon}/><span>{l.label}</span></a>)}</nav>}<div class="rail-help"><img src={mascot.src} alt="" width="40" height="28"/><strong>Need a hand?</strong><a href="/docs/">Read the setup guide ↗</a><p>Your data. Your agent.</p></div></aside><main id="main" class="content"><slot/><footer><a class="brand" href="/" aria-label="Slurp home"><img src={logo.src} alt="Slurp"/></a><span>The feedback loop for your coding agent.</span>{slurpKey&&githubUrl&&<span class="measured">This site is measured with Slurp itself. <a href={`${githubUrl}/tree/${defaultBranch}/dogfood`} rel="noopener">See how ↗</a></span>}{community.length>0&&<span class="footer-links">{community.map(l=><a href={l.href} rel="noopener" aria-label={l.label}><Icon name={l.icon}/></a>)}</span>}<a href="/docs/">Get started ↗</a></footer></main></div></body></html>
 
 <script>
 import '../lib/slurp.ts';
@@ -30,9 +30,13 @@ const index=rail?.querySelector('details');
 if(index){const narrow=matchMedia('(max-width:900px)');index.open=!narrow.matches;narrow.addEventListener('change',e=>{index.open=!e.matches})}
 </script>
 <style is:global>
-.price-pill{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:-6px 0 4px;padding:8px 12px;border-radius:9px;background:#fff;border:1.5px solid var(--red);text-decoration:none;color:var(--ink);font:650 12px var(--body);box-shadow:0 4px 14px #e8002a1a}
-.price-pill strong{font:800 17px/1 var(--display);font-stretch:75%;color:var(--red);white-space:nowrap}
-.price-pill:hover{background:#fff5f6}
+.price-pill{display:grid;gap:3px;margin:-6px 0 4px;padding:13px 14px 12px;border-radius:11px;background:var(--red);border:0;text-decoration:none;color:#fff;box-shadow:0 8px 20px #e8002a38;transition:transform .15s,box-shadow .15s}
+.price-pill .pill-free{display:flex;align-items:center;gap:8px;font:800 20px/1 var(--display);font-stretch:75%;letter-spacing:.005em}
+.price-pill .icon{width:22px;height:22px;stroke-width:1.8}
+.price-pill .pill-sub{font:600 12.5px/1.25 var(--body);text-wrap:balance}
+.price-pill .pill-sub i{font-style:normal}
+.price-pill small{justify-self:start;margin-top:5px;padding:3px 9px;border-radius:999px;background:#ffffff26;font:600 11px/1.3 var(--body);white-space:nowrap}
+.price-pill:hover{transform:translateY(-1px);box-shadow:0 11px 26px #e8002a4d}
 .rail-links{display:grid;gap:2px;border-top:1px solid var(--rail-rule);padding-top:14px}
 .rail-links a{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;text-decoration:none;color:var(--muted);font-size:13px}
 .rail-links a:hover{background:#ffffff99;color:var(--ink)}
@@ -43,6 +47,22 @@ if(index){const narrow=matchMedia('(max-width:900px)');index.open=!narrow.matche
 .footer-links a{display:grid;place-items:center;color:var(--muted)}
 .footer-links a:hover{color:var(--ink)}
 .footer-links .icon{width:18px;height:18px}
+/* Wide screens: a compact sidebar that fits a laptop screen without scrolling. */
+@media(min-width:901px){
+.shell .rail{padding:22px 20px 14px;gap:12px}
+.shell .rail .primary-nav{gap:0}
+.shell .rail nav a{padding:6px 10px}
+.shell .price-pill{margin:0}
+.shell .rail .section-index{padding-top:10px}
+.shell .rail .section-index summary{margin:0 10px 4px}
+.shell .rail .toc{gap:0}
+.shell .rail .toc a{padding-block:3px}
+.shell .rail .rail-links{gap:0;padding-top:8px}
+.shell .rail .rail-links a{padding:5px 10px}
+.shell .rail .rail-help{padding:12px 10px 0;gap:2px}
+.shell .rail .rail-help p{margin:6px 0 0}
+}
+@media(min-width:901px) and (max-height:760px){.shell .rail .rail-help p{display:none}.shell .rail{padding-top:16px}}
 /* Phones and small tablets: the rail becomes a compact header (logo and price on one row, the pages in one swipeable row), the
    GitHub and Discord links live in the hero and footer instead, and every control is at least 44 px tall. */
 .nav-feedback{display:none;align-items:center;gap:8px;border:1px solid var(--rail-rule);border-radius:9px;background:#fff;font:600 13px var(--body);color:var(--ink);cursor:pointer;line-height:1.45}
@@ -52,8 +72,12 @@ if(index){const narrow=matchMedia('(max-width:900px)');index.open=!narrow.matche
 .shell .rail{position:static;padding:12px 16px 4px;gap:4px 12px;align-items:center}
 .shell .rail .rail-links{display:none}
 .shell .rail .brand{flex:none;display:flex;align-items:center;min-height:44px}
-.shell .price-pill{margin:0 0 0 auto;padding:0 12px;min-height:44px;align-items:center;justify-content:center}
-.shell .price-pill span{display:none}
+.shell .price-pill{margin:0 0 0 auto;padding:5px 12px;min-height:44px;gap:0;align-content:center}
+.shell .price-pill .pill-free{font-size:16px}
+.shell .price-pill .icon{display:none}
+.shell .price-pill .pill-sub{font-size:10.5px;opacity:.92;white-space:nowrap}
+.shell .price-pill .pill-sub i{display:none}
+.shell .price-pill small{display:none}
 .shell .rail .primary-nav{order:3;flex:1 1 100%;display:flex;flex-wrap:nowrap;justify-content:flex-start;gap:0;overflow-x:auto;margin:0 -16px;padding:0 10px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .shell .rail .primary-nav::-webkit-scrollbar{display:none}
 .shell .rail .primary-nav a{flex:none;min-height:44px;padding:0 12px;font-size:14px;white-space:nowrap;gap:7px}

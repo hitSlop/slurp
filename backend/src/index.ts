@@ -4,9 +4,11 @@ import { type Adapter, type Host, json } from './compat/common.ts'
 import { hooks } from './compat/hooks.ts'
 import { segment } from './compat/segment.ts'
 import { sentry } from './compat/sentry.ts'
-import { configOf } from './config.ts'
+import { type Config, configOf } from './config.ts'
+import { dashboardPage } from './dashboard.ts'
 import { setupPage } from './landing.ts'
 import { native } from './native.ts'
+import { collectStatus } from './status.ts'
 import type { Env } from './util.ts'
 import { RELEASE } from './version.ts'
 export { RegistryDO } from './registry.ts'
@@ -47,6 +49,18 @@ async function purge(req: Request, env: Env, ctx: Ctx): Promise<Response> {
   return Response.json({ ok: true, projects: projects.length, archives, strays })
 }
 
+/** Admin only. Every project and its problems, for the dashboard. */
+async function status(req: Request, env: Env, ctx: Ctx, cfg: Config): Promise<Response> {
+  if (req.method !== 'GET') return Response.json({ error: 'method not allowed' }, { status: 405, headers: { Allow: 'GET' } })
+  if (ctx.auth?.kind !== 'admin') return Response.json({ error: ctx.auth ? 'admin token required' : 'invalid token' }, { status: ctx.auth ? 403 : 401 })
+  try {
+    return Response.json(await collectStatus(env, cfg, { release: RELEASE, build: env.SLURP_BUILD ?? null }), { headers: { 'cache-control': 'no-store' } })
+  } catch (e) {
+    console.error('status failed', e)
+    return Response.json({ error: 'storage is unavailable' }, { status: 503, headers: { 'Retry-After': '5' } })
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url)
@@ -65,6 +79,12 @@ export default {
     if (path === '/' && (req.method === 'GET' || req.method === 'HEAD'))
       return new Response(req.method === 'HEAD' ? null : setupPage(url.origin, adminConfigured(env)), {
         headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } })
+    if (path === '/dashboard' && (req.method === 'GET' || req.method === 'HEAD')) {
+      // The page is static and holds no data; it fetches /v1/admin/status with the admin token. Its one script is allowed by nonce.
+      const nonce = btoa(crypto.randomUUID())
+      return new Response(req.method === 'HEAD' ? null : dashboardPage(nonce), {
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, 'x-content-type-options': 'nosniff' } })
+    }
     if (path === '/v1/health') return Response.json({ ok: true, apiVersion: 2, release: RELEASE, configured: adminConfigured(env), build: env.SLURP_BUILD ?? null, geo: host.cfg.geo })
 
     // A project key is checked by its object, which refuses (`Unavailable`) when its stored data is newer than this code.
@@ -82,6 +102,7 @@ export default {
       return download(req, ctx, archive[1], archive[2])
     }
     if (path === '/v1/admin/purge') return purge(req, env, ctx)
+    if (path === '/v1/admin/status') return status(req, env, ctx, host.cfg)
     return new Response('not found', { status: 404 })
   },
 } satisfies ExportedHandler<Env>

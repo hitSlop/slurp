@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The Worker has a dashboard at `/dashboard` that lists your projects and what is wrong with them: failing archive publication, a full ingest buffer, a project that was never set up. The page holds no data and asks for the `ADMIN_TOKEN`; the same report is at `GET /v1/admin/status` (admin token only).
+
 ## 0.2.1
 
 - Discover built-in SQL macro signatures and examples with `slurp functions [NAME]` or MCP.

@@ -1,6 +1,7 @@
 import type { ArchiveInfo, Coverage, Gap } from './api.gen.ts'
 import type { Config } from './config.ts'
 import type { Db } from './db.ts'
+import type { ProjectHealth } from './status.ts'
 import { retry, sha256Hex } from './util.ts'
 
 /**
@@ -237,6 +238,13 @@ export class Publisher {
   }
   private clearFailures() {
     if (this.setting('retry_at') !== null || this.setting('failures') !== null) this.db.rows("DELETE FROM settings WHERE k IN ('failures','retry_at')")
+  }
+
+  /** What the status view needs beyond `coverage`: the failure streak, the buffer, and what is stored. Reads only. */
+  health(): Omit<ProjectHealth, 'coverage' | 'sources'> {
+    const f = this.facts()
+    const kept = this.db.one<{ n: number; events: number; bytes: number }>('SELECT COUNT(*) n, COALESCE(SUM(events), 0) events, COALESCE(SUM(size), 0) bytes FROM manifest WHERE deleted_at IS NULL')
+    return { failures: Number(this.setting('failures') ?? 0), retryAt: f.retryAt, bufferedBytes: f.bufferedBytes, oldestBufferedAt: f.oldestChunkAt, archives: kept?.n ?? 0, events: kept?.events ?? 0, bytes: kept?.bytes ?? 0 }
   }
 
   /** The archives' state for a listing: the oldest kept, the newest, and whether accepted events are still waiting for an archive. */

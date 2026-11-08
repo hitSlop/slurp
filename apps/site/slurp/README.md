@@ -1,6 +1,6 @@
 # Slurp measures slurp.run
 
-The landing page uses Slurp itself. Its events go to a Worker in the maintainers' own Cloudflare account (`events.slurp.run`), into a project called `slurp-site`, and the agent loop from the README runs on them: sync into DuckDB, query with SQL, write a report.
+The landing page uses Slurp itself. Its events go to a Worker in the maintainers' own Cloudflare account (`events.slurp.run`), into the `app_slurp_site` project, and the agent loop from the README runs on them: sync into DuckDB, query with SQL, write a report.
 
 This folder is that setup, kept as a worked example.
 
@@ -24,8 +24,9 @@ The code is [`apps/site/src/lib/slurp.ts`](../src/lib/slurp.ts), with the tracke
 ## Run it yourself
 
 ```sh
-slurp connect https://events.slurp.run --token-stdin   # needs the admin token: only the maintainers have it
-slurp init                                            # from apps/site, with a project secret key
+cd apps/site
+slurp setup                                         # once per computer
+slurp init --token-stdin                             # paste a project secret from a maintainer
 slurp sync
 slurp report build slurp/reports/site.md --out slurp/out/$(date +%F) --png
 ```

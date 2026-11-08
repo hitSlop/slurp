@@ -1284,7 +1284,7 @@ var native = {
 };
 
 // src/version.ts
-var RELEASE = "0.2.0-rc.1";
+var RELEASE = "0.2.0";
 
 // src/registry.ts
 import { DurableObject } from "cloudflare:workers";

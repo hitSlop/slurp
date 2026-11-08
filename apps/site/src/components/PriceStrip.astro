@@ -3,7 +3,7 @@ import {cloudflareCost,openpanelCost,posthogCost,money,count,headlineVolume,assu
 const cf=cloudflareCost(headlineVolume),op=openpanelCost(headlineVolume)!,ph=posthogCost(headlineVolume);
 ---
 <section class="price" id="price" aria-labelledby="price-title">
-<div class="lead"><p class="eyebrow">Events nearly too cheap to measure.</p><h2 id="price-title">{count(headlineVolume).replace('M',' million')} events.<br/>About ${Math.round(cf)} a month.<sup>*</sup></h2><p class="free-line"><b>Start free:</b> Cloudflare's free plan covers about {count(freePlanEventsPerMonth())} events a month, and Slurp adds no fee.</p></div>
+<div class="lead"><p class="eyebrow">Events nearly too cheap to meter.</p><h2 id="price-title">{count(headlineVolume).replace('M',' million')} events.<br/>About ${Math.round(cf)} a month.<sup>*</sup></h2><p class="free-line"><b>Start free:</b> Cloudflare's free plan covers about {count(freePlanEventsPerMonth())} events a month, and Slurp adds no fee.</p></div>
 <ul class="tiles">
 <li class="us"><b>Slurp</b><strong>{money(cf)}</strong><span>Estimated bill for your own Cloudflare account</span></li>
 <li><b>OpenPanel Cloud</b><strong>{money(op)}</strong><span>Managed analytics</span></li>

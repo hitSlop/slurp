@@ -1,6 +1,6 @@
-import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { parseConfig } from '../src/config.ts'
+import { test } from 'vitest'
+import { parseConfig } from '../../src/config.ts'
+import { assert } from './helpers.ts'
 
 const DEFAULTS = { sealIntervalMs: 600000, archiveMaxBytes: 8388608, groupCommitMs: 500, bufferCapBytes: 67108864, maxBodyBytes: 10485760, retentionDays: 0, archiveRetryMs: 5000, geo: true }
 

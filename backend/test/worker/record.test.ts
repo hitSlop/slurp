@@ -1,17 +1,21 @@
-import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { test } from 'node:test'
-import { MAX_REJECTED, checkBody, envelope, normalizeGeo, recordError } from '../src/record.ts'
+import { test } from 'vitest'
+import { MAX_REJECTED, checkBody, envelope, normalizeGeo, recordError } from '../../src/record.ts'
+import { assert } from './helpers.ts'
+import batchFixture from '../../fixtures/canonical/batch.json?raw'
+import envelopeFixture from '../../fixtures/canonical/envelope.json?raw'
+import geoFixture from '../../fixtures/canonical/geo.json?raw'
+import nestingFixture from '../../fixtures/canonical/nesting.json?raw'
+import recordsFixture from '../../fixtures/canonical/records.json?raw'
+import githubReleasePretty from '../../fixtures/webhooks/github-release-pretty.json?raw'
 
-const here = dirname(fileURLToPath(import.meta.url))
-const fixture = (name: string) => JSON.parse(readFileSync(join(here, '../fixtures/canonical', `${name}.json`), 'utf8'))
+const FIXTURES: Record<string, string> = { batch: batchFixture, envelope: envelopeFixture, geo: geoFixture, nesting: nestingFixture, records: recordsFixture }
+const fixture = (name: string) => JSON.parse(FIXTURES[name])
 const enc = new TextEncoder()
+const fromBase64 = (b64: string) => Uint8Array.from(atob(b64), c => c.charCodeAt(0))
 
 test('record vectors', () => {
   for (const r of fixture('records').records) {
-    const bytes = r.line_b64 !== undefined ? Buffer.from(r.line_b64, 'base64') : enc.encode(r.line)
+    const bytes = r.line_b64 !== undefined ? fromBase64(r.line_b64) : enc.encode(r.line)
     const res = checkBody(bytes)
     assert.equal('lines' in res && res.lines.length === 1, r.valid, `${r.name}: ${JSON.stringify(res)}`)
   }
@@ -65,7 +69,7 @@ test('envelopes keep the record byte for byte, and put it last', () => {
 })
 
 test('an envelope is always exactly one line, however the record was spaced', () => {
-  const pretty = readFileSync(join(here, '../fixtures/webhooks/github-release-pretty.json'), 'utf8')
+  const pretty = githubReleasePretty
   const crlf = '{\r\n  "event": "a",\r\n  "n": 12345678901234567890,\r\n  "s": "keeps \\n and \\r escapes"\r\n}'
   for (const record of [pretty.trim(), crlf, '{"event":"a"}']) {
     for (const geoJson of [null, '{"country":"NZ"}']) {

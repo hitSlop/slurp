@@ -8,5 +8,5 @@ export default defineConfig({
       miniflare: { bindings: { ADMIN_TOKEN: 'test-admin-token-0123456789abcdef', GROUP_COMMIT_MS: '20', SEAL_INTERVAL_MS: '3600000', ARCHIVE_RETRY_MS: '60000' } },
     }),
   ],
-  test: { include: ['test/worker/**/*.test.ts'] },
+  test: { include: ['test/worker/**/*.test.ts'], testTimeout: 60_000, hookTimeout: 60_000 },
 })

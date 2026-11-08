@@ -1,8 +1,8 @@
 // The publication schedule is a pure function of stored facts, so it needs no Worker.
-import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { parseConfig } from '../src/config.ts'
-import { type Facts, Publisher, nextWake } from '../src/publisher.ts'
+import { test } from 'vitest'
+import { parseConfig } from '../../src/config.ts'
+import { type Facts, Publisher, nextWake } from '../../src/publisher.ts'
+import { assert } from './helpers.ts'
 
 const cfg = parseConfig({ SEAL_INTERVAL_MS: '600000', ARCHIVE_MAX_BYTES: '1000', RETENTION_DAYS: '1' })
 const noRetention = parseConfig({ SEAL_INTERVAL_MS: '600000', ARCHIVE_MAX_BYTES: '1000' })

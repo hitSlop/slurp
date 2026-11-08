@@ -1,18 +1,15 @@
-import assert from 'node:assert/strict'
-import { gzipSync } from 'node:zlib'
-import { after, before, test } from 'node:test'
-import { archived, newProject, randomName as name, records, startWorker, type Worker } from './harness.ts'
+import { abortAllDurableObjects } from 'cloudflare:test'
+import { afterEach, test } from 'vitest'
+import { BASE, archived, assert, gzip, http, newProject, records } from './helpers.ts'
 
-let w: Worker
-before(async () => { w = await startWorker() })
-after(async () => { await w.stop() })
-const basic = (key: string) => `Basic ${Buffer.from(`${key}:`).toString('base64')}`
+afterEach(abortAllDurableObjects)
+const basic = (key: string) => `Basic ${btoa(`${key}:`)}`
 const send = (path: string, body: unknown, headers: Record<string, string> = {}, raw?: BodyInit) =>
-  fetch(`${w.base}${path}`, { method: 'POST', headers, body: raw ?? JSON.stringify(body) })
-const archive = async (s: { id: string; sk: string }) => records(await archived(w.base, s))
+  http(path, { method: 'POST', headers, body: raw ?? JSON.stringify(body) })
+const archive = async (s: { id: string; sk: string }) => records(await archived(s))
 
 test('single-event endpoints: Basic auth with the publishable key, text/plain bodies (Analytics.js)', async () => {
-  const s = await newProject(w.base, name('segsingle'))
+  const s = await newProject('segsingle')
   const auth = { authorization: basic(s.pk), 'content-type': 'text/plain' }
   const common = { anonymousId: 'anon-1', timestamp: '2026-11-07T10:00:00.000Z', context: { library: { name: 'analytics.js' }, page: { url: 'https://x.test/' } } }
   assert.equal((await send('/v1/t', { ...common, messageId: 'ajs-t', type: 'track', event: 'Signed Up', properties: { plan: 'pro' } }, auth)).status, 200)
@@ -35,7 +32,7 @@ test('single-event endpoints: Basic auth with the publishable key, text/plain bo
 })
 
 test('batch endpoints /v1/batch (Node) and /v1/b (Swift): key in the body, no Authorization header', async () => {
-  const s = await newProject(w.base, name('segbatch'))
+  const s = await newProject('segbatch')
   const batch = (prefix: string) => ({
     writeKey: s.pk, sentAt: '2026-11-07T10:00:05.000Z',
     batch: [
@@ -53,7 +50,7 @@ test('batch endpoints /v1/batch (Node) and /v1/b (Swift): key in the body, no Au
 })
 
 test('a timestamp that is not a real time is left out, originalTimestamp is the second choice, and sentAt is never used', async () => {
-  const s = await newProject(w.base, name('segtime'))
+  const s = await newProject('segtime')
   const auth = { authorization: basic(s.pk), 'content-type': 'text/plain' }
   const events = [1e300, 8.64e15, 'garbage', '+275760-09-13T00:00:00.000Z'].map((timestamp, i) => ({ messageId: `bad-${i}`, type: 'track', event: 'x', userId: 'u', timestamp }))
   const res = await send('/v1/batch', { batch: [...events,
@@ -69,7 +66,7 @@ test('a timestamp that is not a real time is left out, originalTimestamp is the 
 })
 
 test('a bad event does not cost the rest of its batch, and a retried batch is stored again for the importer to skip', async () => {
-  const s = await newProject(w.base, name('segretry'))
+  const s = await newProject('segretry')
   const body = { writeKey: s.pk, batch: [
     { type: 'track', messageId: 'ok-1', event: 'Good', userId: 'u1', timestamp: '2026-11-07T10:00:00Z' },
     { type: 'track', messageId: 'bad-1', userId: 'u1' },
@@ -90,9 +87,9 @@ test('a bad event does not cost the rest of its batch, and a retried batch is st
 })
 
 test('only what the protocol supplies is stored: an event without a messageId has no id; gzip bodies are accepted', async () => {
-  const s = await newProject(w.base, name('seggz'))
+  const s = await newProject('seggz')
   const body = { writeKey: s.pk, batch: [{ type: 'track', event: 'NoId', userId: 'u1', properties: { a: 1 }, context: { geo: { city: 'mine' } } }] }
-  const raw = gzipSync(JSON.stringify(body))
+  const raw = await gzip(JSON.stringify(body))
   assert.equal((await send('/v1/batch', null, { 'content-type': 'application/json', 'content-encoding': 'gzip' }, raw)).status, 200)
   const [line] = await archive(s)
   assert.ok(!('id' in line) && !('timestamp' in line))
@@ -100,7 +97,7 @@ test('only what the protocol supplies is stored: an event without a messageId ha
 })
 
 test('auth: only publishable keys, never secret ones; unknown keys are refused; malformed bodies are 400', async () => {
-  const s = await newProject(w.base, name('segauth'))
+  const s = await newProject('segauth')
   const ev = { type: 'track', messageId: 'a', event: 'e', userId: 'u' }
   // A bad write key is a 400, which Segment SDKs drop, rather than a 401, which analytics-swift retries for ever.
   assert.equal((await send('/v1/t', ev, { authorization: basic('slurp_pk_nope') })).status, 400)
@@ -108,22 +105,22 @@ test('auth: only publishable keys, never secret ones; unknown keys are refused; 
   assert.equal((await send('/v1/t', ev)).status, 400)
   assert.equal((await send('/v1/t', null, { authorization: basic(s.pk) }, '{not json')).status, 400)
   assert.equal((await send('/v1/b', { writeKey: s.pk, batch: 'x' })).status, 400)
-  assert.equal((await fetch(`${w.base}/v1/t`, { method: 'GET' })).status, 405)
+  assert.equal((await http(`/v1/t`, { method: 'GET' })).status, 405)
 })
 
 test('browser plumbing: CORS preflight and the settings document Analytics.js loads', async () => {
-  const s = await newProject(w.base, name('segset'))
-  const pre = await fetch(`${w.base}/v1/t`, { method: 'OPTIONS' })
+  const s = await newProject('segset')
+  const pre = await http(`/v1/t`, { method: 'OPTIONS' })
   assert.equal(pre.status, 204)
   assert.match(pre.headers.get('access-control-allow-headers')!, /authorization/i); assert.match(pre.headers.get('access-control-allow-headers')!, /x-retry-count/i)
   assert.equal(pre.headers.get('access-control-allow-origin'), '*')
-  const ok = await fetch(`${w.base}/v1/projects/${s.pk}/settings`)
+  const ok = await http(`/v1/projects/${s.pk}/settings`)
   assert.equal(ok.status, 200)
   const doc = await ok.json() as any
   assert.equal(doc.integrations['Segment.io'].apiKey, s.pk)
-  assert.equal(doc.integrations['Segment.io'].apiHost, `${new URL(w.base).host}/v1`)
-  assert.equal(doc.integrations['Segment.io'].protocol, 'http', 'follows the scheme the Worker is served on')
+  assert.equal(doc.integrations['Segment.io'].apiHost, `${new URL(BASE).host}/v1`)
+  assert.equal(doc.integrations['Segment.io'].protocol, new URL(BASE).protocol.slice(0, -1), 'follows the scheme the Worker is served on')
   assert.equal(doc.metrics.sampleRate, 0, 'no metrics beacons')
-  assert.equal((await fetch(`${w.base}/v1/projects/slurp_pk_unknown/settings`)).status, 404)
-  assert.equal((await fetch(`${w.base}/v1/projects/${s.sk}/settings`)).status, 404, 'a secret key is never echoed back')
+  assert.equal((await http(`/v1/projects/slurp_pk_unknown/settings`)).status, 404)
+  assert.equal((await http(`/v1/projects/${s.sk}/settings`)).status, 404, 'a secret key is never echoed back')
 })

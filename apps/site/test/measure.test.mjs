@@ -1,4 +1,4 @@
-// What slurp.run tells Slurp about its visitors, pinned. If this test changes, the site's privacy note (docs/dogfood.md) changes with it.
+// What slurp.run tells Slurp about its visitors, pinned. If this test changes, the site's privacy note (apps/site/slurp/README.md) changes with it.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { clickEvent, origin_and_path, pageContext, pageProperties } from '../src/lib/measure.ts';
@@ -33,5 +33,5 @@ test('only the Deploy button and the install commands are tracked, and nothing b
 
 test('the site sends to its own events host with a publishable key, or sends nothing', () => {
   assert.equal(slurpEndpoint, 'https://events.slurp.run/v1/events');
-  assert.ok(slurpKey === '' || /^slurp_pk_[0-9a-f]{16}_[0-9a-f]{48}$/.test(slurpKey), 'a publishable key, never a secret one');
+  assert.ok(slurpKey === '' || /^slurp_pk_[0-9a-f]{16}_site_[0-9a-f]{48}$/.test(slurpKey), 'a publishable key, never a secret one');
 });

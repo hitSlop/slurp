@@ -1,0 +1,4 @@
+version = 1
+name = "app_slurp_site"
+backend = "https://events.slurp.run"
+project = "prj_1ff71f485798811b"

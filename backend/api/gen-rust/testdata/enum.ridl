@@ -1,7 +1,0 @@
-webrpc = v1
-name = generator_test
-version = v1
-basepath = /rpc
-
-enum Color: uint8
-  - Red = 1

@@ -1,6 +1,7 @@
-import { MAX_RECORD_BYTES, validateRecord } from '../canonical.ts'
+import type { Line } from '../record.ts'
 import { isoOrUndefined, sha256Hex } from '../util.ts'
-import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody } from './common.ts'
+import { type Adapter, type Host, BodyTooLarge, json, preflight, publishable, readBody, requestGeo, submit } from './common.ts'
+import { isObject } from './providers.ts'
 
 /**
  * Sentry-compatible ingestion: set an existing Sentry SDK's DSN to point at this Worker and its errors are
@@ -11,8 +12,9 @@ import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody
  * so nothing is cut or reshaped on the way in; SQL pulls fields out at query time (the `errors` view).
  * Sessions, transactions, replays, attachments, profiles, spans, logs and metrics are accepted and dropped.
  *
- * DSN: a publishable key is made only of word characters (`slurp_pk_<project hex>_<random hex>`), which is all Sentry SDKs
+ * DSN: a publishable key is made only of word characters (`slurp_pk_<project hex>_<source>_<random hex>`), which is all Sentry SDKs
  * accept in a DSN's public key, so the DSN carries the key itself: https://<slurp_pk_...>@<worker-host>/1
+ * Nothing is invented: an event's id is Sentry's `event_id` and its time is the payload's `timestamp`; one that is missing is left out.
  */
 
 const ALLOW_HEADERS = 'X-Sentry-Auth, Content-Type, Sentry-Trace, Baggage, Authorization, Content-Encoding'
@@ -48,7 +50,6 @@ function credentials(req: Request, headerDsn: unknown): { key: string | null } |
 export interface EnvelopeItem { type: string; header: Record<string, unknown>; payload: Uint8Array }
 export interface Envelope { header: Record<string, unknown>; items: EnvelopeItem[] }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true })
 
 /** Parse an envelope: a JSON header line, then item header lines each followed by a payload (length-prefixed or to the next newline). */
@@ -94,14 +95,8 @@ export function parseEnvelope(bytes: Uint8Array): Envelope {
 
 const text = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
 
-function timestampOf(v: unknown, fallback: unknown, now: number): string {
-  // A client can send any number (`1e300` is a valid JSON number), so every candidate is checked and the next one tried.
-  for (const c of [v, fallback]) {
-    const iso = typeof c === 'number' ? isoOrUndefined(c * 1000) : isoOrUndefined(c) // Sentry uses unix seconds (float)
-    if (iso) return iso
-  }
-  return new Date(now).toISOString()
-}
+/** The event's own time (unix seconds, as a float, or a string), or undefined: a client can send any number (`1e300` is valid JSON). */
+const timestampOf = (v: unknown): string | undefined => (typeof v === 'number' ? isoOrUndefined(v * 1000) : isoOrUndefined(v))
 
 /** True for a real exception. captureMessage with attachStacktrace carries a synthetic one, which is a message. */
 const hasException = (e: Record<string, unknown>) => {
@@ -110,41 +105,45 @@ const hasException = (e: Record<string, unknown>) => {
   return values.some(v => isObject(v) && !(isObject(v.mechanism) && v.mechanism.synthetic === true))
 }
 
-/** One Sentry item as a canonical record, or why it is skipped. `null` means dropped on purpose. */
-export async function translateItem(item: EnvelopeItem, header: Record<string, unknown>, now: number): Promise<{ line: string } | { reason: string } | null> {
+/**
+ * One Sentry item as a record, or why it is skipped. `null` means dropped on purpose. An error or message event's id is the protocol's
+ * `event_id`. The other items have none of their own (a user report carries the id of the event it is about), so the caller passes a hash
+ * of the item's exact bytes: a retried envelope carries the same bytes, so its copy is recognised at import instead of counted twice.
+ */
+export function translateItem(item: EnvelopeItem, header: Record<string, unknown>, itemHash?: string): { line: string } | { reason: string } | null {
   const kind = item.type
   if (kind !== 'event' && kind !== 'user_report' && kind !== 'feedback' && kind !== 'check_in') return null
   let payload: unknown
   try { payload = JSON.parse(decoder.decode(item.payload)) } catch { return { reason: `${kind} payload is not JSON` } }
   if (!isObject(payload)) return { reason: `${kind} payload is not an object` }
-  const sentAt = header.sent_at
   const user = isObject(payload.user) ? payload.user : {}
   const userId = text(user.id) ?? (typeof user.id === 'number' ? String(user.id) : undefined) ?? text(user.email) ?? text(user.username)
   const sdk = isObject(payload.sdk) ? payload.sdk : null
   const context: Record<string, unknown> = { compat: 'sentry' }
   if (sdk && text(sdk.name)) context.library = { name: sdk.name, ...(text(sdk.version) ? { version: sdk.version } : {}) }
   let event: string
-  let id: string
+  let id: string | undefined
   if (kind === 'event') {
     event = hasException(payload) || ['error', 'fatal'].includes(String(payload.level)) ? 'error' : 'message'
-    id = text(header.event_id) ?? text(payload.event_id) ?? `sentry-${await sha256Hex(item.payload)}`
+    id = text(header.event_id) ?? text(payload.event_id)
   } else {
     event = kind === 'check_in' ? 'check_in' : 'user_feedback'
-    id = `sentry-${await sha256Hex(item.payload)}`
+    id = itemHash ? `sentry-${itemHash}` : undefined
   }
-  const record: Record<string, unknown> = { id, type: 'track', event, timestamp: timestampOf(payload.timestamp, sentAt, now) }
+  const timestamp = timestampOf(payload.timestamp)
+  const record: Record<string, unknown> = { ...(id ? { id } : {}), type: 'track', event, ...(timestamp ? { timestamp } : {}) }
   if (userId) record.user_id = userId
   record.data = payload
   record.context = context
   return { line: JSON.stringify(record) }
 }
 
-export async function sentryIngest(req: Request, route: SentryRoute, host: CompatHost): Promise<Response> {
-  if (req.method === 'OPTIONS') return preflight(ALLOW_HEADERS)
+async function ingest(req: Request, route: SentryRoute, host: Host): Promise<Response> {
+  if (req.method === 'OPTIONS') return preflight('POST, GET, OPTIONS', ALLOW_HEADERS)
   const reply = (status: number, body: unknown, extra: Record<string, string> = {}) => json(status, body, { ...EXPOSE, ...extra })
   if (req.method !== 'POST') return reply(405, { detail: 'method not allowed' }, { Allow: 'POST, OPTIONS' })
   let bytes: Uint8Array
-  try { bytes = await readBody(req, host.maxBody) } catch (e) {
+  try { bytes = await readBody(req, host.cfg.maxBodyBytes) } catch (e) {
     if (e instanceof BodyTooLarge) return reply(413, { detail: 'body too large' })
     return reply(400, { detail: 'unreadable body' })
   }
@@ -161,22 +160,17 @@ export async function sentryIngest(req: Request, route: SentryRoute, host: Compa
   }
   const creds = credentials(req, envelope.header.dsn)
   if (creds === 'conflict') return reply(403, { detail: 'conflicting credentials' })
-  const principal = await host.publishable(creds.key)
+  const principal = await publishable(host, creds.key)
   if (!principal) return reply(403, { detail: 'invalid or missing sentry_key (use the DSN Slurp prints for this project)' })
-  const eventId = text(envelope.header.event_id) ?? ''
-  const now = Date.now()
-  const lines: string[] = []
-  const encoder = new TextEncoder()
+  const lines: Line[] = []
   for (const item of envelope.items) {
-    const t = await translateItem(item, envelope.header, now)
-    if (!t || 'reason' in t) continue // dropped on purpose, or not storable; the SDK has nothing to retry
-    if ('reason' in validateRecord(t.line) || encoder.encode(t.line).length > MAX_RECORD_BYTES) continue
-    lines.push(t.line)
+    const t = translateItem(item, envelope.header, item.type === 'event' ? undefined : await sha256Hex(item.payload))
+    if (t && 'line' in t) lines.push({ n: lines.length + 1, text: t.line }) // dropped on purpose, or not storable: the SDK has nothing to retry
   }
-  if (lines.length > 0) {
-    const res = await host.ingest(principal, encoder.encode(lines.join('\n') + '\n'), host.geoFor(req, principal.geo))
-    if (!res.ok) return ingestFailure(res)
-  }
-  return reply(200, { id: eventId })
+  // An item that is not a valid record is skipped, never an error: Sentry SDKs would retry a whole envelope.
+  const result = await submit(host, principal, lines, { invalid: 'skip', geo: requestGeo(req) })
+  return result instanceof Response ? new Response(result.body, { status: result.status, headers: { ...Object.fromEntries(result.headers), ...EXPOSE } }) : reply(200, { id: text(envelope.header.event_id) ?? '' })
 }
+
+export const sentry: Adapter<SentryRoute> = { name: 'sentry', match: (_method, url) => sentryRoute(url.pathname), handle: ingest }
 

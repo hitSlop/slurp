@@ -1,183 +1,237 @@
 //! Walk a project's published archives in order, downloading and verifying each one.
 //!
-//! `slurp sync` (into DuckDB) and `slurp read` (to stdout) both consume archives this way: list a page, check the archive is the
-//! one expected, check the sequence has no hole, check the name, then download with size and SHA-256 verification (asking for a
-//! fresh link if one expires). What each consumer then does with a verified archive, and what counts as progress, is its own
-//! decision: the database commits a receipt, a reader prints.
-use crate::{ListedObject, Remote, download_verified, parse_key, protocol};
+//! `slurp sync` (into DuckDB) and `slurp read` (to stdout) both consume archives this way: list a page, check the sequence has
+//! no hole, then download with size and SHA-256 verification. What each consumer then does with a verified archive, and what
+//! counts as progress, is its own decision: the database commits a receipt, a reader prints.
+//!
+//! Archives that retention deleted before they were read come back as [`Step::Gap`] (the Worker reports them with the listing),
+//! and the walk goes on after them. Anything else that is missing is an error.
+use crate::{Remote, api, download_verified};
 use anyhow::{Result, bail};
 use std::{collections::VecDeque, path::PathBuf};
 
 /// One archive, downloaded and verified, in a directory that is removed when this value is dropped.
 pub struct Downloaded {
-    pub sequence: i64,
-    pub object: ListedObject,
+    pub sequence: u64,
+    pub archive: api::ArchiveInfo,
     pub path: PathBuf,
     _directory: tempfile::TempDir,
 }
 
-/// A cursor over the archives after `after` up to and including `head`, all in one archive generation (`archive_id`).
+/// What a walk produces next.
+pub enum Step {
+    /// Archives `from..=to` were deleted by retention before they were read.
+    Gap(api::Gap),
+    Archive(Downloaded),
+}
+
+enum Queued {
+    Gap(api::Gap),
+    Archive(api::ArchiveInfo),
+}
+
+/// A cursor over the archives after `after`, up to the newest one published when the walk first listed.
+///
+/// The head is captured once, from the first listing. Archives published while the walk runs are left for the next walk, even
+/// when a later page lists them.
 pub struct Walk<'a> {
     remote: &'a dyn Remote,
-    archive_id: String,
-    after: i64,
-    head: i64,
-    page_size: usize,
-    queue: VecDeque<ListedObject>,
+    after: Option<u64>,
+    head: Option<u64>,
+    page_size: u32,
+    queue: VecDeque<Queued>,
+    coverage: Option<api::Coverage>,
 }
 
 impl<'a> Walk<'a> {
-    pub fn new(
-        remote: &'a dyn Remote,
-        archive_id: &str,
-        after: i64,
-        head: i64,
-        page_size: usize,
-    ) -> Self {
+    /// `after` is the last sequence already taken; `None` starts at the oldest retained archive (and reports no gap).
+    pub fn new(remote: &'a dyn Remote, after: Option<u64>, page_size: u32) -> Self {
         Self {
             remote,
-            archive_id: archive_id.into(),
             after,
-            head,
+            head: None,
             page_size,
             queue: VecDeque::new(),
+            coverage: None,
         }
     }
 
-    /// The sequence of the last archive returned (the starting `after` before the first).
-    pub fn position(&self) -> i64 {
+    /// The last sequence this walk has gone past (an archive, or the end of a gap); the starting `after` before the first.
+    pub fn position(&self) -> Option<u64> {
         self.after
     }
 
-    /// The next archive, downloaded into a directory made by `scratch`, or `None` after `head`.
+    /// The coverage of the most recent listing (known after the first call to [`Walk::next`]).
+    pub fn coverage(&self) -> Option<&api::Coverage> {
+        self.coverage.as_ref()
+    }
+
+    /// The next gap or archive, downloaded into a directory made by `scratch`, or `None` after the head.
     ///
     /// # Errors
-    /// Returns an error for an archive reset, a hole in the sequence, an unreadable listing or name, a download that fails
-    /// verification, or a transport failure.
+    /// Returns an error for a hole in the sequence, an unreadable listing, a download that fails verification, or a
+    /// transport failure.
     pub async fn next(
         &mut self,
         mut scratch: impl FnMut() -> Result<tempfile::TempDir>,
-    ) -> Result<Option<Downloaded>> {
+    ) -> Result<Option<Step>> {
         loop {
-            if self.after >= self.head {
+            if self
+                .head
+                .zip(self.after)
+                .is_some_and(|(head, after)| after >= head)
+            {
                 return Ok(None);
             }
-            let Some(object) = self.queue.pop_front() else {
-                let page = self.remote.list(Some(self.after), self.page_size).await?;
-                if page
-                    .coverage
-                    .as_ref()
-                    .is_none_or(|coverage| coverage.archive_id != self.archive_id)
-                {
-                    bail!("archive reset while downloading");
-                }
-                if page.objects.is_empty() {
-                    bail!(
-                        "publication gap: nothing listed after object {}",
-                        self.after
-                    );
-                }
-                self.queue = page.objects.into();
+            let Some(item) = self.queue.pop_front() else {
+                self.list_page().await?;
                 continue;
             };
-            let sequence = protocol::parse_sequence(&object.seq)?;
-            if sequence != self.after + 1 {
-                bail!("publication gap; expected object {}", self.after + 1);
+            let archive = match item {
+                Queued::Gap(gap) => {
+                    self.after = Some(gap.to);
+                    return Ok(Some(Step::Gap(gap)));
+                }
+                Queued::Archive(archive) => archive,
+            };
+            let expected = self.after.map_or(1, |after| after + 1);
+            if archive.seq != expected {
+                bail!(
+                    "publication gap; expected archive {expected}, the Worker listed {}",
+                    archive.seq
+                );
             }
-            parse_key(&object.name)
-                .ok_or_else(|| anyhow::anyhow!("unsupported archive object name"))?;
             let directory = scratch()?;
             let path = directory.path().join("events.jsonl.gz");
-            download_verified(self.remote, &object, &path).await?;
-            self.after = sequence;
-            return Ok(Some(Downloaded {
-                sequence,
-                object,
+            download_verified(self.remote, &archive, &path).await?;
+            self.after = Some(archive.seq);
+            return Ok(Some(Step::Archive(Downloaded {
+                sequence: archive.seq,
+                archive,
                 path,
                 _directory: directory,
-            }));
+            })));
         }
+    }
+
+    /// List the next page and queue what it holds.
+    async fn list_page(&mut self) -> Result<()> {
+        let page = self.remote.list(self.after, self.page_size).await?;
+        // The head is fixed by the first listing. Later pages never raise it, so a busy stream cannot keep a sync running.
+        let head = *self.head.get_or_insert(page.coverage.last.unwrap_or(0));
+        // A fresh walk starts at the oldest retained archive: nothing before it was ever expected.
+        let after = *self
+            .after
+            .get_or_insert_with(|| page.coverage.first.map_or(0, |first| first - 1));
+        self.coverage = Some(page.coverage);
+        if page.gap.is_none() && page.archives.is_empty() {
+            if after >= head {
+                return Ok(());
+            }
+            bail!("publication gap: nothing listed after archive {after}");
+        }
+        if let Some(gap) = page.gap {
+            self.queue.push_back(Queued::Gap(gap));
+        }
+        self.queue
+            .extend(page.archives.into_iter().map(Queued::Archive));
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ListPage, RemoteError, rpc};
+    use crate::RemoteError;
     use sha2::{Digest, Sha256};
-    use std::{path::Path, sync::Mutex};
-
-    const ARCHIVE: &str = "archive-a";
+    use std::path::Path;
 
     struct Fake {
-        archive_id: String,
-        objects: Vec<ListedObject>,
-        bodies: Vec<Vec<u8>>,
-        expire_first_download: Mutex<bool>,
+        /// When set, `coverage.last` is this on the first call to `list` and one higher on every later call, as if archives
+        /// were published meanwhile (the archives themselves are all listed).
+        growing_head: Option<(u64, std::sync::atomic::AtomicU64)>,
+        /// (info, body) for every archive still on the Worker, in order.
+        archives: Vec<(api::ArchiveInfo, Vec<u8>)>,
         corrupt: bool,
+        missing_on_download: Option<u64>,
     }
-    fn object(seq: i64, body: &[u8]) -> ListedObject {
-        let sha = hex::encode(Sha256::digest(body));
-        ListedObject {
-            seq: seq.to_string(),
-            name: format!("{seq:020}-{sha}.jsonl.gz"),
-            size: body.len() as u64,
-            sha256: sha,
-            url: format!("https://example.test/{seq}"),
-        }
+    fn archive(seq: u64) -> (api::ArchiveInfo, Vec<u8>) {
+        let body = format!("body {seq}").into_bytes();
+        (
+            api::ArchiveInfo {
+                seq,
+                size: body.len() as u64,
+                sha256: hex::encode(Sha256::digest(&body)),
+                events: 1,
+                created_at: "2026-11-07T12:00:00.000Z".into(),
+            },
+            body,
+        )
     }
-    fn fake(count: i64) -> Fake {
-        let bodies: Vec<Vec<u8>> = (1..=count)
-            .map(|n| format!("body {n}").into_bytes())
-            .collect();
+    /// Archives `first..=last` are retained.
+    fn fake(first: u64, last: u64) -> Fake {
         Fake {
-            archive_id: ARCHIVE.into(),
-            objects: bodies.iter().zip(1..).map(|(b, n)| object(n, b)).collect(),
-            bodies,
-            expire_first_download: Mutex::new(false),
+            growing_head: None,
+            archives: (first..=last).map(archive).collect(),
             corrupt: false,
+            missing_on_download: None,
         }
     }
     #[async_trait::async_trait]
     impl Remote for Fake {
-        async fn list(&self, after: Option<i64>, limit: usize) -> Result<ListPage, RemoteError> {
-            let after = after.unwrap_or(0);
-            Ok(ListPage {
-                coverage: Some(rpc::Coverage {
-                    archive_id: self.archive_id.clone(),
-                    first_retained: "1".into(),
-                    latest_published: Some(self.objects.len().to_string()),
-                    latest_published_at: None,
-                    retention_seconds: 0,
-                }),
-                objects: self
-                    .objects
-                    .iter()
-                    .filter(|o| o.seq.parse::<i64>().map_or(true, |s| s > after))
-                    .take(limit)
-                    .cloned()
-                    .collect(),
-                next_after: None,
-                expires_at: None,
+        async fn list(
+            &self,
+            after: Option<u64>,
+            limit: u32,
+        ) -> Result<api::ListArchivesResponse, RemoteError> {
+            let first = self.archives.first().map(|(a, _)| a.seq);
+            let last = self.archives.last().map(|(a, _)| a.seq);
+            let last = match &self.growing_head {
+                Some((head, calls)) => {
+                    Some(head + calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+                }
+                None => last,
+            };
+            let start = after.unwrap_or(first.unwrap_or(1).saturating_sub(1));
+            let gap = first
+                .filter(|first| after.is_some_and(|after| after + 1 < *first))
+                .map(|first| api::Gap {
+                    from: after.unwrap() + 1,
+                    to: first - 1,
+                });
+            let page: Vec<_> = self
+                .archives
+                .iter()
+                .filter(|(a, _)| a.seq > start)
+                .take(limit as usize)
+                .map(|(a, _)| a.clone())
+                .collect();
+            Ok(api::ListArchivesResponse {
+                coverage: api::Coverage {
+                    first,
+                    last,
+                    last_at: None,
+                    pending: false,
+                },
+                next: page.last().map(|a| a.seq).filter(|seq| Some(*seq) != last),
+                archives: page,
+                gap,
             })
-        }
-        async fn get_coverage(&self) -> Result<Option<rpc::Coverage>, RemoteError> {
-            Ok(None)
         }
         async fn download(
             &self,
-            object: &ListedObject,
+            archive: &api::ArchiveInfo,
             dest: &Path,
         ) -> Result<(String, u64), RemoteError> {
-            if std::mem::take(&mut *self.expire_first_download.lock().unwrap()) {
-                return Err(RemoteError::Expired);
+            if self.missing_on_download == Some(archive.seq) {
+                return Err(RemoteError::ArchiveMissing(archive.seq));
             }
-            let index = self
-                .objects
+            let (_, body) = self
+                .archives
                 .iter()
-                .position(|o| o.name == object.name)
-                .ok_or(RemoteError::Expired)?;
-            let mut body = self.bodies[index].clone();
+                .find(|(a, _)| a.seq == archive.seq)
+                .ok_or(RemoteError::ArchiveMissing(archive.seq))?;
+            let mut body = body.clone();
             if self.corrupt {
                 body.push(b'!');
             }
@@ -188,89 +242,116 @@ mod tests {
     fn scratch() -> Result<tempfile::TempDir> {
         Ok(tempfile::tempdir()?)
     }
-    async fn drain(walk: &mut Walk<'_>) -> Result<Vec<i64>> {
+    /// Every step as text: `gap 1-3` or `archive 5`.
+    async fn drain(walk: &mut Walk<'_>) -> Result<Vec<String>> {
         let mut seen = vec![];
-        while let Some(archive) = walk.next(scratch).await? {
-            assert_eq!(
-                std::fs::read(&archive.path)?,
-                format!("body {}", archive.sequence).into_bytes()
-            );
-            seen.push(archive.sequence);
+        while let Some(step) = walk.next(scratch).await? {
+            match step {
+                Step::Gap(gap) => seen.push(format!("gap {}-{}", gap.from, gap.to)),
+                Step::Archive(archive) => {
+                    assert_eq!(
+                        std::fs::read(&archive.path)?,
+                        format!("body {}", archive.sequence).into_bytes()
+                    );
+                    seen.push(format!("archive {}", archive.sequence));
+                }
+            }
         }
         Ok(seen)
     }
-    fn message(result: Result<Vec<i64>>) -> String {
+    fn message(result: Result<Vec<String>>) -> String {
         result.expect_err("expected a failure").to_string()
     }
 
     #[tokio::test]
     async fn archives_come_in_order_across_pages_and_stop_at_the_head() {
-        let remote = fake(5);
-        let mut walk = Walk::new(&remote, ARCHIVE, 0, 5, 2);
-        assert_eq!(drain(&mut walk).await.unwrap(), vec![1, 2, 3, 4, 5]);
-        assert_eq!(walk.position(), 5);
-        // Starting later, and a head below the end of the listing, both bound the walk.
-        let mut walk = Walk::new(&remote, ARCHIVE, 2, 4, 100);
-        assert_eq!(drain(&mut walk).await.unwrap(), vec![3, 4]);
+        let remote = fake(1, 5);
+        let mut walk = Walk::new(&remote, None, 2);
+        assert_eq!(
+            drain(&mut walk).await.unwrap(),
+            [
+                "archive 1",
+                "archive 2",
+                "archive 3",
+                "archive 4",
+                "archive 5"
+            ]
+        );
+        assert_eq!(walk.position(), Some(5));
+        assert_eq!(walk.coverage().and_then(|c| c.last), Some(5));
+        // Starting later bounds the walk from below; a caught-up walk lists once and ends.
+        let mut walk = Walk::new(&remote, Some(2), 100);
+        assert_eq!(
+            drain(&mut walk).await.unwrap(),
+            ["archive 3", "archive 4", "archive 5"]
+        );
+        let mut walk = Walk::new(&remote, Some(5), 100);
+        assert!(drain(&mut walk).await.unwrap().is_empty());
+        assert!(walk.coverage().is_some());
+    }
+
+    #[tokio::test]
+    async fn nothing_published_ends_the_walk() {
+        let remote = fake(1, 0);
+        let mut walk = Walk::new(&remote, None, 10);
+        assert!(drain(&mut walk).await.unwrap().is_empty());
+        assert_eq!(walk.coverage().and_then(|c| c.last), None);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_walk_starts_at_the_oldest_retained_archive_without_a_gap() {
+        let remote = fake(4, 6);
+        let mut walk = Walk::new(&remote, None, 10);
+        assert_eq!(
+            drain(&mut walk).await.unwrap(),
+            ["archive 4", "archive 5", "archive 6"]
+        );
+    }
+
+    #[tokio::test]
+    async fn archives_deleted_by_retention_are_a_gap_and_the_walk_continues() {
+        let remote = fake(4, 6);
+        let mut walk = Walk::new(&remote, Some(1), 10);
+        assert_eq!(
+            drain(&mut walk).await.unwrap(),
+            ["gap 2-3", "archive 4", "archive 5", "archive 6"]
+        );
+        assert_eq!(walk.position(), Some(6));
     }
 
     #[tokio::test]
     async fn a_hole_in_the_sequence_is_a_publication_gap() {
-        let mut remote = fake(4);
-        remote.objects.remove(1); // 1, 3, 4
-        let mut walk = Walk::new(&remote, ARCHIVE, 0, 4, 10);
-        assert!(message(drain(&mut walk).await).contains("publication gap; expected object 2"));
-    }
-
-    /// The listing may start beyond the snapshot head: that is a missing archive, not the end of the walk.
-    #[tokio::test]
-    async fn a_listing_that_jumps_past_the_head_is_a_gap_not_a_clean_finish() {
-        let mut remote = fake(3);
-        remote.objects.drain(..2); // after object 1 the only listed archive is 3
-        let mut walk = Walk::new(&remote, ARCHIVE, 1, 2, 10);
-        assert!(message(drain(&mut walk).await).contains("publication gap; expected object 2"));
+        let mut remote = fake(1, 4);
+        remote.archives.remove(1); // 1, 3, 4
+        let mut walk = Walk::new(&remote, None, 10);
+        assert!(message(drain(&mut walk).await).contains("publication gap; expected archive 2"));
     }
 
     #[tokio::test]
-    async fn an_empty_listing_before_the_head_is_a_publication_gap() {
-        let remote = fake(0);
-        let mut walk = Walk::new(&remote, ARCHIVE, 0, 3, 10);
-        assert!(message(drain(&mut walk).await).contains("publication gap"));
-    }
-
-    #[tokio::test]
-    async fn a_different_archive_generation_is_a_reset() {
-        let remote = fake(3);
-        let mut walk = Walk::new(&remote, "another-archive", 0, 3, 10);
-        assert!(message(drain(&mut walk).await).contains("archive reset"));
-    }
-
-    #[tokio::test]
-    async fn malformed_listings_are_refused() {
-        let mut remote = fake(2);
-        remote.objects[0].seq = "one".into();
-        let mut walk = Walk::new(&remote, ARCHIVE, 0, 2, 10);
-        assert!(message(drain(&mut walk).await).contains("decimal sequence"));
-
-        let mut remote = fake(2);
-        remote.objects[0].name = "not-an-archive.jsonl.gz".into();
-        let mut walk = Walk::new(&remote, ARCHIVE, 0, 2, 10);
-        assert!(message(drain(&mut walk).await).contains("unsupported archive object name"));
-    }
-
-    #[tokio::test]
-    async fn a_link_that_expires_is_replaced_and_the_walk_continues() {
-        let remote = fake(2);
-        *remote.expire_first_download.lock().unwrap() = true;
-        let mut walk = Walk::new(&remote, ARCHIVE, 0, 2, 10);
-        assert_eq!(drain(&mut walk).await.unwrap(), vec![1, 2]);
+    async fn a_missing_archive_is_fatal_and_names_its_sequence() {
+        let mut remote = fake(1, 3);
+        remote.missing_on_download = Some(2);
+        let mut walk = Walk::new(&remote, None, 10);
+        assert!(message(drain(&mut walk).await).contains("archive 2 is listed"));
     }
 
     #[tokio::test]
     async fn a_download_that_does_not_match_its_listing_is_refused() {
-        let mut remote = fake(1);
+        let mut remote = fake(1, 1);
         remote.corrupt = true;
-        let mut walk = Walk::new(&remote, ARCHIVE, 0, 1, 10);
+        let mut walk = Walk::new(&remote, None, 10);
         assert!(message(drain(&mut walk).await).contains("verification"));
+    }
+
+    #[tokio::test]
+    async fn the_walk_ends_at_the_head_it_first_saw_even_as_newer_archives_are_published() {
+        let mut remote = fake(1, 10);
+        remote.growing_head = Some((3, std::sync::atomic::AtomicU64::new(0)));
+        let mut walk = Walk::new(&remote, None, 2);
+        assert_eq!(
+            drain(&mut walk).await.unwrap(),
+            ["archive 1", "archive 2", "archive 3"]
+        );
+        assert_eq!(walk.position(), Some(3));
     }
 }

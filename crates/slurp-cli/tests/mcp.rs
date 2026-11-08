@@ -1,5 +1,6 @@
 //! The MCP server, driven the way a client drives it: the real `slurp` binary over stdio, against a seeded DuckDB project.
 //! Skipped unless SLURP_TEST_DUCKDB points at a DuckDB CLI (like the other native tests).
+mod common;
 use serde_json::{Value, json};
 use slurp_app::Workspace;
 use std::{
@@ -7,13 +8,14 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
 
-fn event(id: &str, name: &str, user: &str, seq: usize) -> String {
+fn event(id: &str, name: &str, user: &str, _seq: usize) -> String {
     let at = "2026-11-02T10:00:00Z";
-    json!({"id": id, "type": "track", "event": name, "timestamp": at, "user_id": user, "data": {"plan": "pro"}, "received_at": at, "received_seq": seq.to_string()}).to_string() + "\n"
+    let record = json!({"id": id, "type": "track", "event": name, "timestamp": at, "user_id": user, "data": {"plan": "pro"}});
+    format!(r#"{{"received_at":"{at}","sender":"web","record":{record}}}"#) + "\n"
 }
 
 fn seeded() -> Option<(tempfile::TempDir, Workspace)> {
-    let exe = std::env::var_os("SLURP_TEST_DUCKDB")?;
+    let exe = common::duckdb()?;
     let temp = tempfile::tempdir().expect("test directory");
     let w = Workspace::init(
         temp.path(),
@@ -35,7 +37,7 @@ fn seeded() -> Option<(tempfile::TempDir, Workspace)> {
             encoder.finish().expect("compress")
         })
         .expect("write");
-    w.import("a", 1, "hash", 1, archive.path()).expect("import");
+    w.import(1, "hash", 1, archive.path()).expect("import");
     Some((temp, w))
 }
 
@@ -335,4 +337,65 @@ fn malformed_requests_get_protocol_errors_and_calls_before_the_handshake_are_ref
     );
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// The send tools run `slurp send --source mcp` (so events carry sender = mcp, with no marker inside the record), and the sync
+/// tool passes `--now` only when asked.
+#[test]
+fn the_send_tools_use_the_mcp_source_and_sync_can_publish_first() {
+    let Some((temp, w)) = seeded() else { return };
+    let log = temp.path().join("calls.log");
+    let exe = temp.path().join("fake-slurp");
+    std::fs::write(
+        &exe,
+        format!(
+            "#!/bin/sh\necho \"ARGS $*\" >> {log}\ncat >> {log}\necho '{{\"ok\":true}}'\n",
+            log = log.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let server = slurp_app::mcp::Server::new(&w, temp.path().to_path_buf(), exe, true);
+    let call = |id: u64, method: &str, params: Value| {
+        server
+            .handle_line(
+                &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+                    .to_string(),
+            )
+            .expect("a response")
+    };
+    call(1, "initialize", json!({"protocolVersion": "2025-11-25"}));
+    let tool = |id: u64, name: &str, arguments: Value| {
+        let response = call(
+            id,
+            "tools/call",
+            json!({"name": name, "arguments": arguments}),
+        );
+        assert_eq!(response["result"]["isError"], false, "{response}");
+    };
+    tool(2, "send_event", json!({"event": "x", "data": {"a": 1}}));
+    tool(
+        3,
+        "identify",
+        json!({"user_id": "u1", "traits": {"plan": "pro"}}),
+    );
+    tool(4, "sync", json!({}));
+    tool(5, "sync", json!({"now": true}));
+    let log = std::fs::read_to_string(&log).unwrap();
+    let args: Vec<&str> = log.lines().filter(|l| l.starts_with("ARGS")).collect();
+    assert_eq!(args.len(), 4);
+    assert!(args[0].contains("send --stdin --source mcp"), "{args:?}");
+    assert!(args[1].contains("send --stdin --source mcp"), "{args:?}");
+    assert!(
+        args[2].starts_with("ARGS sync --project") && !args[2].contains("--now"),
+        "{args:?}"
+    );
+    assert!(args[3].starts_with("ARGS sync --now --project"), "{args:?}");
+    assert!(
+        !log.contains("\"source\""),
+        "the record carries no source marker: {log}"
+    );
 }

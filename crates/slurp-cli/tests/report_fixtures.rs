@@ -1,10 +1,11 @@
 //! Report layout and authoring-error regression tests. The fixtures are deliberately hostile: long unbroken text, wide tables,
 //! non-Latin text, empty results, 1,000-point charts, and every kind of mistake an author can make.
+mod common;
 use slurp_app::{Workspace, report, report_check};
 use std::path::{Path, PathBuf};
 
 fn workspace() -> Option<(tempfile::TempDir, Workspace)> {
-    let exe = std::env::var_os("SLURP_TEST_DUCKDB")?;
+    let exe = common::duckdb()?;
     let temp = tempfile::tempdir().expect("test directory");
     let w = Workspace::init(
         temp.path(),

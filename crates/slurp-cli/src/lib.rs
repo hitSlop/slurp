@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{BufRead, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -18,8 +18,10 @@ pub mod skills;
 pub mod storage;
 pub mod system;
 use error::{ErrorCode, Failure};
+pub use import::ImportStats;
 pub mod health;
 pub mod helpers;
+pub mod import;
 pub mod mcp;
 pub mod notify;
 pub mod report;
@@ -44,8 +46,7 @@ impl Cancellation {
 /// Structured progress independent of terminal presentation.
 #[derive(Debug, Serialize)]
 pub struct SyncProgress {
-    pub archive: String,
-    pub sequence: i64,
+    pub sequence: u64,
     pub downloaded: usize,
 }
 
@@ -97,6 +98,14 @@ pub fn null_non_finite(json: &str) -> std::borrow::Cow<'_, str> {
     }
     out.into()
 }
+/// The tables of a fresh database (`docs/contracts.md`, "Local import"). There is no migration from earlier layouts.
+const SCHEMA: &str = "BEGIN;
+CREATE SCHEMA _slurp;
+CREATE TABLE _slurp.identity(version INTEGER, backend VARCHAR, project VARCHAR);
+CREATE TABLE _slurp.deliveries(project VARCHAR, sequence BIGINT, sha256 VARCHAR, bytes UBIGINT, imported_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(project, sequence));
+CREATE TABLE _slurp.problems(kind VARCHAR, sender VARCHAR, id VARCHAR, archive_seq BIGINT, line BIGINT, record VARCHAR, detail VARCHAR, seen_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(kind, archive_seq, line));
+CREATE TABLE events(sender VARCHAR, id VARCHAR, type VARCHAR, event VARCHAR, timestamp TIMESTAMPTZ, user_id VARCHAR, anonymous_id VARCHAR, session_id VARCHAR, data JSON, context JSON, geo JSON, received_at TIMESTAMPTZ, archive_seq BIGINT, line BIGINT, raw JSON, fingerprint VARCHAR, PRIMARY KEY(sender, id));";
+
 /// Quote SQL data; identifiers in generated SQL are fixed by Slurp.
 pub fn literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
@@ -143,7 +152,15 @@ impl Workspace {
             extensions: Vec::new(),
             sandbox: false,
         };
-        w.execute_inner(&format!("BEGIN; CREATE SCHEMA _slurp; CREATE TABLE _slurp.identity(version INTEGER, backend VARCHAR, project VARCHAR); INSERT INTO _slurp.identity VALUES(1,{},{}); CREATE TABLE _slurp.deliveries(archive VARCHAR, sequence BIGINT, sha256 VARCHAR, bytes UBIGINT, imported_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY(archive,sequence)); CREATE TABLE events(id VARCHAR PRIMARY KEY, type VARCHAR, event VARCHAR, timestamp TIMESTAMPTZ, user_id VARCHAR, anonymous_id VARCHAR, session_id VARCHAR, data JSON, context JSON, received_at TIMESTAMPTZ, received_seq VARCHAR, sender VARCHAR, raw_record JSON, fingerprint VARCHAR); COMMIT;",literal(&w.backend),literal(&w.project)),false, true)?;
+        w.execute_inner(
+            &format!(
+                "{SCHEMA}\nINSERT INTO _slurp.identity VALUES(1,{},{}); COMMIT;",
+                literal(&w.backend),
+                literal(&w.project)
+            ),
+            false,
+            true,
+        )?;
         w.execute_inner(&helpers::script(), false, true)?;
         fs::create_dir_all(root.join(".slurp/reports"))?;
         let mut destination = fs::OpenOptions::new()
@@ -310,9 +327,7 @@ impl Workspace {
         let mut message = String::new();
         err.take(8192).read_to_string(&mut message)?;
         if !status.success() {
-            let code = if message.contains("conflicting_event_id") {
-                ErrorCode::ConflictingEventId
-            } else if message.contains("delivery_conflict") {
+            let code = if message.contains("delivery_conflict") {
                 ErrorCode::DeliveryConflict
             } else if message.contains("Could not set lock") {
                 ErrorCode::Busy
@@ -369,146 +384,147 @@ impl Workspace {
             json!({"columns":columns,"row_count":rows.len(),"rows":rows,"truncated":truncated,"elapsed_ms":start.elapsed().as_secs_f64()*1000.0}),
         )
     }
-    /// Import one verified immutable archive atomically with its receipt.
-    pub fn import(
-        &self,
-        archive: &str,
-        seq: i64,
-        sha: &str,
-        bytes: u64,
-        path: &Path,
-    ) -> Result<Value> {
-        let scratch = self.scratch()?;
-        let mut staged = tempfile::NamedTempFile::new_in(scratch.path())?;
-        let decoder = slurp_client::open_jsonl(path)?;
-        for line in std::io::BufReader::new(decoder).lines() {
-            let line = line?;
-            let raw: Value = serde_json::from_str(&line)?;
-            if !raw["id"].is_string() {
-                bail!("invalid event ID")
-            }
-            anyhow::ensure!(raw["data"].is_object(), "invalid event data");
-            anyhow::ensure!(
-                raw["type"] == "track" || raw["type"] == "identify",
-                "invalid event type"
-            );
-            let timestamp = raw["timestamp"]
-                .as_str()
-                .context("missing event timestamp")?;
-            chrono::DateTime::parse_from_rfc3339(timestamp).context("invalid event timestamp")?;
-            if raw["type"] == "track" {
-                anyhow::ensure!(
-                    raw["event"].as_str().is_some_and(|v| !v.is_empty()),
-                    "missing event name"
-                );
-            }
-            if raw["type"] == "identify" {
-                anyhow::ensure!(
-                    raw["user_id"].as_str().is_some_and(|v| !v.is_empty()),
-                    "missing user ID"
-                );
-            }
-            let mut producer = raw.clone();
-            let obj = producer.as_object_mut().context("invalid event")?;
-            obj.remove("received_at");
-            obj.remove("received_seq");
-            obj.remove("sender");
-            if let Some(context) = obj.get_mut("context").and_then(Value::as_object_mut) {
-                context.remove("geo");
-                if context.is_empty() {
-                    obj.remove("context");
-                }
-            }
-            use sha2::{Digest, Sha256};
-            let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&producer)?));
-            writeln!(
-                staged,
-                "{{\"record\":{line},\"fingerprint\":{}}}",
-                json!(fingerprint)
-            )?;
+    /// Import one verified immutable archive atomically with its receipt (see [`import::import_archive`]).
+    ///
+    /// # Errors
+    /// Returns an error for an unreadable or truncated archive, a receipt for the same sequence with a different digest
+    /// or size, or a DuckDB failure.
+    pub fn import(&self, seq: u64, sha: &str, bytes: u64, path: &Path) -> Result<ImportStats> {
+        import::import_archive(self, seq, sha, bytes, path)
+    }
+    /// Record archives that retention deleted before they were read. Safe to repeat. The row's `record` keeps the whole range
+    /// (`{"from":3,"to":7}`), since a gap row's key holds only where it starts.
+    pub fn record_gap(&self, gap: &slurp_client::api::Gap) -> Result<()> {
+        let detail = format!(
+            "archives {} to {} were deleted by retention before they were read",
+            gap.from, gap.to
+        );
+        let range = json!({"from": gap.from, "to": gap.to}).to_string();
+        self.execute(
+            &format!(
+                "INSERT INTO _slurp.problems(kind, sender, id, archive_seq, line, record, detail) VALUES('gap', NULL, NULL, {}, 0, {}, {}) ON CONFLICT DO NOTHING",
+                gap.from,
+                literal(&range),
+                literal(&detail)
+            ),
+            false,
+        )?;
+        Ok(())
+    }
+    /// The archives retention deleted before this database read them, as `{"from": n, "to": m}` (the union of every gap
+    /// recorded), or `None` when nothing is missing. Those events are lost; every status-like output reports this.
+    pub fn history_incomplete(&self) -> Result<Option<Value>> {
+        let rows = self.execute(
+            "SELECT min(archive_seq)::BIGINT AS \"from\", max(coalesce(try_cast(json_extract_string(record, '$.to') AS BIGINT), archive_seq))::BIGINT AS \"to\" FROM _slurp.problems WHERE kind = 'gap' HAVING count(*) > 0",
+            true,
+        )?;
+        Ok(rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|row| json!({"from": row["from"], "to": row["to"]})))
+    }
+    /// The workspace at a glance: binding, event count, import problems, the last receipt, and `history_incomplete` when
+    /// retention deleted archives before they were read.
+    pub fn status(&self) -> Result<Value> {
+        let mut status = json!({
+            "version": self.version, "project": self.project, "backend": self.backend, "database": self.database,
+            "events": self.execute("SELECT count(*) AS count FROM events", true)?,
+            "problems": self.execute("SELECT kind, count(*) AS count FROM _slurp.problems GROUP BY kind ORDER BY kind", true)?,
+            "last_delivery": self.execute("SELECT * FROM _slurp.deliveries ORDER BY imported_at DESC LIMIT 1", true)?,
+        });
+        if let Some(incomplete) = self.history_incomplete()? {
+            status["history_incomplete"] = incomplete;
         }
-        let a = literal(archive);
-        let h = literal(sha);
-        let f = literal(&staged.path().to_string_lossy());
-        self.execute(&format!(r#"BEGIN;
-CREATE TEMP TABLE delivery_check AS SELECT CASE WHEN EXISTS(SELECT 1 FROM _slurp.deliveries WHERE archive={a} AND sequence={seq} AND (sha256<>{h} OR bytes<>{bytes})) THEN error('delivery_conflict') ELSE NULL END;
-CREATE TEMP TABLE stage AS SELECT json_extract_string(record,'$.id') AS id, record, fingerprint FROM read_json({f}, columns={{record:'JSON',fingerprint:'VARCHAR'}},format='newline_delimited');
-CREATE TEMP TABLE event_check AS SELECT CASE WHEN EXISTS(SELECT id FROM stage GROUP BY id HAVING count(DISTINCT fingerprint)>1) OR EXISTS(SELECT 1 FROM stage s JOIN events e USING(id) WHERE s.fingerprint<>e.fingerprint) THEN error('conflicting_event_id') ELSE NULL END;
-CREATE TEMP TABLE import_stats AS SELECT count(*) AS total,count(DISTINCT s.id) FILTER(WHERE e.id IS NULL) AS imported FROM stage s LEFT JOIN events e USING(id);
-INSERT INTO events SELECT id,record->>'type',record->>'event',(record->>'timestamp')::TIMESTAMPTZ,record->>'user_id',record->>'anonymous_id',record->>'session_id',record->'data',record->'context',(record->>'received_at')::TIMESTAMPTZ,record->>'received_seq',record->>'sender',record,fingerprint FROM stage QUALIFY row_number() OVER(PARTITION BY id)=1 ON CONFLICT DO NOTHING;
-INSERT INTO _slurp.deliveries(archive,sequence,sha256,bytes) VALUES({a},{seq},{h},{bytes}) ON CONFLICT DO NOTHING;
-COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false)
+        Ok(status)
+    }
+    /// Ask the Worker to publish everything it has buffered now (`Publish`). Needs the admin token.
+    ///
+    /// # Errors
+    /// Returns an error when the token is not the admin token, or the Worker refuses or is unavailable.
+    pub async fn publish_now(&self, token: &str) -> Result<()> {
+        use slurp_client::api;
+        project_setup::Api::new(&self.backend, token)?
+            .call::<api::Publish>(&api::PublishRequest {
+                project: self.project.clone(),
+            })
+            .await
+            .map_err(|error| match error {
+                api::CallError::Api {
+                    code: Some(api::ErrorCode::Forbidden),
+                    ..
+                } => anyhow::anyhow!(
+                    "sync --now needs the admin token: it asks the Worker to publish what it has buffered, and a secret key can only read archives. Connect with the admin token (slurp connect), or run slurp sync without --now to read what is already published"
+                ),
+                other => project_setup::service_error(other),
+            })?;
+        Ok(())
     }
     /// Catch up published archives; receipts are the sole durable sync cursor.
     pub async fn sync(&self, token: &str) -> Result<Value> {
-        self.sync_with_progress(token, |_| std::ops::ControlFlow::Continue(()))
+        self.sync_with_progress(token, false, |_| std::ops::ControlFlow::Continue(()))
             .await
     }
-    /// Catch up with progress and cooperative cancellation between archive commits.
+    /// Publish what the Worker has buffered (admin token), then catch up.
+    pub async fn sync_now(&self, token: &str) -> Result<Value> {
+        self.sync_with_progress(token, true, |_| std::ops::ControlFlow::Continue(()))
+            .await
+    }
+    /// Catch up with progress and cooperative cancellation between archive commits. With `now`, the Worker is first asked to
+    /// publish what it has buffered.
     pub async fn sync_with_progress(
         &self,
         token: &str,
+        now: bool,
         mut progress: impl FnMut(&SyncProgress) -> std::ops::ControlFlow<()>,
     ) -> Result<Value> {
         storage::require_database(&self.database)?;
-        let remote = slurp_client::HttpRemote::new(&self.backend, &self.project, token)?;
-        let status = remote.get_status().await?;
-        let Some(c) = status.coverage else {
-            return Ok(
-                json!({"downloaded":0,"imported":0,"duplicates":0,"has_published_archives":false,"publication":status.publication}),
-            );
-        };
+        // Receipts are keyed by project: a database that holds another project's archives cannot be continued.
         let receipts = self.execute(
-            "SELECT archive, max(sequence) AS sequence FROM _slurp.deliveries GROUP BY archive",
+            "SELECT project, max(sequence) AS sequence FROM _slurp.deliveries GROUP BY project",
             true,
         )?;
-        if receipts
-            .as_array()
-            .context("receipts")?
-            .iter()
-            .any(|r| r["archive"] != c.archive_id)
-        {
-            bail!("archive reset; preserve this workspace and initialize a new one")
-        }
-        let floor = slurp_client::protocol::parse_sequence(&c.first_retained)?;
-        let mut after = receipts[0]["sequence"].as_i64().unwrap_or(floor - 1);
-        if after < floor - 1 {
+        let receipts = receipts.as_array().context("receipts")?;
+        if receipts.iter().any(|r| r["project"] != self.project) {
             bail!(Failure::new(
-                ErrorCode::RetentionGap,
-                "history expired; initialize a new workspace"
+                ErrorCode::BindingMismatch,
+                "this database holds archives of a different project; preserve it and initialize a new workspace"
             ))
         }
-        let head = c
-            .latest_published
-            .as_deref()
-            .map(slurp_client::protocol::parse_sequence)
-            .transpose()?
-            .unwrap_or(after);
-        let mut downloaded = 0;
-        let mut imported = 0;
-        let mut duplicates = 0;
-        let mut walk = slurp_client::walk::Walk::new(&remote, &c.archive_id, after, head, 100);
+        if now {
+            self.publish_now(token).await?;
+        }
+        let mut after = receipts.first().and_then(|r| r["sequence"].as_u64());
+        let remote = slurp_client::HttpRemote::new(&self.backend, &self.project, token)?;
+        let (mut downloaded, mut imported, mut duplicates, mut conflicts, mut invalid, mut gaps) =
+            (0usize, 0u64, 0u64, 0u64, 0u64, 0u64);
+        let mut walk = slurp_client::walk::Walk::new(&remote, after, 100);
         loop {
             if self.cancellation.is_cancelled() {
                 bail!(Failure::new(ErrorCode::Cancelled, "cancelled"))
             }
-            let Some(archive) = walk.next(|| self.scratch()).await? else {
-                break;
+            let archive = match walk.next(|| self.scratch()).await? {
+                None => break,
+                Some(slurp_client::walk::Step::Gap(gap)) => {
+                    self.record_gap(&gap)?;
+                    gaps += 1;
+                    continue;
+                }
+                Some(slurp_client::walk::Step::Archive(archive)) => archive,
             };
             let sequence = archive.sequence;
             let stats = self.import(
-                &c.archive_id,
                 sequence,
-                &archive.object.sha256,
-                archive.object.size,
+                &archive.archive.sha256,
+                archive.archive.size,
                 &archive.path,
             )?;
-            imported += stats[0]["imported"].as_u64().unwrap_or(0);
-            duplicates += stats[0]["duplicates"].as_u64().unwrap_or(0);
-            after = sequence;
+            imported += stats.imported;
+            duplicates += stats.duplicates;
+            conflicts += stats.conflicts;
+            invalid += stats.invalid;
+            after = Some(sequence);
             downloaded += 1;
             if progress(&SyncProgress {
-                archive: c.archive_id.clone(),
                 sequence,
                 downloaded,
             })
@@ -517,8 +533,31 @@ COMMIT; SELECT imported,total-imported AS duplicates FROM import_stats;"#),false
                 bail!(Failure::new(ErrorCode::Cancelled, "cancelled"))
             }
         }
-        Ok(
-            json!({"downloaded":downloaded,"imported":imported,"duplicates":duplicates,"checkpoint":after.to_string(),"published_at":c.latest_published_at,"has_published_archives":c.latest_published.is_some(),"publication":status.publication}),
-        )
+        let coverage = walk
+            .coverage()
+            .cloned()
+            .unwrap_or(slurp_client::api::Coverage {
+                first: None,
+                last: None,
+                last_at: None,
+                pending: false,
+            });
+        let mut result = json!({
+            "downloaded": downloaded,
+            "imported": imported,
+            "duplicates": duplicates,
+            "conflicts": conflicts,
+            "invalid": invalid,
+            "gaps": gaps,
+            "checkpoint": after.unwrap_or(0).to_string(),
+            "published_at": coverage.last_at,
+            "has_published_archives": coverage.last.is_some(),
+            "pending": coverage.pending,
+            "published_now": now,
+        });
+        if let Some(incomplete) = self.history_incomplete()? {
+            result["history_incomplete"] = incomplete;
+        }
+        Ok(result)
     }
 }

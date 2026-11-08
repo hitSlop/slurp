@@ -15,11 +15,11 @@ export const assumptions = {
   rowsPerRequest: 0.25,          // Durable Object rows written per request with group commit (measured locally, not yet billed-side)
   cpuMsPerRequest: 1,            // Worker CPU per ingest request (measured on the real edge: p50 0 ms, p95 1 ms)
   gzipRatio: 4,                  // raw JSON bytes per stored byte (measured 6.5 on synthetic events; real events compress less)
-  sealMaxBytes: 8 * 1024 * 1024, // the Worker seals an archive when this much is buffered (one R2 write each)
+  archiveMaxBytes: 8 * 1024 * 1024, // the Worker publishes an archive when this much is buffered (one R2 write each)
   sealIntervalSeconds: 600,      // ... or this long after the first buffered batch
-  eventsPerSecondPerSource: 5000, // measured: one source sustains this with every request accepted (measured with backend/scripts/load.mjs; see docs/self-hosting.md)
-  peakFactor: 3,                 // peak traffic over the monthly average, for deciding how many sources the volume needs
-  doGBMemory: 0.128, doGBsIncluded: 400_000, doPerMillionGBs: 12.5, // Durable Object duration: an always-busy source is ~332K GB-s a month
+  eventsPerSecondPerProject: 5000, // measured: one project sustains this with every request accepted (measured with backend/scripts/load.mjs; see docs/self-hosting.md)
+  peakFactor: 3,                 // peak traffic over the monthly average, for deciding how many projects the volume needs
+  doGBMemory: 0.128, doGBsIncluded: 400_000, doPerMillionGBs: 12.5, // Durable Object duration: an always-busy project is ~332K GB-s a month
   r2WritesIncluded: 1e6, r2PerMillionWrites: 4.5,
   days: 30,
   freeRequestsPerDay: 100_000,   // Workers Free: requests/day; the Durable Object has the same daily request cap
@@ -33,9 +33,9 @@ export const assumptions = {
 };
 /** Events a month that stay on the Workers Free plan under the assumptions above (before the $5 Workers Paid plan is needed). */
 export const freePlanEventsPerMonth = (a = assumptions) => a.freeRequestsPerDay * a.freeHeadroom * a.eventsPerRequest * a.days;
-/** How many sources (Durable Objects) a monthly volume needs so peak traffic stays under what one source sustains. */
-export const sourcesNeeded = (events, a = assumptions) =>
-  Math.max(1, Math.ceil(events / (a.days * 86400) * a.peakFactor / a.eventsPerSecondPerSource));
+/** How many projects (Durable Objects) a monthly volume needs so peak traffic stays under what one project sustains. */
+export const projectsNeeded = (events, a = assumptions) =>
+  Math.max(1, Math.ceil(events / (a.days * 86400) * a.peakFactor / a.eventsPerSecondPerProject));
 
 /**
  * Estimated Cloudflare bill for a steady month of ingestion with `retentionMonths` of archives kept.
@@ -52,9 +52,9 @@ export function cloudflareCost(events, a = assumptions) {
   const durable = Math.max(0, requests - a.doRequestsIncluded) / 1e6 * a.doPerMillion;
   const rows = Math.max(0, requests * a.rowsPerRequest - a.rowsIncluded) / 1e6 * a.rowsPerMillion;
   const seconds = a.days * 86400;
-  const sources = sourcesNeeded(events, a);
-  const duration = Math.max(0, sources * a.doGBMemory * seconds - a.doGBsIncluded) / 1e6 * a.doPerMillionGBs;
-  const writes = Math.max(sources * seconds / a.sealIntervalSeconds, events * a.compressedBytesPerEvent * a.gzipRatio / a.sealMaxBytes);
+  const projects = projectsNeeded(events, a);
+  const duration = Math.max(0, projects * a.doGBMemory * seconds - a.doGBsIncluded) / 1e6 * a.doPerMillionGBs;
+  const writes = Math.max(projects * seconds / a.sealIntervalSeconds, events * a.compressedBytesPerEvent * a.gzipRatio / a.archiveMaxBytes);
   const archives = Math.max(0, writes - a.r2WritesIncluded) / 1e6 * a.r2PerMillionWrites;
   return round2(a.paidBase + workers + cpu + durable + rows + duration + archives + storage);
 }

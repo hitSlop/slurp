@@ -5,7 +5,6 @@ crates/slurp-cli/assets/setup.html linguist-generated=true
 crates/slurp-cli/assets/worker/** linguist-generated=true
 # Sample reports the site serves: each one is a standalone built HTML file.
 apps/site/public/reports/** linguist-generated=true
-# Clients generated from backend/api/slurp.ridl (backend/api/generate.sh).
-backend/src/slurp.gen.ts linguist-generated=true
-crates/slurp-client/src/slurp.gen.rs linguist-generated=true
+# TypeScript types exported from crates/slurp-client/src/api.rs by ts-rs (cargo test -p slurp-client api_bindings).
+backend/src/api.gen.ts linguist-generated=true
 pnpm-lock.yaml linguist-generated=true

@@ -1,3 +1,4 @@
+// The SDK against the real Worker (docs/contracts.md): delivery through a fault-injecting proxy, then the archives read back.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
@@ -9,8 +10,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { gunzipSync } from 'node:zlib'
-import { Project, Archive } from '../../../backend/src/slurp.gen.ts'
-import { admin, debug, startWorker, type Worker } from '../../../backend/test/harness.ts'
+import { call } from '../../../backend/src/client.ts'
+import { ADMIN_TOKEN, startWorker, type Worker } from '../../../backend/test/http/worker.ts'
 import { createClient, memoryStorage, version } from '../src/index.ts'
 import type { SlurpClient } from '../src/index.ts'
 import { fileStorage } from '../src/node.ts'
@@ -23,7 +24,7 @@ async function until(check: () => boolean | Promise<boolean>, message: string, t
   }
 }
 
-test('durable byte-identical delivery, backpressure, splitting and permanent auth failure leave an exact archive', { timeout: 180_000 }, async t => {
+test('durable delivery, backpressure, splitting and permanent auth failure leave every event in the archive', { timeout: 180_000 }, async t => {
   const scratch = await mkdtemp(join(tmpdir(), 'slurp-sdk-'))
   let worker: Worker | undefined
   let proxy: Server | undefined
@@ -44,10 +45,8 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   // The real Worker under wrangler dev (set BASE to use a running or deployed one; it must allow a 1800 byte body limit).
   worker = await startWorker({ MAX_BODY_BYTES: String(maxBody), GROUP_COMMIT_MS: '20' })
   const publicUrl = worker.base
-  const alice = admin
-  const account = new Project(publicUrl, fetch)
-  const project = await account.createProject({ name: 'sdk_delivery' }, alice)
-  const secret = await account.createKey({ project: project.project.id, scope: 'secret' }, alice)
+  const project = await call(publicUrl, ADMIN_TOKEN, 'CreateProject', { name: 'sdk_delivery' })
+  const secret = { key: (await call(publicUrl, ADMIN_TOKEN, 'CreateKey', { project: project.project.id, scope: 'secret' })).key.key! }
   const records: {
     method: string | undefined; body: Buffer; at: number; forwarded: boolean
     status: number; headers: Record<string, string>; authorization: string | undefined; contentType: string | undefined; queryKey: boolean
@@ -104,11 +103,9 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   const errors: { message: string; dropped: number }[] = []
   const onError = (error: Error, dropped: number) => { errors.push({ message: error.message, dropped }) }
   const drain = (client: SlurpClient) => until(async () => { await client.flush(); return client.pending === 0 }, 'SDK did not drain')
-  const archive = new Archive(publicUrl, fetch)
   const publish = async (previous = 0) => {
-    await debug(publicUrl, 'seal', project.project.id) // the alarm interval is long; seal on demand
-    const coverage = await archive.getCoverage({ project: project.project.id }, alice)
-    const published = Number(coverage.coverage?.latestPublished ?? 0)
+    // The alarm interval is long; publish on demand, as `slurp sync --now` does.
+    const published = (await call(publicUrl, ADMIN_TOKEN, 'Publish', { project: project.project.id })).coverage.last ?? 0
     assert.ok(published > previous, 'nothing new was published')
     return published
   }
@@ -124,15 +121,16 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.equal(first.pending, 3)
   assert.equal(records.length, 1)
   assert.equal(records[0].status, 200)
-  assert.equal(records[0].headers['slurp-duplicate'], undefined)
   const persisted = JSON.parse(await readFile(path, 'utf8'))
-  assert.equal(JSON.parse(persisted[`@hitslop/slurp-sdk:v1:${endpoint}:${project.publishableKey}`]).batches[0], records[0].body.toString())
+  const [, projectHex, source] = /^slurp_pk_([0-9a-f]{16})_([a-z][a-z0-9_]{0,31})_[0-9a-f]{48}$/.exec(project.publishableKey)!
+  const saved = JSON.parse(persisted[`@hitslop/slurp-sdk:v1:${endpoint}:${projectHex}:${source}`])
+  assert.deepEqual(saved.queue, records[0].body.toString().trimEnd().split('\n'), 'the unacknowledged lines are what is saved')
+  assert.equal(saved.batches, undefined)
   await first.close()
   const restarted = make({ storage: fileStorage(path), onError })
   await drain(restarted)
   assert.equal(records.length, 2)
-  assert.deepEqual(records[1].body, records[0].body)
-  assert.equal(records[1].headers['slurp-duplicate'], '1')
+  assert.deepEqual(records[1].body, records[0].body, 'the restart resends the same records')
   assert.equal(restarted.pending, 0)
   assert.deepEqual(errors.map(error => error.dropped), [0])
   const initial = records[0].body.toString().trimEnd().split('\n').map(line => JSON.parse(line))
@@ -140,7 +138,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.equal(initial[1].user_id, 'user-42')
   assert.equal(initial[0].anonymous_id, initial[1].anonymous_id)
   assert.equal(initial[0].session_id, initial[1].session_id)
-  t.diagnostic('lost ACK replay: byte-identical body; gateway Slurp-Duplicate: 1')
+  t.diagnostic('lost ACK replay: the same records are sent again; the import dedupes by (source, id)')
   const firstPublished = await publish()
 
   let start = records.length
@@ -180,7 +178,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.ok(split[0].body.byteLength > maxBody)
   const originalLines = split[0].body.toString().trimEnd().split('\n')
   const accepted = split.filter(record => record.status === 200)
-  assert.equal(accepted.length, 6)
+  assert.ok(accepted.length >= 3, 'a 413 halves the request until it fits')
   assert.deepEqual(accepted.flatMap(record => record.body.toString().trimEnd().split('\n')), originalLines)
   assert.ok(accepted.every(record => record.body.byteLength <= maxBody))
   t.diagnostic(`real gateway 413: ${split.filter(record => record.status === 413).length} splits, 6 singleton ACKs`)
@@ -194,23 +192,26 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   await unauthorized.flush()
   assert.equal(records.length, start + 1)
   assert.equal(records[start].status, 401)
-  assert.equal(unauthorized.pending, 0)
+  assert.equal(unauthorized.pending, 2, 'a 401 keeps the queue')
   unauthorized.track('after_401')
   await unauthorized.flush()
   await unauthorized.flush()
-  assert.equal(records.length, start + 1)
-  assert.deepEqual(drops, [2, 1])
+  assert.equal(unauthorized.pending, 3)
+  assert.equal(records.length, start + 1, 'a paused client sends nothing more')
+  assert.deepEqual(drops, [0], 'the pause is reported once, with nothing dropped')
   console.log('[sdk gateway] phase: read key cannot write')
   const forbiddenDrops: number[] = []
   const forbidden = make({ key: secret.key, onError: (_error: Error, dropped: number) => forbiddenDrops.push(dropped) })
   forbidden.track('read_key_cannot_write')
   await forbidden.flush()
   assert.equal(records.at(-1)!.status, 403)
-  const stoppedAt = records.length
+  assert.equal(forbidden.pending, 1, 'a 403 keeps the queue')
+  const pausedAt = records.length
   forbidden.track('after_403')
   await forbidden.flush()
-  assert.equal(records.length, stoppedAt)
-  assert.deepEqual(forbiddenDrops, [1, 1])
+  assert.equal(forbidden.pending, 2)
+  assert.equal(records.length, pausedAt)
+  assert.deepEqual(forbiddenDrops, [0])
 
   console.log('[sdk gateway] phase: queue limits and invalid events')
   const rejected: number[] = []
@@ -243,7 +244,7 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   await drain(limited)
 
   const memory = memoryStorage()
-  let failWrites = true
+  const failWrites = true
   const storageErrors: number[] = []
   const durable = make({ storage: {
     getItem: memory.getItem,
@@ -256,12 +257,9 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   start = records.length
   delivered.push(durable.track('after_storage_recovers', { retained: true }))
   await durable.flush()
-  assert.equal(records.length, start)
-  assert.equal(durable.pending, 1)
-  assert.deepEqual(storageErrors, [0, 0])
-  failWrites = false
-  await drain(durable)
-  assert.equal(records.length, start + 1)
+  assert.equal(records.length, start + 1, 'a failing save does not stop delivery')
+  assert.equal(durable.pending, 0)
+  assert.deepEqual(storageErrors, [0], 'and is reported once')
 
   const realNow = Date.now
   try {
@@ -312,7 +310,6 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
       body: records[start].body,
     })
     assert.equal(replay.status, 200)
-    assert.equal(replay.headers.get('Slurp-Duplicate'), '1')
     await replay.body?.cancel()
     const refused = await fetch(`${project.ingestUrl}?key=${encodeURIComponent(secret.key)}`, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: records[start].body,
@@ -347,13 +344,13 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
   assert.deepEqual(proxyErrors, [])
   await publish(firstPublished)
   const archived: Record<string, any>[] = []
-  let after: string | undefined
+  let after: number | undefined
   let pages = 0
   do {
-    const page = await archive.listObjects({ project: project.project.id, after, limit: 1 }, { Authorization: `Bearer ${secret.key}` })
+    const page = await call(publicUrl, secret.key, 'ListArchives', { project: project.project.id, after, limit: 1 })
     pages++
-    for (const object of page.objects) {
-      const response = await fetch(object.url)
+    for (const object of page.archives) {
+      const response = await fetch(`${publicUrl}/v1/projects/${project.project.id}/archives/${object.seq}`, { headers: { Authorization: `Bearer ${secret.key}` } })
       assert.equal(response.status, 200)
       const compressed = Buffer.from(await response.arrayBuffer())
       assert.equal(compressed.byteLength, object.size)
@@ -362,20 +359,17 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
       assert.equal(raw.at(-1), '\n')
       archived.push(...raw.trimEnd().split('\n').map(line => JSON.parse(line)))
     }
-    after = page.nextAfter
+    after = page.next
   } while (after)
   assert.equal(pages, 2)
-  assert.equal(archived.length, delivered.length)
-  assert.deepEqual(archived.map(event => event.id).sort(), [...delivered].sort())
-  assert.equal(new Set(archived.map(event => event.id)).size, delivered.length)
+  // The Worker stores every request as sent, so a replayed request (the lost response) is in the archive twice; the import dedupes by (source, id).
+  assert.deepEqual([...new Set(archived.map(envelope => envelope.record.id))].sort(), [...delivered].sort())
   const wire = new Map(records.filter(record => record.forwarded && record.status === 200).flatMap(record =>
     record.body.toString().trimEnd().split('\n').map(line => { const event = JSON.parse(line); return [event.id, event] as const })))
-  for (const event of archived) {
-    const { received_at, received_seq, sender, ...payload } = event
+  for (const { received_at, sender, record: event } of archived) {
     assert.equal(new Date(received_at).toISOString(), received_at)
-    assert.match(received_seq, /^[0-9]+$/)
-    assert.equal(sender, 'default', 'the Worker stamps the name of the key that sent it')
-    assert.deepEqual(payload, wire.get(event.id))
+    assert.equal(sender, 'default', 'the Worker stamps the source of the key that sent it')
+    assert.deepEqual(event, wire.get(event.id))
     for (const id of [event.id, event.anonymous_id, event.session_id]) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     assert.equal(Number.parseInt(event.id.replaceAll('-', '').slice(0, 12), 16), Date.parse(event.timestamp))
     assert.equal(new Date(event.timestamp).toISOString(), event.timestamp)
@@ -383,5 +377,5 @@ test('durable byte-identical delivery, backpressure, splitting and permanent aut
     assert.equal(Object.getPrototypeOf(event.data), Object.prototype)
     if (!event.context.page) assert.deepEqual(event.context, { library: { name: '@hitslop/slurp-sdk', version }, runtime: { name: 'node', version: process.version } })
   }
-  t.diagnostic(`archive: exactly ${delivered.length} delivered IDs once each; every compressed object digest verified`)
+  t.diagnostic(`archive: all ${delivered.length} delivered IDs present; every compressed object digest verified`)
 })

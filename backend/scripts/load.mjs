@@ -16,7 +16,7 @@ const { values: opt, positionals } = parseArgs({
     seconds: { type: 'string', default: '30' },            // length of each step
     events: { type: 'string', default: '20' },             // events per request
     project: { type: 'string', default: '' },              // an existing project name; default creates one
-    'wait-seal': { type: 'string', default: '0' },         // seconds to wait for the final seal before reading archive sizes
+    'wait-seal': { type: 'string', default: '0' },         // seconds to wait before publishing and reading archive sizes
   },
 })
 const base = (positionals[0] ?? '').replace(/\/$/, '')
@@ -38,7 +38,7 @@ const request = (path, { method = 'POST', headers = {}, body } = {}) => new Prom
   req.setTimeout(30000, () => req.destroy(new Error('timeout')))
   req.end(body)
 })
-const rpc = async (service, method, body) => JSON.parse((await request(`/rpc/${service}/${method}`, { headers: { Authorization: `Bearer ${admin}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })).text)
+const rpc = async (method, body) => JSON.parse((await request(`/v1/rpc/${method}`, { headers: { Authorization: `Bearer ${admin}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })).text)
 
 // Varied, realistic product events (about 0.5 KB as JSON); random ids and values keep gzip honest.
 const names = ['page_viewed', 'button_clicked', 'export_started', 'export_completed', 'signed_up', 'project_created', 'error_shown']
@@ -54,8 +54,8 @@ const batch = (n) => Array.from({ length: n }, event).join('\n')
 const pct = (sorted, p) => sorted.length ? +sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))].toFixed(0) : null
 
 const name = opt.project || 'load_' + randomBytes(3).toString('hex')
-const created = opt.project ? null : await rpc('Project', 'CreateProject', { name })
-const projectId = created?.project?.id ?? (await rpc('Project', 'GetProject', { project: name })).project.id
+const created = opt.project ? null : await rpc('CreateProject', { name })
+const projectId = created?.project?.id ?? (await rpc('GetProject', { project: name })).project.id
 const pk = created?.publishableKey
 if (!pk) { console.error('need a fresh project (omit --project) to get an ingest key'); process.exit(2) }
 
@@ -90,10 +90,11 @@ for (const rate of opt.steps.split(',').map(Number)) {
 
 const wait = Number(opt['wait-seal'])
 if (wait) { console.error(`waiting ${wait}s for the final seal`); await new Promise((r) => setTimeout(r, wait * 1000)) }
-const listing = await rpc('Archive', 'ListObjects', { project: projectId, limit: 1000 }).catch((e) => ({ error: String(e) }))
-const objects = listing.objects ?? []
+await rpc('Publish', { project: projectId }).catch(() => {}) // publish what is buffered so the sizes below are real
+const listing = await rpc('ListArchives', { project: projectId, limit: 1000 }).catch((e) => ({ error: String(e) }))
+const objects = listing.archives ?? []
 const total = report.steps.reduce((n, s) => n + s.ok, 0) * perRequest
-report.archive = { objects: objects.length, bytes: objects.reduce((n, o) => n + Number(o.size ?? o.sizeBytes ?? 0), 0), eventsAccepted: total }
+report.archive = { objects: objects.length, bytes: objects.reduce((n, o) => n + Number(o.size ?? 0), 0), eventsAccepted: total }
 report.archive.bytesPerEvent = report.archive.bytes && total ? +(report.archive.bytes / total).toFixed(1) : null
 console.log(JSON.stringify(report, null, 2))
 agent.destroy()

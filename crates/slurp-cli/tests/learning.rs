@@ -1,3 +1,4 @@
+mod common;
 use serde_json::json;
 use slurp_app::{Workspace, skills};
 
@@ -31,7 +32,7 @@ fn skill_installation_is_complete_repeatable_and_preserves_edits() {
 }
 
 /// An agent that reads only the skill must be able to set up every way events arrive: where the key comes from, the feedback
-/// widget, the Segment and Sentry SDKs (Python included), the mobile SDKs and each webhook provider.
+/// widget, the Segment and Sentry SDKs (Python included), Swift through analytics-swift, plain HTTP and each webhook provider.
 #[test]
 fn the_skill_teaches_every_way_to_send_events() {
     let temp = tempfile::tempdir().expect("skill root");
@@ -47,7 +48,10 @@ fn the_skill_teaches_every_way_to_send_events() {
         "segment-analytics-python",
         "sentry_sdk.init",
         "@hitslop/slurp-react-native",
-        "SlurpClient.configure",
+        "segmentio/analytics-swift",
+        ".cdnHost(",
+        "?key=YOUR_PUBLISHABLE_KEY",
+        "slurp sync --now",
         "slurp project webhook YOUR_PROJECT_ID github",
         "slurp project webhook YOUR_PROJECT_ID revenuecat",
         "slurp project webhook YOUR_PROJECT_ID stripe",
@@ -77,7 +81,7 @@ fn skill_installation_rejects_symlink_resources() {
 
 #[test]
 fn recipes_preserve_denominators_maturity_boundaries_and_zero_activity() {
-    let Some(exe) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(exe) = common::duckdb() else {
         return;
     };
     let temp = tempfile::tempdir().expect("workspace");
@@ -90,16 +94,16 @@ fn recipes_preserve_denominators_maturity_boundaries_and_zero_activity() {
     )
     .expect("initialize");
     w.execute(
-        "INSERT INTO events(id,type,event,user_id,timestamp) VALUES
-        ('1','track','signed_up','a','2026-01-01T00:00:00Z'),
-        ('2','track','signed_up','b','2026-01-01T00:00:00Z'),
-        ('3','track','signed_up','d','2026-01-01T00:00:00Z'),
-        ('4','track','signed_up','c','2026-01-15T00:00:00Z'),
-        ('5','track','value_delivered','a','2026-01-08T00:00:00Z'),
-        ('6','track','value_delivered','a','2026-01-09T00:00:00Z'),
-        ('7','track','value_delivered','d','2026-01-15T00:00:00Z'),
-        ('8','track','value_delivered','c','2026-01-17T00:00:00Z'),
-        ('9','track','value_delivered','b','2026-01-02T00:00:00Z')",
+        "INSERT INTO events(sender,id,type,event,user_id,timestamp) VALUES
+        ('web','1','track','signed_up','a','2026-01-01T00:00:00Z'),
+        ('web','2','track','signed_up','b','2026-01-01T00:00:00Z'),
+        ('web','3','track','signed_up','d','2026-01-01T00:00:00Z'),
+        ('web','4','track','signed_up','c','2026-01-15T00:00:00Z'),
+        ('web','5','track','value_delivered','a','2026-01-08T00:00:00Z'),
+        ('web','6','track','value_delivered','a','2026-01-09T00:00:00Z'),
+        ('web','7','track','value_delivered','d','2026-01-15T00:00:00Z'),
+        ('web','8','track','value_delivered','c','2026-01-17T00:00:00Z'),
+        ('web','9','track','value_delivered','b','2026-01-02T00:00:00Z')",
         false,
     )
     .expect("fixture");
@@ -135,7 +139,7 @@ fn recipes_preserve_denominators_maturity_boundaries_and_zero_activity() {
 
 #[test]
 fn local_json_flags_and_sql_file_work_through_the_cli() {
-    let Some(exe) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(exe) = common::duckdb() else {
         return;
     };
     let temp = tempfile::tempdir().expect("workspace");

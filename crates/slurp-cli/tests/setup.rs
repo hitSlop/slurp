@@ -1,3 +1,4 @@
+mod common;
 use slurp_app::setup::{PageContext, write_page};
 #[test]
 fn personal_page_is_private_and_script_safe() {
@@ -38,7 +39,7 @@ fn personal_page_is_private_and_script_safe() {
 }
 #[test]
 fn machine_setup_ignores_current_project_and_never_embeds_credentials() {
-    let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(engine) = common::duckdb() else {
         return;
     };
     let dir = tempfile::tempdir().expect("temporary root");
@@ -103,7 +104,7 @@ fn machine_setup_ignores_current_project_and_never_embeds_credentials() {
 
 #[test]
 fn missing_default_library_never_falls_back_to_project_storage() {
-    let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(engine) = common::duckdb() else {
         return;
     };
     let root = tempfile::tempdir().expect("project");
@@ -146,7 +147,7 @@ fn missing_default_library_never_falls_back_to_project_storage() {
 
 #[test]
 fn setup_without_a_connected_worker_names_slurp_connect_not_login() {
-    let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(engine) = common::duckdb() else {
         return;
     };
     let dir = tempfile::tempdir().expect("temporary root");

@@ -1,0 +1,33 @@
+{
+ "description": "Envelope: the server's facts around the record, which is kept byte for byte and always last. receivedAtMs is when the Worker accepted the request; geo is the already-normalized object (or null).",
+ "cases": [
+  {
+   "name": "opaque values survive",
+   "receivedAtMs": 0,
+   "sender": "web",
+   "geo": null,
+   "line": "{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}",
+   "expected": "{\"received_at\":\"1970-01-01T00:00:00.000Z\",\"sender\":\"web\",\"record\":{\"id\":\"opaque\",\"type\":\"track\",\"event\":\"visit\",\"timestamp\":\"2026-11-03T00:00:00Z\",\"data\": {\"values\":[-0,1e1000,1.2300,9007199254740993123456789],\"text\":\"\\ud83d\\ude00\"}}}\n"
+  },
+  {
+   "name": "minimal record with geo",
+   "receivedAtMs": 1794052800123,
+   "sender": "ios",
+   "geo": {
+    "city": "Lyon",
+    "country": "FR",
+    "region": "ARA"
+   },
+   "line": "{\"event\":\"x\"}",
+   "expected": "{\"received_at\":\"2026-11-07T12:00:00.123Z\",\"sender\":\"ios\",\"geo\":{\"city\":\"Lyon\",\"country\":\"FR\",\"region\":\"ARA\"},\"record\":{\"event\":\"x\"}}\n"
+  },
+  {
+   "name": "a record that names the envelope fields is untouched",
+   "receivedAtMs": 0,
+   "sender": "a_b",
+   "geo": null,
+   "line": "{\"event\":\"x\",\"sender\":\"claimed\",\"received_at\":\"fake\"}",
+   "expected": "{\"received_at\":\"1970-01-01T00:00:00.000Z\",\"sender\":\"a_b\",\"record\":{\"event\":\"x\",\"sender\":\"claimed\",\"received_at\":\"fake\"}}\n"
+  }
+ ]
+}

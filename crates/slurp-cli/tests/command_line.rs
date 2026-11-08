@@ -105,3 +105,39 @@ fn read_takes_a_project_and_has_no_folder_mode() {
     assert!(!help.contains("--folder"), "{help}");
     assert_eq!(slurp(&["read"]).status.code(), Some(2));
 }
+
+#[test]
+fn removed_options_and_an_invalid_source_are_refused_without_a_server() {
+    let project = "prj_0123456789abcdef";
+    for removed in [
+        ["project", "webhook", project, "github", "--rotate"].as_slice(),
+        ["project", "update", project, "--title", "x"].as_slice(),
+        ["project", "create", "app", "--no-geo"].as_slice(),
+        ["project", "key", "list", project, "--geo"].as_slice(),
+    ] {
+        let output = slurp(removed);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{removed:?}: {}",
+            text(&output)
+        );
+    }
+    // Refused by the CLI itself, before anything is sent (the backend below is unreachable).
+    let output = slurp(&[
+        "--backend",
+        "http://127.0.0.1:1",
+        "send",
+        "x",
+        "--to",
+        project,
+        "--source",
+        "Web Site",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output).contains("a source is a lowercase name"),
+        "{}",
+        text(&output)
+    );
+}

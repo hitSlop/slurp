@@ -82,6 +82,31 @@ test('items are mapped or dropped on purpose; messages are not errors; gzip and 
   assert.equal(byEvent('check_in')[0].data.monitor_slug, 'nightly'); assert.equal(byEvent('error')[0].id, id('3'))
 })
 
+test('a timestamp that is not a real time never fails the request: the next candidate or the arrival time is used', async () => {
+  const s = await newProject(w.base, name('sentry_time'))
+  const headers = { 'x-sentry-auth': `Sentry sentry_version=7, sentry_client=x/1, sentry_key=${s.pk}` }
+  const sentAt = '2026-11-07T10:00:00.000Z'
+  const id = (n: number) => n.toString(16).padStart(32, '0')
+  // 1e300 is a valid JSON number whose date is not valid; the other items in the envelope must still be stored.
+  const res = await post('/api/1/envelope/', enc({ sent_at: sentAt }, // no event_id here: it would be every item's id
+    { type: 'event' }, errorEvent(id(1), { timestamp: 1e300 }),
+    { type: 'event' }, errorEvent(id(2), { timestamp: -1e300 }),
+    { type: 'event' }, errorEvent(id(3), { timestamp: 'not a date' }),
+    { type: 'event' }, errorEvent(id(4), { timestamp: 8.64e15 }),
+    { type: 'event' }, errorEvent(id(5), { timestamp: 1794075640.5 })), headers)
+  assert.equal(res.status, 200)
+  const byId = new Map((await archive(s)).map(l => [l.id, l]))
+  assert.equal(byId.size, 5, 'every item was kept')
+  for (const n of [1, 2, 3, 4]) assert.equal(byId.get(id(n)).timestamp, sentAt, `item ${n} falls back to the envelope's sent_at`)
+  assert.equal(byId.get(id(5)).timestamp, new Date(1794075640500).toISOString(), 'a good timestamp is untouched')
+  // With no sent_at either, it is the arrival time.
+  const before = Date.now()
+  const solo = await post('/api/1/envelope/', enc({ event_id: id(6) }, { type: 'event' }, errorEvent(id(6), { timestamp: 1e300 })), headers)
+  assert.equal(solo.status, 200)
+  const arrived = Date.parse((await archive(s)).find(l => l.id === id(6)).timestamp)
+  assert.ok(arrived >= before - 1000 && arrived <= Date.now() + 1000)
+})
+
 test('retries dedupe; an oversize event is dropped without failing the request; malformed input is 400; CORS preflight', async () => {
   const s = await newProject(w.base, name('sentryedge'))
   const auth = { 'x-sentry-auth': `Sentry sentry_key=${s.pk}` }

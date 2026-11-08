@@ -137,10 +137,14 @@ const healthService: w.HealthServer<Ctx> = {
   async version() { return { server: 'slurp-worker', schema: w.WebrpcSchemaVersion, webrpc: w.WebrpcVersion } },
 }
 
-async function signedUrl(c: Ctx, r2key: string): Promise<{ url: string; exp: number }> {
+/**
+ * Signs download URLs for one response: the signing secret is derived once and every URL gets the same expiry, so the expiry the
+ * response reports is the expiry of each URL in it.
+ */
+async function urlSigner(c: Ctx): Promise<{ exp: number; sign: (r2key: string) => Promise<string> }> {
+  const secret = await signingSecret(c.env)
   const exp = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_S
-  const sig = await hmacHex(await signingSecret(c.env), `${r2key}\n${exp}`)
-  return { url: `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${sig}`, exp }
+  return { exp, sign: async r2key => `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${await hmacHex(secret, `${r2key}\n${exp}`)}` }
 }
 const iso = (ms: number) => new Date(ms).toISOString()
 
@@ -167,14 +171,10 @@ const archiveService: w.ArchiveServer<Ctx> = {
     const after = r.after != null ? Number(r.after) : Number(cov.firstRetained) - 1
     const rows = await sd.listObjects(after, limit + 1)
     const page = rows.slice(0, limit)
-    let expiresAt = 0
+    const signer = await urlSigner(c)
     const objects: w.ArchiveObject[] = []
-    for (const m of page) {
-      const { url, exp } = await signedUrl(c, m.r2key)
-      expiresAt = exp * 1000
-      objects.push({ seq: String(m.seq), name: m.name, size: m.size, sha256: m.sha256, url })
-    }
-    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : undefined, expiresAt: expiresAt ? iso(expiresAt) : undefined }
+    for (const m of page) objects.push({ seq: String(m.seq), name: m.name, size: m.size, sha256: m.sha256, url: await signer.sign(m.r2key) })
+    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : undefined, expiresAt: objects.length ? iso(signer.exp * 1000) : undefined }
   },
   async getCoverage(c, r) {
     const s = await archiveAuth(c, r.project)

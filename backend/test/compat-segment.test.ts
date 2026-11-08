@@ -52,6 +52,17 @@ test('batch endpoints /v1/batch (Node) and /v1/b (Swift): key in the body, no Au
   assert.equal(lines.find(l => l.id === 'n-2').timestamp, '2026-11-07T10:00:05.000Z', 'a missing timestamp falls back to the batch sentAt')
 })
 
+test('a timestamp that is not a real time is replaced by sentAt or the arrival time, not stored as an impossible date', async () => {
+  const s = await newProject(w.base, name('segtime'))
+  const auth = { authorization: basic(s.pk), 'content-type': 'text/plain' }
+  const events = [1e300, 8.64e15, 'garbage', '+275760-09-13T00:00:00.000Z'].map((timestamp, i) => ({ messageId: `bad-${i}`, type: 'track', event: 'x', userId: 'u', timestamp }))
+  const res = await send('/v1/batch', { batch: [...events, { messageId: 'good', type: 'track', event: 'x', userId: 'u', timestamp: '2026-11-07T10:00:00.000Z' }], sentAt: '2026-11-07T11:00:00.000Z' }, auth)
+  assert.equal(res.status, 200)
+  const byId = new Map((await archive(s)).map(l => [l.id, l]))
+  for (let i = 0; i < events.length; i++) assert.equal(byId.get(`bad-${i}`).timestamp, '2026-11-07T11:00:00.000Z', `event ${i} uses sentAt`)
+  assert.equal(byId.get('good').timestamp, '2026-11-07T10:00:00.000Z')
+})
+
 test('a retried batch is deduplicated and a bad event does not cost the rest of its batch', async () => {
   const s = await newProject(w.base, name('segretry'))
   const body = { writeKey: s.pk, batch: [

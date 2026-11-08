@@ -1,5 +1,5 @@
 import { MAX_RECORD_BYTES, validateRecord } from '../canonical.ts'
-import { sha256Hex } from '../util.ts'
+import { isoOrUndefined, sha256Hex } from '../util.ts'
 import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody } from './common.ts'
 
 /**
@@ -34,13 +34,10 @@ const text = (v: unknown): string | undefined => {
 
 function timestampOf(msg: Record<string, unknown>, sentAt: string | undefined, now: number): string {
   for (const v of [msg.timestamp, msg.originalTimestamp]) {
-    if (typeof v === 'string' || typeof v === 'number') {
-      const ms = new Date(v).getTime()
-      if (Number.isFinite(ms)) return new Date(ms).toISOString()
-    }
+    const iso = isoOrUndefined(v)
+    if (iso) return iso
   }
-  const ms = sentAt ? new Date(sentAt).getTime() : NaN
-  return new Date(Number.isFinite(ms) ? ms : now).toISOString()
+  return isoOrUndefined(sentAt) ?? new Date(now).toISOString()
 }
 
 /** Translate one Segment message into a canonical record line, or explain why it cannot be. */

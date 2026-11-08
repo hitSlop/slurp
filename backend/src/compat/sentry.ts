@@ -1,5 +1,5 @@
 import { MAX_RECORD_BYTES, validateRecord } from '../canonical.ts'
-import { sha256Hex } from '../util.ts'
+import { isoOrUndefined, sha256Hex } from '../util.ts'
 import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody } from './common.ts'
 
 /**
@@ -95,9 +95,10 @@ export function parseEnvelope(bytes: Uint8Array): Envelope {
 const text = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
 
 function timestampOf(v: unknown, fallback: unknown, now: number): string {
+  // A client can send any number (`1e300` is a valid JSON number), so every candidate is checked and the next one tried.
   for (const c of [v, fallback]) {
-    if (typeof c === 'number' && Number.isFinite(c)) return new Date(c * 1000).toISOString() // Sentry uses unix seconds (float)
-    if (typeof c === 'string') { const ms = new Date(c).getTime(); if (Number.isFinite(ms)) return new Date(ms).toISOString() }
+    const iso = typeof c === 'number' ? isoOrUndefined(c * 1000) : isoOrUndefined(c) // Sentry uses unix seconds (float)
+    if (iso) return iso
   }
   return new Date(now).toISOString()
 }

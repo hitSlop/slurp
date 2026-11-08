@@ -1261,13 +1261,10 @@ var text = /* @__PURE__ */ __name((v) => {
 }, "text");
 function timestampOf(msg, sentAt, now) {
   for (const v of [msg.timestamp, msg.originalTimestamp]) {
-    if (typeof v === "string" || typeof v === "number") {
-      const ms2 = new Date(v).getTime();
-      if (Number.isFinite(ms2)) return new Date(ms2).toISOString();
-    }
+    const iso2 = isoOrUndefined(v);
+    if (iso2) return iso2;
   }
-  const ms = sentAt ? new Date(sentAt).getTime() : NaN;
-  return new Date(Number.isFinite(ms) ? ms : now).toISOString();
+  return isoOrUndefined(sentAt) ?? new Date(now).toISOString();
 }
 __name(timestampOf, "timestampOf");
 async function translateMessage(raw, type, sentAt, now) {
@@ -1477,11 +1474,8 @@ __name(parseEnvelope, "parseEnvelope");
 var text2 = /* @__PURE__ */ __name((v) => typeof v === "string" && v !== "" ? v : void 0, "text");
 function timestampOf2(v, fallback, now) {
   for (const c of [v, fallback]) {
-    if (typeof c === "number" && Number.isFinite(c)) return new Date(c * 1e3).toISOString();
-    if (typeof c === "string") {
-      const ms = new Date(c).getTime();
-      if (Number.isFinite(ms)) return new Date(ms).toISOString();
-    }
+    const iso2 = typeof c === "number" ? isoOrUndefined(c * 1e3) : isoOrUndefined(c);
+    if (iso2) return iso2;
   }
   return new Date(now).toISOString();
 }
@@ -2300,13 +2294,13 @@ var healthService = {
     return { server: "slurp-worker", schema: WebrpcSchemaVersion, webrpc: WebrpcVersion };
   }
 };
-async function signedUrl(c, r2key) {
+async function urlSigner(c) {
+  const secret = await signingSecret(c.env);
   const exp = Math.floor(Date.now() / 1e3) + SIGNED_URL_TTL_S;
-  const sig = await hmacHex(await signingSecret(c.env), `${r2key}
-${exp}`);
-  return { url: `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${sig}`, exp };
+  return { exp, sign: /* @__PURE__ */ __name(async (r2key) => `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${await hmacHex(secret, `${r2key}
+${exp}`)}`, "sign") };
 }
-__name(signedUrl, "signedUrl");
+__name(urlSigner, "urlSigner");
 var iso = /* @__PURE__ */ __name((ms) => new Date(ms).toISOString(), "iso");
 async function archiveAuth(c, ref) {
   if (!c.principal) throw new UnauthenticatedError();
@@ -2329,14 +2323,10 @@ var archiveService = {
     const after = r.after != null ? Number(r.after) : Number(cov.firstRetained) - 1;
     const rows = await sd.listObjects(after, limit + 1);
     const page = rows.slice(0, limit);
-    let expiresAt = 0;
+    const signer = await urlSigner(c);
     const objects = [];
-    for (const m of page) {
-      const { url, exp } = await signedUrl(c, m.r2key);
-      expiresAt = exp * 1e3;
-      objects.push({ seq: String(m.seq), name: m.name, size: m.size, sha256: m.sha256, url });
-    }
-    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: expiresAt ? iso(expiresAt) : void 0 };
+    for (const m of page) objects.push({ seq: String(m.seq), name: m.name, size: m.size, sha256: m.sha256, url: await signer.sign(m.r2key) });
+    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: objects.length ? iso(signer.exp * 1e3) : void 0 };
   },
   async getCoverage(c, r) {
     const s = await archiveAuth(c, r.project);

@@ -226,6 +226,9 @@ test('seal -> manifest -> Archive.ListObjects -> signed download, checkpoint and
     assert.equal(createHash('sha256').update(bytes).digest('hex'), o.sha256); assert.equal(bytes.length, o.size)
     assert.equal((await fetch(o.url.replace(/sig=.{4}/, 'sig=0000'))).status, 403)
   }
+  // One expiry for the whole listing: every URL carries it, and it is the one reported.
+  const exps = new Set(list.objects.map(o => new URL(o.url).searchParams.get('exp')))
+  assert.equal(exps.size, 1); assert.equal(new Date(Number([...exps][0]) * 1000).toISOString(), new Date(list.expiresAt!).toISOString())
   const page = await w.clients.archive.listObjects({ project: s.id, limit: 2 }, { Authorization: `Bearer ${s.sk}` })
   assert.equal(page.objects.length, 2); assert.equal(page.nextAfter, '2')
   assert.deepEqual((await w.clients.archive.listObjects({ project: s.id, after: '2' }, admin)).objects.map(o => o.seq), ['3'])

@@ -13,6 +13,8 @@ export interface CompatHost {
   webhookSecret(provider: string, project: string): Promise<string | null>
   /** Geo from Cloudflare's own request metadata, only when the project opted in. */
   geoFor(req: Request, geo: boolean): Geo | null
+  /** When a webhook delivery that has no time of its own first arrived (stored, so a redelivery gets the same time). */
+  firstSeen(project: string, id: string, now: number): Promise<number>
   maxBody: number
 }
 

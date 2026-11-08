@@ -153,3 +153,19 @@ test('webhooks: slurp project webhook gives the URL and secret, a signed GitHub 
   assert.equal(stripe.secret, '')
   assert.equal(run(['project', 'webhook', project, 'stripe', '--secret', STRIPE_SECRET, '--json']).json.secret, STRIPE_SECRET)
 })
+
+test('a webhook redelivered later syncs cleanly: the same delivery without a time is one event, not a conflict', { skip }, async () => {
+  const project = run(['status', '--project', ws, '--json']).json.project as string
+  const hook = run(['project', 'webhook', project, 'github', '--json']).json
+  const body = '{"action":"started","repository":{"full_name":"acme/shop"}}'
+  const post = () => fetch(hook.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'watch', 'x-github-delivery': 'redeliver-1', 'x-hub-signature-256': `sha256=${createHmac('sha256', hook.secret).update(body).digest('hex')}` } })
+  assert.equal((await post()).status, 200)
+  await debug(w.base, 'seal', project)
+  assert.equal(run(['sync', '--project', ws, '--json']).status, 0)
+  await new Promise(r => setTimeout(r, 1100))
+  assert.equal((await post()).status, 200, 'GitHub redelivers it a moment later')
+  await debug(w.base, 'seal', project)
+  const again = run(['sync', '--project', ws, '--json'])
+  assert.equal(again.status, 0, again.text) // used to stop with conflicting_event_id
+  assert.equal(run(['sql', "SELECT count(*) FROM events WHERE id = 'github:redeliver-1'", '--project', ws, '--json']).json.rows[0][0], 1)
+})

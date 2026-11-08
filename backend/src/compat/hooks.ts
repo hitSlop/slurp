@@ -1,5 +1,5 @@
 import { MAX_RECORD_BYTES, validateRecord } from '../canonical.ts'
-import { hmacBytesHex, sha256Hex, timingSafeEqual } from '../util.ts'
+import { hmacBytesHex, isoOrUndefined, sha256Hex, timingSafeEqual } from '../util.ts'
 import { type CompatHost, BodyTooLarge, ingestFailure, json, readBody } from './common.ts'
 
 /**
@@ -58,10 +58,6 @@ export async function stripeSignatureOk(body: Uint8Array, header: string | null,
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
 const at = (root: unknown, ...path: string[]): unknown => path.reduce<unknown>((node, key) => (isObject(node) ? node[key] : undefined), root)
-const iso = (v: unknown): string | undefined => {
-  const ms = typeof v === 'string' || typeof v === 'number' ? new Date(v).getTime() : NaN
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined
-}
 const fail = (status: number, error: string) => json(status, { error })
 
 /** Where in each kind of GitHub event the time of the thing that happened is. */
@@ -76,7 +72,8 @@ const GITHUB_TIME: Record<string, string[][]> = {
   issues: [['issue', 'updated_at']],
 }
 
-interface Described { event: string; id: string; delivery: string; at: string }
+/** `at` is when the thing happened according to the payload; without one, the time the delivery first arrived is used (see `firstSeen`). */
+interface Described { event: string; id: string; delivery: string; at?: string }
 
 export async function hookIngest(req: Request, route: { provider: string }, host: CompatHost): Promise<Response> {
   const provider = route.provider
@@ -118,31 +115,38 @@ export async function hookIngest(req: Request, route: { provider: string }, host
     if (kind === '') return fail(400, 'missing X-GitHub-Event')
     const action = str(at(payload, 'action'))
     const delivery = header('x-github-delivery') ?? `sha256-${await sha256Hex(bytes)}`
-    const when = (GITHUB_TIME[kind] ?? []).map(path => iso(at(payload, ...path))).find(Boolean)
-    described = { event: `github.${kind}${action ? `.${action}` : ''}`, id: `github:${delivery}`, delivery, at: when ?? new Date(now).toISOString() }
+    const when = (GITHUB_TIME[kind] ?? []).map(path => isoOrUndefined(at(payload, ...path))).find(Boolean)
+    described = { event: `github.${kind}${action ? `.${action}` : ''}`, id: `github:${delivery}`, delivery, at: when }
   } else if (provider === 'stripe') {
     const id = str(at(payload, 'id')), type = str(at(payload, 'type'))
     if (!id || !type) return fail(400, 'not a Stripe event (no id or type)')
     const created = at(payload, 'created')
-    described = { event: `stripe.${type}`, id, delivery: id, at: (typeof created === 'number' ? iso(created * 1000) : undefined) ?? new Date(now).toISOString() }
+    described = { event: `stripe.${type}`, id, delivery: id, at: typeof created === 'number' ? isoOrUndefined(created * 1000) : undefined }
   } else if (provider === 'revenuecat') {
     const id = str(at(payload, 'event', 'id')), type = str(at(payload, 'event', 'type'))
     if (!id || !type) return fail(400, 'not a RevenueCat event (no event.id or event.type)')
     const ms = at(payload, 'event', 'event_timestamp_ms')
     // Retries reuse event.id, so a redelivery is the same event and is stored once.
-    described = { event: `revenuecat.${type.toLowerCase()}`, id: `revenuecat:${id}`, delivery: id, at: (typeof ms === 'number' ? iso(ms) : undefined) ?? new Date(now).toISOString() }
+    described = { event: `revenuecat.${type.toLowerCase()}`, id: `revenuecat:${id}`, delivery: id, at: isoOrUndefined(ms) }
   } else {
     const query = new URL(req.url).searchParams.get('event')
     const named = query || str(at(payload, 'type')) || str(at(payload, 'event')) || 'webhook'
     const supplied = header('idempotency-key') ?? header('x-request-id') ?? header('x-delivery-id')
-    const delivery = supplied && encoder.encode(supplied).length <= 200 ? supplied : `sha256-${await sha256Hex(bytes)}`
-    described = { event: named, id: `generic:${delivery}`, delivery, at: iso(at(payload, 'timestamp')) ?? new Date(now).toISOString() }
+    const given = supplied && encoder.encode(supplied).length <= 200 ? supplied : null
+    const bodyTime = isoOrUndefined(at(payload, 'timestamp'))
+    // The id says which deliveries are the same event. A caller's own id does. Without one, a body that carries its own time is the
+    // same event when it is identical. A body with neither cannot be told from a repeat of itself (a heartbeat), so each POST is its own
+    // event: a retry then costs a duplicate, never a record that conflicts with its first copy.
+    const delivery = given ?? (bodyTime ? `sha256-${await sha256Hex(bytes)}` : `post-${crypto.randomUUID()}`)
+    described = { event: named, id: `generic:${delivery}`, delivery, at: bodyTime ?? (given ? undefined : new Date(now).toISOString()) }
   }
+  // A redelivery must produce the same record, so a delivery without a time of its own keeps the time it first arrived.
+  const happened = described.at ?? new Date(await host.firstSeen(principal.project, described.id, now)).toISOString()
 
   // The payload text goes in as it is. An array is wrapped, and anything that is not JSON (generic only) is kept as text.
   const data = !isJson ? JSON.stringify({ raw: text }) : isObject(payload) ? text : `{"items":${text}}`
   const event = [...described.event].slice(0, 200).join('')
-  const line = `{"id":${JSON.stringify(described.id)},"type":"track","event":${JSON.stringify(event)},"timestamp":"${described.at}","data":${data},"context":{"webhook":{"provider":"${provider}","delivery":${JSON.stringify(described.delivery)}}}}`
+  const line = `{"id":${JSON.stringify(described.id)},"type":"track","event":${JSON.stringify(event)},"timestamp":"${happened}","data":${data},"context":{"webhook":{"provider":"${provider}","delivery":${JSON.stringify(described.delivery)}}}}`
   const record = encoder.encode(line)
   if (record.length > MAX_RECORD_BYTES) return fail(413, 'the payload is larger than 1 MiB; Slurp stores payloads whole, so it is refused')
   const invalid = validateRecord(line)

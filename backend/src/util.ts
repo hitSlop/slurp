@@ -25,15 +25,26 @@ export const randomHex = (bytes: number) => bytesToHex(crypto.getRandomValues(ne
 export const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 export const fromB64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
 
-export async function hmacHex(secret: string, msg: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-  return bytesToHex(await crypto.subtle.sign('HMAC', key, enc.encode(msg)))
-}
 /** HMAC-SHA256 of raw bytes, as hex (a webhook body must be signed exactly as it arrived, not as decoded text). */
 export async function hmacBytesHex(secret: string, data: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
   return bytesToHex(await crypto.subtle.sign('HMAC', key, data as BufferSource))
 }
+export const hmacHex = (secret: string, msg: string): Promise<string> => hmacBytesHex(secret, enc.encode(msg))
+
+const MIN_TIME_MS = 0 // 1970-01-01
+const MAX_TIME_MS = 253_402_300_799_999 // 9999-12-31T23:59:59.999Z
+/**
+ * A time as an ISO string, or undefined when it is not a real one: a number of milliseconds, or text a Date can read. NaN, infinity,
+ * and anything before 1970 or after year 9999 are refused rather than thrown on (`new Date(1e300).toISOString()` is a RangeError).
+ */
+export function isoOrUndefined(value: unknown): string | undefined {
+  const ms = typeof value === 'number' ? value : typeof value === 'string' ? new Date(value).getTime() : NaN
+  return Number.isFinite(ms) && ms >= MIN_TIME_MS && ms <= MAX_TIME_MS ? new Date(ms).toISOString() : undefined
+}
+
+/** A positive number from an environment variable (a string), or the default. */
+export const envNumber = (value: string | undefined, fallback: number): number => (Number(value) > 0 ? Number(value) : fallback)
 export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false
   let d = 0

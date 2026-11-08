@@ -8,16 +8,20 @@ var sha256Hex = /* @__PURE__ */ __name(async (d) => bytesToHex(await crypto.subt
 var randomHex = /* @__PURE__ */ __name((bytes) => bytesToHex(crypto.getRandomValues(new Uint8Array(bytes)).buffer), "randomHex");
 var b64url = /* @__PURE__ */ __name((b) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""), "b64url");
 var fromB64url = /* @__PURE__ */ __name((s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)), "fromB64url");
-async function hmacHex(secret, msg) {
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return bytesToHex(await crypto.subtle.sign("HMAC", key, enc.encode(msg)));
-}
-__name(hmacHex, "hmacHex");
 async function hmacBytesHex(secret, data) {
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return bytesToHex(await crypto.subtle.sign("HMAC", key, data));
 }
 __name(hmacBytesHex, "hmacBytesHex");
+var hmacHex = /* @__PURE__ */ __name((secret, msg) => hmacBytesHex(secret, enc.encode(msg)), "hmacHex");
+var MIN_TIME_MS = 0;
+var MAX_TIME_MS = 253402300799999;
+function isoOrUndefined(value) {
+  const ms = typeof value === "number" ? value : typeof value === "string" ? new Date(value).getTime() : NaN;
+  return Number.isFinite(ms) && ms >= MIN_TIME_MS && ms <= MAX_TIME_MS ? new Date(ms).toISOString() : void 0;
+}
+__name(isoOrUndefined, "isoOrUndefined");
+var envNumber = /* @__PURE__ */ __name((value, fallback) => Number(value) > 0 ? Number(value) : fallback, "envNumber");
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
   let d = 0;
@@ -1600,10 +1604,6 @@ __name(stripeSignatureOk, "stripeSignatureOk");
 var isObject3 = /* @__PURE__ */ __name((v) => typeof v === "object" && v !== null && !Array.isArray(v), "isObject");
 var str = /* @__PURE__ */ __name((v) => typeof v === "string" && v !== "" ? v : void 0, "str");
 var at = /* @__PURE__ */ __name((root, ...path) => path.reduce((node, key) => isObject3(node) ? node[key] : void 0, root), "at");
-var iso = /* @__PURE__ */ __name((v) => {
-  const ms = typeof v === "string" || typeof v === "number" ? new Date(v).getTime() : NaN;
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : void 0;
-}, "iso");
 var fail = /* @__PURE__ */ __name((status, error) => json(status, { error }), "fail");
 var GITHUB_TIME = {
   release: [["release", "published_at"], ["release", "created_at"]],
@@ -1660,28 +1660,31 @@ async function hookIngest(req, route, host) {
     if (kind === "") return fail(400, "missing X-GitHub-Event");
     const action = str(at(payload, "action"));
     const delivery = header("x-github-delivery") ?? `sha256-${await sha256Hex(bytes)}`;
-    const when = (GITHUB_TIME[kind] ?? []).map((path) => iso(at(payload, ...path))).find(Boolean);
-    described = { event: `github.${kind}${action ? `.${action}` : ""}`, id: `github:${delivery}`, delivery, at: when ?? new Date(now).toISOString() };
+    const when = (GITHUB_TIME[kind] ?? []).map((path) => isoOrUndefined(at(payload, ...path))).find(Boolean);
+    described = { event: `github.${kind}${action ? `.${action}` : ""}`, id: `github:${delivery}`, delivery, at: when };
   } else if (provider === "stripe") {
     const id = str(at(payload, "id")), type = str(at(payload, "type"));
     if (!id || !type) return fail(400, "not a Stripe event (no id or type)");
     const created = at(payload, "created");
-    described = { event: `stripe.${type}`, id, delivery: id, at: (typeof created === "number" ? iso(created * 1e3) : void 0) ?? new Date(now).toISOString() };
+    described = { event: `stripe.${type}`, id, delivery: id, at: typeof created === "number" ? isoOrUndefined(created * 1e3) : void 0 };
   } else if (provider === "revenuecat") {
     const id = str(at(payload, "event", "id")), type = str(at(payload, "event", "type"));
     if (!id || !type) return fail(400, "not a RevenueCat event (no event.id or event.type)");
     const ms = at(payload, "event", "event_timestamp_ms");
-    described = { event: `revenuecat.${type.toLowerCase()}`, id: `revenuecat:${id}`, delivery: id, at: (typeof ms === "number" ? iso(ms) : void 0) ?? new Date(now).toISOString() };
+    described = { event: `revenuecat.${type.toLowerCase()}`, id: `revenuecat:${id}`, delivery: id, at: isoOrUndefined(ms) };
   } else {
     const query = new URL(req.url).searchParams.get("event");
     const named = query || str(at(payload, "type")) || str(at(payload, "event")) || "webhook";
     const supplied = header("idempotency-key") ?? header("x-request-id") ?? header("x-delivery-id");
-    const delivery = supplied && encoder.encode(supplied).length <= 200 ? supplied : `sha256-${await sha256Hex(bytes)}`;
-    described = { event: named, id: `generic:${delivery}`, delivery, at: iso(at(payload, "timestamp")) ?? new Date(now).toISOString() };
+    const given = supplied && encoder.encode(supplied).length <= 200 ? supplied : null;
+    const bodyTime = isoOrUndefined(at(payload, "timestamp"));
+    const delivery = given ?? (bodyTime ? `sha256-${await sha256Hex(bytes)}` : `post-${crypto.randomUUID()}`);
+    described = { event: named, id: `generic:${delivery}`, delivery, at: bodyTime ?? (given ? void 0 : new Date(now).toISOString()) };
   }
+  const happened = described.at ?? new Date(await host.firstSeen(principal.project, described.id, now)).toISOString();
   const data = !isJson ? JSON.stringify({ raw: text3 }) : isObject3(payload) ? text3 : `{"items":${text3}}`;
   const event = [...described.event].slice(0, 200).join("");
-  const line = `{"id":${JSON.stringify(described.id)},"type":"track","event":${JSON.stringify(event)},"timestamp":"${described.at}","data":${data},"context":{"webhook":{"provider":"${provider}","delivery":${JSON.stringify(described.delivery)}}}}`;
+  const line = `{"id":${JSON.stringify(described.id)},"type":"track","event":${JSON.stringify(event)},"timestamp":"${happened}","data":${data},"context":{"webhook":{"provider":"${provider}","delivery":${JSON.stringify(described.delivery)}}}}`;
   const record = encoder.encode(line);
   if (record.length > MAX_RECORD_BYTES) return fail(413, "the payload is larger than 1 MiB; Slurp stores payloads whole, so it is refused");
   const invalid = validateRecord(line);
@@ -1843,6 +1846,21 @@ var ProjectDO = class extends DurableObject2 {
     if (!k) return { ok: false, code: "notfound", message: "key" };
     if (!k.revoked_at) this.w("UPDATE keys SET revoked_at=? WHERE key_id=?", (/* @__PURE__ */ new Date()).toISOString(), keyId);
     return { ok: true, value: this.sql.exec("SELECT * FROM keys WHERE key_id=?", keyId).one() };
+  }
+  /**
+   * When a webhook delivery that carries no time of its own first arrived. A provider redelivers the same delivery with the same id,
+   * and its record must not change (the importer treats the same id with different content as a conflict), so the first arrival time
+   * is kept and returned again. Rows older than a week are dropped (GitHub redelivers within about three days). The table is made on
+   * first use, so deployments that existed before it did not need a migration.
+   */
+  firstSeen(id, now) {
+    this.sql.exec("CREATE TABLE IF NOT EXISTS hook_seen(id TEXT PRIMARY KEY, first_seen INTEGER NOT NULL)");
+    this.w("INSERT INTO hook_seen VALUES(?,?) ON CONFLICT(id) DO NOTHING", id, now);
+    return this.sql.exec("SELECT first_seen FROM hook_seen WHERE id=?", id).one().first_seen;
+  }
+  pruneHookSeen() {
+    if (this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hook_seen'").toArray().length === 0) return;
+    this.w("DELETE FROM hook_seen WHERE first_seen<?", Date.now() - 7 * 864e5);
   }
   /** Webhook secrets are derived from this counter, so changing it changes this project's secrets (every provider) and no one else's. */
   webhookEpoch() {
@@ -2027,6 +2045,7 @@ var ProjectDO = class extends DurableObject2 {
     await this.flush();
     await this.seal();
     await this.sweep();
+    this.pruneHookSeen();
     const g = this.gen();
     const left = this.sql.exec(`SELECT COUNT(*) c FROM b_${g}`).one().c;
     if (left > 0 && await this.ctx.storage.getAlarm() === null) {
@@ -2259,7 +2278,7 @@ ${exp}`);
   return { url: `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${sig}`, exp };
 }
 __name(signedUrl, "signedUrl");
-var iso2 = /* @__PURE__ */ __name((ms) => new Date(ms).toISOString(), "iso");
+var iso = /* @__PURE__ */ __name((ms) => new Date(ms).toISOString(), "iso");
 async function archiveAuth(c, ref) {
   if (!c.principal) throw new UnauthenticatedError();
   const s = await resolveOrThrow(c, ref);
@@ -2268,7 +2287,7 @@ async function archiveAuth(c, ref) {
 }
 __name(archiveAuth, "archiveAuth");
 var retentionSeconds = /* @__PURE__ */ __name((env) => Number(env.RETENTION_DAYS) > 0 ? Number(env.RETENTION_DAYS) * 86400 : 0, "retentionSeconds");
-var covOut = /* @__PURE__ */ __name((c, cov) => ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso2(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) }), "covOut");
+var covOut = /* @__PURE__ */ __name((c, cov) => ({ archiveId: cov.archiveId, firstRetained: cov.firstRetained, latestPublished: cov.latestPublished, latestPublishedAt: iso(cov.latestPublishedAt), retentionSeconds: retentionSeconds(c.env) }), "covOut");
 var archiveService = {
   async listObjects(c, r) {
     const s = await archiveAuth(c, r.project);
@@ -2288,7 +2307,7 @@ var archiveService = {
       expiresAt = exp * 1e3;
       objects.push({ seq: String(m.seq), name: m.name, size: m.size, sha256: m.sha256, url });
     }
-    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: expiresAt ? iso2(expiresAt) : void 0 };
+    return { coverage: covOut(c, cov), objects, nextAfter: rows.length > limit ? String(page[page.length - 1].seq) : void 0, expiresAt: expiresAt ? iso(expiresAt) : void 0 };
   },
   async getCoverage(c, r) {
     const s = await archiveAuth(c, r.project);
@@ -2315,7 +2334,7 @@ async function ingest(req, env) {
   if (isAdmin(token, env)) return jsonError(403, "publishable key required");
   const m = KEY.exec(token);
   if (!m) return jsonError(401, "invalid token");
-  const max = Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY;
+  const max = envNumber(env.MAX_BODY_BYTES, DEFAULT_MAX_BODY);
   const declared = Number(req.headers.get("content-length") ?? 0);
   if (declared > max) return jsonError(413, "body too large");
   const body = new Uint8Array(await req.arrayBuffer());
@@ -2384,7 +2403,8 @@ function compatHost(env) {
       return provider === "stripe" ? stub.providerSecret(provider) : webhookSecret(env, provider, project, await stub.webhookEpoch());
     },
     geoFor: /* @__PURE__ */ __name((req, geo) => geo ? normalizeGeo(req.cf) : null, "geoFor"),
-    maxBody: Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY
+    firstSeen: /* @__PURE__ */ __name((project, id, now) => projectDO(env, project).firstSeen(id, now), "firstSeen"),
+    maxBody: envNumber(env.MAX_BODY_BYTES, DEFAULT_MAX_BODY)
   };
 }
 __name(compatHost, "compatHost");

@@ -189,6 +189,60 @@ test('the generic receiver: unsigned by default, optionally signed, with the eve
   assert.ok(lines.every(l => l.sender === 'generic'))
 })
 
+// A provider redelivers a delivery with the same id; the record must come out identical or the importer calls it a conflict.
+const producer = (line: any) => { const { received_at, received_seq, ...rest } = line; return rest }
+const pause = (ms: number) => new Promise(r => setTimeout(r, ms))
+/** However many copies were stored (the Worker drops an identical retry it just saw; a later one is kept and the importer skips it), they are one record. */
+const oneRecord = (lines: any[]) => lines.length >= 1 && new Set(lines.map(l => JSON.stringify(producer(l)))).size === 1
+
+test('a delivery with no time of its own keeps the time it first arrived, however late it is redelivered', async () => {
+  const { p, hook, url } = await setup('github')
+  const body = '{"action":"started","repository":{"full_name":"acme/shop"}}' // a watch event: no timestamp anywhere in it
+  const send = () => fetch(url, { method: 'POST', headers: github(body, hook.secret, 'watch', 'late-1'), body })
+  assert.equal((await send()).status, 200)
+  await pause(40)
+  assert.equal((await send()).status, 200, 'GitHub redelivers the same delivery id')
+  assert.ok(oneRecord((await stored(p)).filter(l => l.id === 'github:late-1')), 'the two copies are identical, so the importer treats them as one event')
+  // A different delivery is a different event with its own, later time.
+  await pause(40)
+  assert.equal((await fetch(url, { method: 'POST', headers: github(body, hook.secret, 'watch', 'late-2'), body })).status, 200)
+  const all = (await stored(p)).filter(l => l.event === 'github.watch.started')
+  const first = all.find(l => l.id === 'github:late-1'), other = all.find(l => l.id === 'github:late-2')
+  assert.ok(first && other); assert.ok(other.timestamp > first.timestamp)
+})
+
+test('Stripe and RevenueCat deliveries without a time are stable on redelivery too', async () => {
+  const stripeHook = await setup('stripe'), rc = await setup('revenuecat')
+  const noTime = '{"id":"evt_notime","type":"ping.test"}'
+  const rcBody = '{"event":{"id":"rc-notime","type":"TEST"}}'
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.equal((await fetch(stripeHook.url, { method: 'POST', headers: stripe(noTime, stripeHook.hook.secret), body: noTime })).status, 200)
+    assert.equal((await fetch(rc.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: rc.hook.secret }, body: rcBody })).status, 200)
+    await pause(40)
+  }
+  for (const project of [stripeHook.p, rc.p]) {
+    const lines = await stored(project)
+    assert.ok(oneRecord(lines), JSON.stringify(lines.map(producer)))
+  }
+})
+
+test('the generic receiver: a caller\'s id or a body time make retries identical; a body with neither is its own event each time', async () => {
+  const { p, url } = await setup('generic')
+  const send = (body: string, headers: Record<string, string> = {}) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body })
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.equal((await send('{"type":"job.done"}', { 'idempotency-key': 'job-9' })).status, 200)
+    assert.equal((await send('{"type":"tick","timestamp":"2026-11-06T10:00:00Z"}')).status, 200)
+    assert.equal((await send('{"type":"heartbeat"}')).status, 200)
+    await pause(40)
+  }
+  const lines = await stored(p)
+  const of = (event: string) => lines.filter(l => l.event === event)
+  assert.ok(oneRecord(of('job.done')), 'same caller id, same record')
+  assert.ok(oneRecord(of('tick')), 'same body and time, same record')
+  assert.equal(of('tick')[0].timestamp, '2026-11-06T10:00:00.000Z')
+  assert.equal(of('heartbeat').length, 2); assert.notEqual(of('heartbeat')[0].id, of('heartbeat')[1].id, 'a repeat of a body with no id and no time is a new event')
+})
+
 test('a payload over 1 MiB is refused with 413, not truncated', async () => {
   const { hook, url } = await setup('github')
   const big = JSON.stringify({ action: 'created', filler: 'x'.repeat(1024 * 1024 + 10) })

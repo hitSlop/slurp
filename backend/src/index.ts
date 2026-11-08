@@ -1,4 +1,4 @@
-import { type Env, hmacHex, timingSafeEqual, b64url, fromB64url } from './util.ts'
+import { type Env, envNumber, hmacHex, timingSafeEqual, b64url, fromB64url } from './util.ts'
 import { normalizeGeo } from './canonical.ts'
 import { setupPage } from './landing.ts'
 import * as w from './slurp.gen.ts'
@@ -205,7 +205,7 @@ async function ingest(req: Request, env: Env): Promise<Response> {
   if (isAdmin(token, env)) return jsonError(403, 'publishable key required')
   const m = KEY.exec(token)
   if (!m) return jsonError(401, 'invalid token')
-  const max = Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY
+  const max = envNumber(env.MAX_BODY_BYTES, DEFAULT_MAX_BODY)
   const declared = Number(req.headers.get('content-length') ?? 0)
   if (declared > max) return jsonError(413, 'body too large')
   const body = new Uint8Array(await req.arrayBuffer())
@@ -270,7 +270,8 @@ function compatHost(env: Env): CompatHost {
       return provider === 'stripe' ? stub.providerSecret(provider) : webhookSecret(env, provider, project, await stub.webhookEpoch())
     },
     geoFor: (req, geo) => (geo ? normalizeGeo((req as Request & { cf?: any }).cf) : null),
-    maxBody: Number(env.MAX_BODY_BYTES) > 0 ? Number(env.MAX_BODY_BYTES) : DEFAULT_MAX_BODY,
+    firstSeen: (project, id, now) => projectDO(env, project).firstSeen(id, now),
+    maxBody: envNumber(env.MAX_BODY_BYTES, DEFAULT_MAX_BODY),
   }
 }
 

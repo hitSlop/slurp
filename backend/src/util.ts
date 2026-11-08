@@ -27,6 +27,11 @@ export const randomHex = (bytes: number) => bytesToHex(crypto.getRandomValues(ne
 export const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 export const fromB64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
 
+/** An HMAC-SHA256 signer for one secret: the key is imported once, then each message is signed (as hex). */
+export async function hmacSigner(secret: string): Promise<(msg: string) => Promise<string>> {
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  return async msg => bytesToHex(await crypto.subtle.sign('HMAC', key, enc.encode(msg)))
+}
 /** HMAC-SHA256 of raw bytes, as hex (a webhook body must be signed exactly as it arrived, not as decoded text). */
 export async function hmacBytesHex(secret: string, data: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])

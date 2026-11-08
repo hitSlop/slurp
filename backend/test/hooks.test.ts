@@ -211,6 +211,17 @@ test('a delivery with no time of its own keeps the time it first arrived, howeve
   assert.ok(first && other); assert.ok(other.timestamp > first.timestamp)
 })
 
+test('a delivery first seen long ago keeps its time: nothing ages the record out', async () => {
+  const { p, hook, url } = await setup('github')
+  const ago = Date.now() - 8 * 86_400_000 // longer than any provider keeps redelivering, and longer than a week
+  await fetch(`${w.base}/__debug/seed-hook/${p.id}?id=${encodeURIComponent('github:old-1')}&at=${ago}`, { headers: admin })
+  await fetch(`${w.base}/__debug/alarm/${p.id}`, { headers: admin }) // the alarm runs housekeeping; it must not drop the record of a delivery
+  const body = '{"action":"started","repository":{"full_name":"acme/shop"}}'
+  assert.equal((await fetch(url, { method: 'POST', headers: github(body, hook.secret, 'watch', 'old-1'), body })).status, 200)
+  const line = (await stored(p)).find(l => l.id === 'github:old-1')
+  assert.equal(line.timestamp, new Date(ago).toISOString(), 'the redelivery carries the time of the first arrival, not today')
+})
+
 test('Stripe and RevenueCat deliveries without a time are stable on redelivery too', async () => {
   const stripeHook = await setup('stripe'), rc = await setup('revenuecat')
   const noTime = '{"id":"evt_notime","type":"ping.test"}'

@@ -30,9 +30,22 @@ One `track` event per delivery:
 | GitHub | `github.<event>` plus `.<action>` when there is one: `github.release.published`, `github.workflow_run.completed`, `github.deployment_status.created` | `github:<X-GitHub-Delivery>` | From the payload (the release's `published_at`, a run's `updated_at`...), else when it arrived |
 | Stripe | `stripe.<type>`: `stripe.invoice.paid` | the Stripe event id (`evt_…`) | Stripe's `created` |
 | RevenueCat | `revenuecat.<type lowercased>`: `revenuecat.initial_purchase`, `revenuecat.renewal`, `revenuecat.cancellation`, `revenuecat.billing_issue`; the dashboard's test event is `revenuecat.test` | `revenuecat:<event id>` (a retry reuses it) | RevenueCat's `event_timestamp_ms` |
-| Generic | `?event=NAME`, else the body's `type` or `event`, else `webhook` | `generic:<Idempotency-Key, X-Request-Id or X-Delivery-Id>`, else a hash of the body | The body's `timestamp`, else when it arrived |
+| Generic | `?event=NAME`, else the body's `type` or `event`, else `webhook` | `generic:<Idempotency-Key, X-Request-Id or X-Delivery-Id>`; else, when the body has its own `timestamp`, a hash of the body; else a fresh id for every POST | The body's `timestamp`, else when it arrived (for a delivery with an id, the first time it arrived) |
 
-`data` is the payload as sent (numbers and key order untouched); `context.webhook` says which provider and delivery. A JSON array is wrapped as `{"items": [...]}` and a body that is not JSON (generic only) as `{"raw": "..."}`. A provider that redelivers the same delivery id makes one row, not two.
+`data` is the payload as sent (numbers and key order untouched); `context.webhook` says which provider and delivery. A JSON array is wrapped as `{"items": [...]}` and a body that is not JSON (generic only) as `{"raw": "..."}`. A provider that redelivers the same delivery id makes one row, not two, and a delivery that carries no time of its own keeps the time it **first** arrived, however late the redelivery is.
+
+### Sending your own events through `generic`
+
+Tell Slurp which POSTs are retries of each other by sending an `Idempotency-Key` (or `X-Request-Id`, or `X-Delivery-Id`) header:
+
+```sh
+curl -X POST "$URL&event=deploy.finished" \
+  -H "Idempotency-Key: deploy-2026-11-07-17" \
+  -H "content-type: application/json" \
+  -d '{"env":"prod","ok":true}'
+```
+
+Sending that request again, for instance after a timeout, is one event. Without the header, a body that carries its own `timestamp` is one event per identical body, and a body with **neither** (a heartbeat, for example) is a new event each time it is sent: Slurp cannot tell a retry from a repeat, and a duplicate is safer than a silently dropped event.
 
 ```sql
 SELECT sender, event, count(*) FROM events WHERE sender IN ('github', 'stripe', 'revenuecat') GROUP BY 1, 2;

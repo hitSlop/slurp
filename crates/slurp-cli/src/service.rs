@@ -367,6 +367,7 @@ async fn run(cli: Global, command: Command) -> Result<u8> {
                 ],
                 _ => &[
                     "POST any body to the url above. Name the event with ?event=NAME (or a `type` or `event` field in a JSON body).",
+                    "Send an Idempotency-Key header so a retry of the same POST is one event; without one, each POST is its own event unless the body has a `timestamp`.",
                     "Optional: sign the body with HMAC-SHA256 using the secret and send X-Slurp-Signature: sha256=<hex>; a wrong signature is refused.",
                 ],
             };

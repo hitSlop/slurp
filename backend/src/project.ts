@@ -131,17 +131,14 @@ export class ProjectDO extends DurableObject<Env> {
   /**
    * When a webhook delivery that carries no time of its own first arrived. A provider redelivers the same delivery with the same id,
    * and its record must not change (the importer treats the same id with different content as a conflict), so the first arrival time
-   * is kept and returned again. Rows older than a week are dropped (GitHub redelivers within about three days). The table is made on
-   * first use, so deployments that existed before it did not need a migration.
+   * is kept and returned again, however late the redelivery is: a row is about 100 bytes and only deliveries with no time of their own
+   * have one, so they are kept until the project is purged rather than aged out. The table is made on first use, so deployments that
+   * existed before it did not need a migration.
    */
   firstSeen(id: string, now: number): number {
     this.sql.exec('CREATE TABLE IF NOT EXISTS hook_seen(id TEXT PRIMARY KEY, first_seen INTEGER NOT NULL)')
     this.w('INSERT INTO hook_seen VALUES(?,?) ON CONFLICT(id) DO NOTHING', id, now)
     return (this.sql.exec('SELECT first_seen FROM hook_seen WHERE id=?', id).one() as { first_seen: number }).first_seen
-  }
-  private pruneHookSeen(): void {
-    if (this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hook_seen'").toArray().length === 0) return
-    this.w('DELETE FROM hook_seen WHERE first_seen<?', Date.now() - 7 * 86_400_000)
   }
   /** Webhook secrets are derived from this counter, so changing it changes this project's secrets (every provider) and no one else's. */
   webhookEpoch(): number { return this.initialized() ? Number(this.meta('webhook_epoch') ?? 0) : 0 }
@@ -308,7 +305,6 @@ export class ProjectDO extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(Date.now() + delay)
       return
     }
-    this.pruneHookSeen()
     const g = this.gen()
     const left = (this.sql.exec(`SELECT COUNT(*) c FROM b_${g}`).one() as { c: number }).c
     if (left > 0 && (await this.ctx.storage.getAlarm()) === null) {
@@ -382,6 +378,8 @@ export class ProjectDO extends DurableObject<Env> {
   /** Test hooks (DEBUG only): break or heal archive writes, and run the alarm handler now. */
   async setFailArchive(on: boolean): Promise<void> { this.failArchive = on }
   async runAlarm(): Promise<void> { await this.alarm() }
+  /** Test hook (DEBUG only): pretend a delivery was first seen at `ms`. */
+  async seedHook(id: string, ms: number): Promise<void> { this.firstSeen(id, ms) }
   /** Debug statistics (the DEBUG routes only). */
   async stats() {
     if (!this.initialized()) return { pending: false, rows: 0, pendingBytes: 0, queued: 0, gen: 0, sealing: null, manifest: 0, alarm: null }

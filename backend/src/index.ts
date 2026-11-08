@@ -1,4 +1,4 @@
-import { type Env, envNumber, hmacHex, timingSafeEqual, b64url, fromB64url } from './util.ts'
+import { type Env, envNumber, hmacHex, hmacSigner, timingSafeEqual, b64url, fromB64url } from './util.ts'
 import { normalizeGeo } from './canonical.ts'
 import { setupPage } from './landing.ts'
 import * as w from './slurp.gen.ts'
@@ -138,13 +138,13 @@ const healthService: w.HealthServer<Ctx> = {
 }
 
 /**
- * Signs download URLs for one response: the signing secret is derived once and every URL gets the same expiry, so the expiry the
+ * Signs download URLs for one response: the signing secret is derived and the HMAC key imported once, and every URL gets the same expiry, so the expiry the
  * response reports is the expiry of each URL in it.
  */
 async function urlSigner(c: Ctx): Promise<{ exp: number; sign: (r2key: string) => Promise<string> }> {
-  const secret = await signingSecret(c.env)
+  const mac = await hmacSigner(await signingSecret(c.env))
   const exp = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_S
-  return { exp, sign: async r2key => `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${await hmacHex(secret, `${r2key}\n${exp}`)}` }
+  return { exp, sign: async r2key => `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${await mac(`${r2key}\n${exp}`)}` }
 }
 const iso = (ms: number) => new Date(ms).toISOString()
 
@@ -320,6 +320,7 @@ export default {
       if (op === 'fail-flush') { await stub.failNextFlush(); return Response.json({ ok: true }) }
       if (op === 'fail-archive' || op === 'heal-archive') { await stub.setFailArchive(op === 'fail-archive'); return Response.json({ ok: true }) }
       if (op === 'alarm') { await stub.runAlarm(); return Response.json(await stub.stats()) }
+      if (op === 'seed-hook') { await stub.seedHook(url.searchParams.get('id') ?? '', Number(url.searchParams.get('at'))); return Response.json({ ok: true }) }
       if (op === 'stats') return Response.json(await stub.stats())
     }
     return (await w.serveHealthRpc(healthService, ctx, req))

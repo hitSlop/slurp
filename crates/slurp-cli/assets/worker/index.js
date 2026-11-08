@@ -8,6 +8,11 @@ var sha256Hex = /* @__PURE__ */ __name(async (d) => bytesToHex(await crypto.subt
 var randomHex = /* @__PURE__ */ __name((bytes) => bytesToHex(crypto.getRandomValues(new Uint8Array(bytes)).buffer), "randomHex");
 var b64url = /* @__PURE__ */ __name((b) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""), "b64url");
 var fromB64url = /* @__PURE__ */ __name((s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)), "fromB64url");
+async function hmacSigner(secret) {
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return async (msg) => bytesToHex(await crypto.subtle.sign("HMAC", key, enc.encode(msg)));
+}
+__name(hmacSigner, "hmacSigner");
 async function hmacBytesHex(secret, data) {
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return bytesToHex(await crypto.subtle.sign("HMAC", key, data));
@@ -1847,17 +1852,14 @@ var ProjectDO = class extends DurableObject2 {
   /**
    * When a webhook delivery that carries no time of its own first arrived. A provider redelivers the same delivery with the same id,
    * and its record must not change (the importer treats the same id with different content as a conflict), so the first arrival time
-   * is kept and returned again. Rows older than a week are dropped (GitHub redelivers within about three days). The table is made on
-   * first use, so deployments that existed before it did not need a migration.
+   * is kept and returned again, however late the redelivery is: a row is about 100 bytes and only deliveries with no time of their own
+   * have one, so they are kept until the project is purged rather than aged out. The table is made on first use, so deployments that
+   * existed before it did not need a migration.
    */
   firstSeen(id, now) {
     this.sql.exec("CREATE TABLE IF NOT EXISTS hook_seen(id TEXT PRIMARY KEY, first_seen INTEGER NOT NULL)");
     this.w("INSERT INTO hook_seen VALUES(?,?) ON CONFLICT(id) DO NOTHING", id, now);
     return this.sql.exec("SELECT first_seen FROM hook_seen WHERE id=?", id).one().first_seen;
-  }
-  pruneHookSeen() {
-    if (this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hook_seen'").toArray().length === 0) return;
-    this.w("DELETE FROM hook_seen WHERE first_seen<?", Date.now() - 7 * 864e5);
   }
   /** Webhook secrets are derived from this counter, so changing it changes this project's secrets (every provider) and no one else's. */
   webhookEpoch() {
@@ -2058,7 +2060,6 @@ var ProjectDO = class extends DurableObject2 {
       await this.ctx.storage.setAlarm(Date.now() + delay);
       return;
     }
-    this.pruneHookSeen();
     const g = this.gen();
     const left = this.sql.exec(`SELECT COUNT(*) c FROM b_${g}`).one().c;
     if (left > 0 && await this.ctx.storage.getAlarm() === null) {
@@ -2139,6 +2140,10 @@ var ProjectDO = class extends DurableObject2 {
   }
   async runAlarm() {
     await this.alarm();
+  }
+  /** Test hook (DEBUG only): pretend a delivery was first seen at `ms`. */
+  async seedHook(id, ms) {
+    this.firstSeen(id, ms);
   }
   /** Debug statistics (the DEBUG routes only). */
   async stats() {
@@ -2295,9 +2300,9 @@ var healthService = {
   }
 };
 async function urlSigner(c) {
-  const secret = await signingSecret(c.env);
+  const mac = await hmacSigner(await signingSecret(c.env));
   const exp = Math.floor(Date.now() / 1e3) + SIGNED_URL_TTL_S;
-  return { exp, sign: /* @__PURE__ */ __name(async (r2key) => `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${await hmacHex(secret, `${r2key}
+  return { exp, sign: /* @__PURE__ */ __name(async (r2key) => `${c.origin}/v1/objects/${b64url(new TextEncoder().encode(r2key))}?exp=${exp}&sig=${await mac(`${r2key}
 ${exp}`)}`, "sign") };
 }
 __name(urlSigner, "urlSigner");
@@ -2500,6 +2505,10 @@ var index_default = {
       if (op === "alarm") {
         await stub.runAlarm();
         return Response.json(await stub.stats());
+      }
+      if (op === "seed-hook") {
+        await stub.seedHook(url.searchParams.get("id") ?? "", Number(url.searchParams.get("at")));
+        return Response.json({ ok: true });
       }
       if (op === "stats") return Response.json(await stub.stats());
     }

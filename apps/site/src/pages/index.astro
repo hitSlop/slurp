@@ -23,23 +23,20 @@ import funnel from '../assets/reports/funnel.png';
 import formatsDark from '../assets/reports/formats-dark.png';
 import byRelease from '../assets/reports/by-release.png';
 import byReleaseSource from '../../../../examples/demo/by-release.md?raw';
-import mascot from '../../../../packages/web-shared/assets/mascot.png';
 import snippets from '../../../../docs/onboarding/snippets.json';
 const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'},{id:'markdown',label:'Markdown'},{id:'code',label:'In code'},{id:'connections',label:'Connections'},{id:'tools',label:'Your toolkit'}];
 ---
-<Page title="The feedback loop for your coding agent" description="Collect events and user feedback in your own Cloudflare account, pull them to your laptop or an external SSD, and let your coding agent analyze them with DuckDB and act on what it finds. About $8 a month at 50 million events." current="home" sections={sections}>
+<Page title="Product analytics for your coding agent" description="See what users do, where they get stuck, and what changed after your last release. Collect events in your own Cloudflare account and let your coding agent investigate." current="home" sections={sections}>
 <header class="hero">
-<ul class="diff" aria-label="What makes Slurp different"><li><Icon name="agent"/>Built for coding agents</li><li><Icon name="sync"/>Your data on your machine</li><li class="duck"><DuckDb size={17}/>Analyzed with DuckDB</li></ul>
+<ul class="diff" aria-label="What makes Slurp different"><li><Icon name="code"/>Open source</li><li><Icon name="cloud"/>Your own Cloudflare account</li><li class="duck"><DuckDb size={17}/>Local analysis with DuckDB</li></ul>
 <div class="hero-grid">
 <div class="copy">
-<p class="eyebrow">The feedback loop for your coding agent</p>
-<h1>You already have a data science expert.<br/><span class="hot">Your coding agent.</span></h1>
-<p class="lede">Slurp collects events and user feedback in your own Cloudflare account. <code>slurp sync</code> pulls them to your laptop (or an external SSD) as a DuckDB file. Your agent analyzes them with SQL, finds what to fix and ships the change.</p>
+<h1>Product analytics for<br/><span class="hot">your coding agent.</span></h1>
+<p class="lede">See what users do, where they get stuck, and what changed after your last release. Slurp collects your events so your coding agent can investigate, build reports and help you improve your product.</p>
 <aside class="free" id="start" aria-labelledby="free-title"><span class="free-mark" aria-hidden="true"><Icon name="cloud"/></span><div><h2 id="free-title">Start free.</h2><p>Cloudflare's free plan covers about <strong>{count(freePlanEventsPerMonth())} events a month</strong>. Slurp itself costs nothing.</p></div></aside>
-<div class="actions"><DeployButton id="home" cli={false}/><a class="btn" href="#loop">See the workflow</a><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
+<div class="actions"><DeployButton id="home" cli={false}/><a class="btn" href="#loop">See how it works</a><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
 <p class="free-note">Prefer a terminal? <button type="button" class="free-cli" data-deploy-open="home">Install with the CLI instead ↗</button></p>
 <WorksWith/>
-<p class="loopline" aria-label="The loop: events and feedback, then DuckDB, then your agent, then a better product"><span>events + feedback</span><i>→</i><span class="duck-word"><DuckDb size={14}/>DuckDB</span><i>→</i><span>your agent</span><i>→</i><span class="hot">a better product</span></p>
 </div>
 <a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
 <figure><div class="crop"><Image src={flagship} width={1680} widths={[640,920,1260,1680]} sizes="(min-width: 1100px) 460px, 92vw" format="webp" quality={92} alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
@@ -50,42 +47,41 @@ const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'}
 <section class="section" id="loop">
 <span class="section-number">01 / THE WORKBENCH</span>
 <h2>From user signal to shipped fix.</h2>
-<p>Keep your existing coding agent. Give it what your users do and say, and it owns the whole span: pulling the data, analyzing it, shipping the fix and updating the tracking so the next round of signals arrives.</p>
+<p>Give your coding agent the context to investigate problems, improve your code and check the results.</p>
 <Workbench/>
 <h3 class="how">How it works</h3>
 <div class="steps four">
-<div><h3><Icon name="code"/><span class="hot">1.</span> Collect</h3><p>Your agent adds events as it builds the feature, and your app sends what users say the same way. JavaScript SDK, or plain HTTP from any language.</p><code>{"track('feedback', { message });"}</code></div>
-<div><h3><Icon name="sync"/><span class="hot">2.</span> Pull</h3><p>Events and feedback wait in your Cloudflare account, even while your laptop is off. One command brings the new ones to your laptop or an external SSD.</p><code>slurp sync</code></div>
-<div><h3><Icon name="report"/><span class="hot">3.</span> Analyze</h3><p>Your agent queries the local DuckDB file, finds the pattern behind the numbers and writes the report.</p><code>slurp sql 'SELECT …'</code></div>
-<div><h3><Icon name="agent"/><span class="hot">4.</span> Act</h3><p>Your agent fixes what it found. Give any bot (Claude Code, Codex, Grok, a Slack bot) its own revocable read key and it can sync and query the same data.</p><code>slurp project key create</code></div>
+<div><h3><Icon name="code"/><span class="hot">1.</span> Collect</h3><p>Capture events and feedback with an SDK or plain HTTP.</p><code>{"track('feedback', { message });"}</code></div>
+<div><h3><Icon name="sync"/><span class="hot">2.</span> Pull</h3><p>Sync new events from your Cloudflare account to your machine.</p><code>slurp sync</code></div>
+<div><h3><Icon name="report"/><span class="hot">3.</span> Analyze</h3><p>Ask your agent to investigate your data and build a report.</p><code>slurp sql 'SELECT …'</code></div>
+<div><h3><Icon name="agent"/><span class="hot">4.</span> Act</h3><p>Use its findings to improve your product and track the results.</p><code>slurp project key create</code></div>
 </div>
 </section>
 <section class="section" id="reports">
 <span class="section-number">02 / REPORTS</span>
 <h2>What your agent hands back.</h2>
-<p>Real reports built by Slurp from sample data, through the same pipeline you would use: line and bar charts, heatmaps, donuts, scatter plots, funnels and areas, in any Perspective theme, with retention, funnels, visits and next-step paths from DuckDB's behavioral functions. Open one: each is an ordinary self-contained HTML file.</p>
+<p>Ask about retention, onboarding, failures or your latest release. Your agent turns the data into reports you can explore and share.</p>
 <div class="gallery">
-<a href="/reports/export-health/"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export completion by week and by file size, with a table of failure reasons" loading="lazy"/><span><b>Why export completion dropped</b>Line, grouped bars, table</span></a>
-<a href="/reports/retention/"><Image src={retention} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: weekly retention cohort heatmap and a free versus pro retention curve" loading="lazy"/><span><b>Do new users come back?</b>Cohort heatmap, retention curves</span></a>
-<a href="/reports/activation/"><Image src={activation} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: signup to first export funnel by plan and time to first export" loading="lazy"/><span><b>How fast do new users get value?</b>window_funnel, bars</span></a>
-<a href="/reports/recovery/"><Image src={recovery} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: how soon people recover after a failed export and what they do next" loading="lazy"/><span><b>What happens after a failure?</b>sequence_match, next step</span></a>
-<a href="/reports/engagement/"><Image src={engagement} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: visit length, exports per person and active people over time" loading="lazy"/><span><b>How engaged are people?</b>sessionize, lines, bars</span></a>
-<a href="/reports/formats/"><Image src={formats} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: donut of export formats, bars of export time and a log scatter of size against time" loading="lazy"/><span><b>What are people exporting?</b>Donut, bars, scatter</span></a>
-<a href="/reports/funnel/"><Image src={funnel} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export funnel, completion by format and weekly activity as overlaid areas" loading="lazy"/><span><b>Where does the flow leak?</b>Funnel, bars, area</span></a>
-<a href="/reports/release-compare/"><Image src={releaseCompare} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: release comparison with failure reasons and weekly sign-ups" loading="lazy"/><span><b>How did each release do?</b>Stacked bars, area, table</span></a>
-<a href="/reports/formats-dark/"><Image src={formatsDark} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: the formats report in the Pro Dark theme" loading="lazy"/><span><b>The same report, Pro Dark</b>Any Perspective theme</span></a>
+<a href="/reports/export-health/"><Image src={flagship} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export completion by week and by file size, with a table of failure reasons" loading="lazy"/><span><b>Why export completion dropped</b></span></a>
+<a href="/reports/retention/"><Image src={retention} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: weekly retention cohort heatmap and a free versus pro retention curve" loading="lazy"/><span><b>Do new users come back?</b></span></a>
+<a href="/reports/activation/"><Image src={activation} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: signup to first export funnel by plan and time to first export" loading="lazy"/><span><b>How fast do new users get value?</b></span></a>
+<a href="/reports/recovery/"><Image src={recovery} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: how soon people recover after a failed export and what they do next" loading="lazy"/><span><b>What happens after a failure?</b></span></a>
+<a href="/reports/engagement/"><Image src={engagement} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: visit length, exports per person and active people over time" loading="lazy"/><span><b>How engaged are people?</b></span></a>
+<a href="/reports/formats/"><Image src={formats} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: donut of export formats, bars of export time and a log scatter of size against time" loading="lazy"/><span><b>What are people exporting?</b></span></a>
+<a href="/reports/funnel/"><Image src={funnel} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: export funnel, completion by format and weekly activity as overlaid areas" loading="lazy"/><span><b>Where does the flow leak?</b></span></a>
+<a href="/reports/release-compare/"><Image src={releaseCompare} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: release comparison with failure reasons and weekly sign-ups" loading="lazy"/><span><b>How did each release do?</b></span></a>
+<a href="/reports/formats-dark/"><Image src={formatsDark} width={840} widths={[420,840]} sizes="(min-width: 1100px) 300px, 90vw" alt="Report: the formats report in the Pro Dark theme" loading="lazy"/><span><b>The same report, Pro Dark</b></span></a>
 </div>
 <p class="fine">Sample data from a fictional app, generated by <code>examples/demo</code> and loaded through a real Worker. Nothing here is customer data.</p>
 </section>
 <section class="section" id="markdown">
 <span class="section-number">03 / MARKDOWN</span>
 <h2>Your agent writes the report in Markdown.</h2>
-<p>A report is a Markdown file with named SQL and a few blocks. The query stays with the finding, so every number can be reproduced. This is the whole source of the chart beside it.</p>
+<p>Reports are Markdown with SQL attached, so you can check every finding. Export self-contained HTML, PNG or PDF.</p>
 <div class="source-output">
 <Code label="by-release.md" code={byReleaseSource.trim()}/>
 <figure><Image src={byRelease} width={840} widths={[420,840]} sizes="(min-width: 1100px) 420px, 90vw" alt="The rendered chart: exports completed by release, with v1.2.4 lower than the others" loading="lazy"/><figcaption>What <code>slurp report build</code> makes from it</figcaption></figure>
 </div>
-<ul class="points"><li><b>Markdown is the source of truth.</b> Diffable, reviewable, sanitized.</li><li><b>HTML is the main output.</b> One self-contained file with its charts and fonts.</li><li><b>PNG and PDF come from the same source.</b> Ready for Slack, email and slides.</li><li><b>Your agent already knows how.</b> <code>slurp agent setup</code> installs the skill.</li></ul>
 <Code label="Terminal" code={`slurp report check report.md
 slurp report build report.md --out ./report --png --pdf
 slurp report open ./report`}/>
@@ -97,7 +93,7 @@ slurp report open ./report`}/>
 <Code label="JavaScript / Node" code={snippets.sdk}/>
 <p class="fine">Install with <code>npm install @hitslop/slurp-sdk</code>. The <a href="/docs/#capture">quickstart</a> has the full snippet, and any language can send events over HTTP.</p>
 </section>
-<section class="section" id="connections"><span class="section-number">05 / CONNECTIONS</span><h2>Bring more of your stack.</h2><p>Send events from the JavaScript or React Native SDK, keep the Segment or Sentry SDK you already have (Swift included) and change one URL, or POST over HTTP. Explore what could come next.</p><Connections items={[...current.slice(0,6),...groups.find(g=>g.id==='business')!.items.slice(0,2)]}/><a class="btn" href="/connections/">All connections and ideas ↗</a></section><section class="section" id="tools"><span class="section-number">06 / YOUR TOOLKIT</span><h2>Your data. Your machine. Your agent.</h2><div class="steps"><div><h3>DuckDB</h3><p>Query your local events with SQL. Keep the data you have already synced.</p></div><div><h3>Your coding agent</h3><p>Install Slurp’s skills for instrumentation, analysis, and product improvement.</p></div><div><h3>Reports</h3><p>Save SQL and Markdown. Build self-contained HTML, PNG, and PDF output.</p></div></div><div class="actions"><a class="btn btn-primary" href="/docs/">Start the feedback loop ↗</a></div></section>
+<section class="section" id="connections"><span class="section-number">05 / CONNECTIONS</span><h2>Bring more of your stack.</h2><p>Use the Slurp SDKs, keep your Segment or Sentry SDK, or send events over HTTP.</p><Connections items={[...current.slice(0,6),...groups.find(g=>g.id==='business')!.items.slice(0,2)]}/><a class="btn" href="/connections/">All connections and ideas ↗</a></section><section class="section" id="tools"><span class="section-number">06 / YOUR TOOLKIT</span><h2>Put your product data to work.</h2><div class="actions"><a class="btn btn-primary" href="/docs/">Get started ↗</a></div></section>
 </Page>
 <style>
 .hero{padding-bottom:6px}
@@ -129,7 +125,6 @@ slurp report open ./report`}/>
 .snapshot figcaption span:last-child{color:var(--red)}
 .how{margin:34px 0 0;font:700 13px var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .hero-links{display:inline-flex;gap:6px;margin-left:4px}.hero-links a{display:grid;place-items:center;width:44px;height:44px;border:1px solid var(--rule);border-radius:50%;color:var(--muted);transition:color .15s,border-color .15s}.hero-links a:hover{color:var(--ink);border-color:var(--ink)}.hero-links .icon{width:17px;height:17px}
-.loopline{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:20px 0 0;padding-top:14px;border-top:1px solid var(--rule);font:600 12.5px var(--mono);color:var(--muted)}.loopline i{font-style:normal;color:var(--red)}.loopline span{white-space:nowrap}.duck-word{display:inline-flex;align-items:center;gap:5px}
 .steps.four{grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}.steps.four>div+div{padding-left:18px}.steps.four code{display:block;margin-top:10px;overflow-wrap:anywhere}
 @media(max-width:900px){.steps.four{grid-template-columns:repeat(2,minmax(0,1fr))}.steps.four>div:nth-child(3){border-left:0;padding-left:0}}
 @media(max-width:560px){.steps.four{display:block}.steps.four>div+div{padding:20px 0 0;border-left:0;border-top:1px solid var(--rule);margin-top:20px}}
@@ -143,6 +138,5 @@ slurp report open ./report`}/>
 .source-output figure{margin:0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:#fff}
 .source-output figure :global(img){display:block;width:100%;height:auto}
 .source-output figcaption{padding:9px 14px;font:600 11.5px var(--body);color:var(--muted);border-top:1px solid var(--rule)}
-.points{padding-left:18px;margin:8px 0 18px}.points li{margin:4px 0}
 @media(max-width:1000px){.hero-grid,.source-output{grid-template-columns:1fr}.gallery{grid-template-columns:1fr}}
 </style>

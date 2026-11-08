@@ -13,7 +13,7 @@ const site=Astro.site??new URL(siteUrl);
 const canonical=new URL(Astro.url.pathname,site).href;
 const ogImage=new URL('/og.png',site).href;
 const ogTitle=`${title} · Slurp`;
-const ogAlt='Slurp: you already have a data science expert, your coding agent. Events and feedback in your own Cloudflare account, analyzed with DuckDB.';
+const ogAlt='Slurp: product analytics for your coding agent. Understand your users with events in your own Cloudflare account and local analysis with DuckDB.';
 // A link without a URL is not shown: a dead link on a public site is worse than none.
 const community=[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href);
 ---

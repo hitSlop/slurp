@@ -1,2 +1,9 @@
 [extend]
 useDefault = true
+
+# A Slurp publishable key (slurp_pk_...) is public by design: it can only add events, and it is meant to sit in a web page or an app.
+# The secret kind (slurp_sk_...) is not covered, and stays detected by the generic rule.
+[[allowlists]]
+description = "Slurp publishable keys are public by design"
+regexTarget = "match"
+regexes = ['''slurp_pk_[0-9a-f]{16}_[0-9a-f]{48}''']

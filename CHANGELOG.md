@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **slurp.run measures itself with Slurp** (see `dogfood/`): page views, the feedback widget and two clicks go to a Worker in the maintainers' account, and the report that reads them is committed as an example.
 - **RevenueCat webhooks (Preview)**: `slurp project webhook PROJECT revenuecat` gives the URL and the Authorization header value to paste into RevenueCat. Purchases, renewals, cancellations and refunds arrive as `revenuecat.<type>` events (retries are one row), and a `revenue` view in SQL lists them. RevenueCat's optional HMAC signing is not supported yet.
 
 ## 0.1.0

@@ -22,7 +22,7 @@ slurp setup
 slurp init --name "My app"`;
 ---
 <span class="deploy-actions">
-{oneClick&&<a class="deploy-official" href={oneClick} rel="noopener"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" width="184" height="39"/></a>}
+{oneClick&&<a class="deploy-official" href={oneClick} rel="noopener" data-track="deploy_clicked" data-track-where={id}><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" width="184" height="39"/></a>}
 {cli&&<button type="button" class="deploy-cli" data-deploy-open={id}>{oneClick?'Install with the CLI instead':'Install and deploy'} ↗</button>}
 </span>
 <dialog class="deploy" id={`dialog-${id}`} aria-labelledby={`title-${id}`}>
@@ -31,9 +31,9 @@ slurp init --name "My app"`;
 <h2 id={`title-${id}`}>Run Slurp in your own Cloudflare account.</h2>
 <p class="fine">Your Worker, Durable Objects and R2 bucket live in your account. Slurp does not host your events. The Free plan is enough to start.</p>
 <p>One command installs the CLI, logs in to Cloudflare, creates the R2 bucket, deploys the Worker, sets a generated admin token and connects this computer. You need Node 20+ (slurp fetches wrangler itself) and a Cloudflare account, on macOS or Linux.</p>
-<Code label="Install, deploy and connect" code={init}/>
+<Code label="Install, deploy and connect" code={init} track="install_copied"/>
 <p class="fine">Then run <code>slurp setup</code> and <code>slurp init --name "My app"</code>. Later: <code>slurp cloud status</code>, <code>slurp cloud upgrade</code>, <code>slurp cloud destroy</code>.</p>
-{oneClick&&<details><summary>Prefer the one-click button?</summary><p>The Deploy to Cloudflare button copies this project's <code>backend</code> folder into a new repository in your GitHub account and creates the R2 bucket and Durable Objects for you. When it asks for <code>ADMIN_TOKEN</code>, paste a long random value, for example from <code>openssl rand -base64 32</code>, and keep it: it controls your deployment. Then open your Worker's address (it looks like <code>https://slurp.YOUR-SUBDOMAIN.workers.dev</code>); the page there shows the command that connects the CLI:</p><Code label="Terminal" code={connect}/><a class="deploy-official" href={oneClick} rel="noopener"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" width="184" height="39" loading="lazy"/></a></details>}
+{oneClick&&<details><summary>Prefer the one-click button?</summary><p>The Deploy to Cloudflare button copies this project's <code>backend</code> folder into a new repository in your GitHub account and creates the R2 bucket and Durable Objects for you. When it asks for <code>ADMIN_TOKEN</code>, paste a long random value, for example from <code>openssl rand -base64 32</code>, and keep it: it controls your deployment. Then open your Worker's address (it looks like <code>https://slurp.YOUR-SUBDOMAIN.workers.dev</code>); the page there shows the command that connects the CLI:</p><Code label="Terminal" code={connect}/><a class="deploy-official" href={oneClick} rel="noopener" data-track="deploy_clicked" data-track-where={id}><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" width="184" height="39" loading="lazy"/></a></details>}
 <details><summary>Prefer to run wrangler yourself?</summary><Code label="Manual steps" code={manual}/><p class="fine">Replace <code>YOUR-SUBDOMAIN</code> with the URL <code>wrangler deploy</code> prints. Delete <code>admin-token.txt</code> once it is saved in your password manager.</p></details>
 </dialog>
 <script>

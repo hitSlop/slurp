@@ -1,8 +1,8 @@
 ---
-interface Props {label:string;code:string}
-const {label,code}=Astro.props;
+interface Props {label:string;code:string;track?:string}
+const {label,code,track}=Astro.props;
 ---
-<div class="codebox"><div class="codebar"><span>{label}</span><button type="button" data-copy>Copy ↗</button></div><pre tabindex="0"><code>{code}</code></pre><span class="copy-status" role="status"></span></div>
+<div class="codebox"><div class="codebar"><span>{label}</span><button type="button" data-copy data-track={track}>Copy ↗</button></div><pre tabindex="0"><code>{code}</code></pre><span class="copy-status" role="status"></span></div>
 <script>
 for(const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')){
  button.addEventListener('click',async()=>{const root=button.closest('.codebox')!;const status=root.querySelector<HTMLElement>('[role=status]')!;try{await navigator.clipboard.writeText(root.querySelector('code')!.textContent!);status.textContent='Copied to clipboard.';button.textContent='Copied!';setTimeout(()=>button.textContent='Copy ↗',2000)}catch{status.textContent='Select and copy the code directly.'}});

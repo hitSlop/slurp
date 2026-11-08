@@ -1,7 +1,7 @@
 import { abortAllDurableObjects } from 'cloudflare:test'
 import { afterEach, test } from 'vitest'
 import { sha256Hex } from '../../src/util.ts'
-import { ADMIN_TOKEN, ApiError, BASE, admin, archived, archives, assert, call, envelopes, evt, http, httpWith, ids, inside, newProject, post, publish, randomName as name, records, sql, stats, withConfig } from './helpers.ts'
+import { ADMIN_TOKEN, ApiError, BASE, CF, admin, archived, archives, assert, call, envelopes, evt, http, httpWith, ids, inside, newProject, post, publish, randomName as name, records, sql, stats, withConfig } from './helpers.ts'
 
 afterEach(abortAllDurableObjects)
 const rejects = (promise: Promise<unknown>, code: string, what = '') => assert.rejects(promise, (e: ApiError) => e instanceof ApiError && e.code === code, `${what} should be ${code}`)
@@ -244,7 +244,7 @@ test('geo is request.cf only, sorted, and added to the envelope when GEO is on',
   const on = await newProject('geo')
   const forged = { 'X-Slurp-Geo-Country': 'ZZ', 'CF-IPCountry': 'ZZ' }
   // Cloudflare's own metadata for the request (the platform sets `cf`; a test has to supply it), in an order that is not sorted.
-  const cf = { region: 'Auckland', country: 'NZ', city: 'Auckland', asn: 9500, colo: 'AKL' }
+  const cf = CF
   const sent = await http('/v1/events', { method: 'POST', headers: { Authorization: `Bearer ${on.pk}`, ...forged }, body: '{"event":"v","context":{"geo":{"city":"mine"}}}', cf })
   assert.equal(sent.status, 200)
   const [line] = envelopes(await archived(on))

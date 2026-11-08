@@ -15,6 +15,8 @@ export const ADMIN_TOKEN = 'test-admin-token-0123456789abcdef'
 export const admin = { Authorization: `Bearer ${ADMIN_TOKEN}` }
 /** The origin the tests talk to; the Worker sees it as the request URL. */
 export const BASE = 'https://slurp.test'
+/** What Cloudflare puts in `request.cf` for a real request; the Worker keeps the city, country and region in each event's envelope. */
+export const CF = { region: 'Auckland', country: 'NZ', city: 'Auckland', asn: 9500, colo: 'AKL' }
 export const HOUR = 3_600_000
 export const DAY = 86_400_000
 
@@ -214,3 +216,10 @@ export const failNextSetAlarm = (p: string | { id: string }) => inside(p, (_i, s
   const storage = state.storage as any
   storage.setAlarm = async () => { delete storage.setAlarm; throw new Error('injected alarm failure') }
 })
+
+/** Wait for something that is about to happen on its own (an alarm that is already due fires at once); never for a schedule. */
+export const until = async (check: () => Promise<boolean>, what: string, ms = 10_000) => {
+  const end = Date.now() + ms
+  while (Date.now() < end) { if (await check()) return; await new Promise(r => setTimeout(r, 25)) }
+  throw new Error(`timed out waiting for ${what}`)
+}

@@ -1,7 +1,7 @@
 import type { ArchiveInfo, Coverage, Gap } from './api.gen.ts'
 import type { Config } from './config.ts'
 import type { Db } from './db.ts'
-import { type Env, retry, sha256Hex } from './util.ts'
+import { retry, sha256Hex } from './util.ts'
 
 /**
  * Publication: turn the project's buffered chunks into numbered archives in R2, and delete archives past retention.
@@ -64,14 +64,16 @@ export class Publisher {
   /** Test hooks (DEBUG only). */
   faults = { archive: false, afterPut: false, alarm: false }
 
+  /** Where archives are stored. A plain field, so a test can put a failing bucket in its place. */
+  archive: R2Bucket
+
   private ctx: DurableObjectState
-  private env: Env
   private db: Db
   private cfg: Config
   private project: string
 
-  constructor(ctx: DurableObjectState, env: Env, db: Db, cfg: Config, project: string) {
-    this.ctx = ctx; this.env = env; this.db = db; this.cfg = cfg; this.project = project
+  constructor(ctx: DurableObjectState, archive: R2Bucket, db: Db, cfg: Config, project: string) {
+    this.ctx = ctx; this.archive = archive; this.db = db; this.cfg = cfg; this.project = project
   }
 
   private setting(k: string): string | null { return this.db.one<{ v: string }>('SELECT v FROM settings WHERE k=?', k)?.v ?? null }
@@ -169,7 +171,7 @@ export class Publisher {
     const sha256 = await sha256Hex(gz)
     await retry(async () => {
       if (this.faults.archive) throw new Error('injected archive failure')
-      return this.env.ARCHIVE.put(archiveKey(this.project, seq), gz, { httpMetadata: { contentType: 'application/gzip' } })
+      return this.archive.put(archiveKey(this.project, seq), gz, { httpMetadata: { contentType: 'application/gzip' } })
     })
     if (this.faults.afterPut) { this.faults.afterPut = false; throw new Error('injected failure after the R2 put') }
     const events = chunks.reduce((n, c) => n + c.events, 0), bytes = chunks.reduce((n, c) => n + c.bytes, 0)
@@ -204,7 +206,7 @@ export class Publisher {
     for (;;) {
       const old = this.db.rows<{ seq: number }>('SELECT seq FROM manifest WHERE deleted_at IS NULL AND created_at<? ORDER BY seq LIMIT 1000', cutoff)
       if (!old.length) return
-      await retry(() => this.env.ARCHIVE.delete(old.map(o => archiveKey(this.project, o.seq))))
+      await retry(() => this.archive.delete(old.map(o => archiveKey(this.project, o.seq))))
       this.db.rows('UPDATE manifest SET deleted_at=? WHERE seq<=? AND deleted_at IS NULL', Date.now(), old[old.length - 1].seq)
     }
   }
@@ -277,7 +279,7 @@ export class Publisher {
   /** Delete every archive object of this project (for purge). */
   async deleteArchives(): Promise<number> {
     const live = this.db.rows<{ seq: number }>('SELECT seq FROM manifest WHERE deleted_at IS NULL ORDER BY seq')
-    for (let i = 0; i < live.length; i += 1000) await retry(() => this.env.ARCHIVE.delete(live.slice(i, i + 1000).map(r => archiveKey(this.project, r.seq))))
+    for (let i = 0; i < live.length; i += 1000) await retry(() => this.archive.delete(live.slice(i, i + 1000).map(r => archiveKey(this.project, r.seq))))
     return live.length
   }
 }

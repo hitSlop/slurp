@@ -31,7 +31,7 @@ interface Queued { lines: string[]; sizes: number[]; bytes: number; atMs: number
 export class ProjectDO extends DurableObject<Env> {
   private db = new Db(this.ctx.storage.sql)
   private cfg: Config = configOf(this.env)
-  private publisher = new Publisher(this.ctx, this.env, this.db, this.cfg, this.ctx.id.name ?? '')
+  private publisher = new Publisher(this.ctx, this.env.ARCHIVE, this.db, this.cfg, this.ctx.id.name ?? '')
   private ready = false
   private queue: Queued[] = []
   private queuedBytes = 0

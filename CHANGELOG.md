@@ -1,9 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
-- **slurp.run measures itself with Slurp** (see `dogfood/`): page views, the feedback widget and two clicks go to a Worker in the maintainers' account, and the report that reads them is committed as an example.
+Run `slurp cloud upgrade` to put the fixes below on an existing Worker (your data and settings are kept).
+
 - **RevenueCat webhooks (Preview)**: `slurp project webhook PROJECT revenuecat` gives the URL and the Authorization header value to paste into RevenueCat. Purchases, renewals, cancellations and refunds arrive as `revenuecat.<type>` events (retries are one row), and a `revenue` view in SQL lists them. RevenueCat's optional HMAC signing is not supported yet.
+- **Fixed: a redelivered webhook could stop `slurp sync`.** A webhook with no time of its own was stamped with its arrival time, so a redelivery had the same id and a different time, which the importer treats as a conflict. Such a delivery now keeps the time it first arrived. A generic POST with no `Idempotency-Key` and no body `timestamp` is its own event each time. See [webhooks](docs/webhooks.md).
+- **Fixed: archives stay unpublished after a long R2 outage.** Cloudflare retries a failing alarm six times and then stops. Publishing now schedules its own retries with backoff until R2 answers, so a quiet project publishes by itself once R2 is back (`ARCHIVE_RETRY_MS`).
+- **Fixed: oversized bodies were buffered before being refused.** `/v1/events` now reads its body as a capped stream and stops at the limit, even with no `Content-Length`.
+- **Fixed: an impossible timestamp such as `1e300` failed a whole Sentry envelope.** Sentry and Segment events with a time that is not a real date now fall back to `sent_at`, then the arrival time.
+- Archive listings sign every URL with one key and one expiry, and report that expiry.
+- **slurp.run measures itself with Slurp** (see `dogfood/`): page views, the feedback widget and two clicks go to a Worker in the maintainers' account, and the report that reads them is committed as an example. The site also got a mobile pass.
 
 ## 0.1.0
 

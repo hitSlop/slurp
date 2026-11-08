@@ -7,6 +7,7 @@ import { ADMIN_TOKEN, ApiError, admin, call, debug, evt, ids, newProject, post, 
 
 const seqs = (arcs: { seq: number }[]) => arcs.map(a => a.seq)
 const post_ = async (w: { base: string }, p: { pk: string }, id: string) => assert.equal((await post(w.base, p.pk, evt(id))).status, 200)
+const archivedAll = async (w: { base: string }, p: { id: string; sk: string }) => { await publish(w.base, p.id); return readArchives(w.base, p.id, p.sk) }
 const failsWith503 = (p: Promise<unknown>) => assert.rejects(p, (e: ApiError) => e instanceof ApiError && e.status === 503 && e.code === 'unavailable')
 
 test('a publish that died after its intent was stored is finished by the restarted Worker as seq 1, and later events become seq 2', async () => {
@@ -181,6 +182,41 @@ test('group commit: concurrent requests share one chunk; a failed commit is a 50
     await publish(w.base, p.id)
     const got = ids(await readArchives(w.base, p.id, p.sk)).sort()
     assert.equal(got.length, 21); assert.ok(got.includes('lost1') && !got.includes('lost2'))
+  } finally { await w.stop() }
+})
+
+test('an acknowledged event always has an alarm: a failed setAlarm is a 503 and the retry arms it', async () => {
+  const w = await startWorker()
+  try {
+    const p = await newProject(w.base, name('alarmfail'))
+    await debug(w.base, 'fail-alarm', p.id)                         // the next setAlarm throws once
+    const failed = await post(w.base, p.pk, evt('a1'))
+    assert.equal(failed.status, 503); assert.ok(Number(failed.headers.get('retry-after')) > 0)
+    const mid = await stats(w.base, p.id)
+    assert.equal(mid.chunks, 1, 'the chunk is committed'); assert.equal(mid.armed, null, 'but the cache does not claim an alarm'); assert.equal(mid.alarm, null)
+    assert.equal((await post(w.base, p.pk, evt('a1'))).status, 200, 'the retry is acknowledged')
+    const after = await stats(w.base, p.id)
+    assert.ok(after.alarm !== null && after.armed === after.alarm, 'and the alarm is set')
+    const got = ids(await archivedAll(w, p))
+    assert.deepEqual(got, ['a1', 'a1'], 'the retry is a duplicate; the importer dedupes it by (sender, id)')
+  } finally { await w.stop() }
+})
+
+test('a Publish that fails on R2 backs off like the alarm does and leaves an alarm armed', async () => {
+  const w = await startWorker()
+  try {
+    const p = await newProject(w.base, name('pubfail'))
+    await post_(w, p, 'x1')
+    await debug(w.base, 'fail-archive', p.id)
+    await failsWith503(publish(w.base, p.id))
+    const st = await stats(w.base, p.id)
+    assert.equal(st.failures, 1); assert.ok(st.retryAt !== null, 'retry_at is set')
+    assert.ok(st.alarm !== null && st.armed === st.alarm, 'an alarm is armed')
+    assert.ok(st.alarm >= Number(st.retryAt) - 1000 && st.alarm <= Number(st.retryAt) + 1000, 'for the retry time')
+    await debug(w.base, 'heal-archive', p.id)
+    await publish(w.base, p.id)
+    const done = await stats(w.base, p.id)
+    assert.deepEqual([done.failures, done.retryAt, done.manifest], [0, null, 1])
   } finally { await w.stop() }
 })
 

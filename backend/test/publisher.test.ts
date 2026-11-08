@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parseConfig } from '../src/config.ts'
-import { type Facts, nextWake } from '../src/publisher.ts'
+import { type Facts, Publisher, nextWake } from '../src/publisher.ts'
 
 const cfg = parseConfig({ SEAL_INTERVAL_MS: '600000', ARCHIVE_MAX_BYTES: '1000', RETENTION_DAYS: '1' })
 const noRetention = parseConfig({ SEAL_INTERVAL_MS: '600000', ARCHIVE_MAX_BYTES: '1000' })
@@ -27,4 +27,36 @@ const cases: { name: string; facts: Partial<Facts>; config?: typeof cfg; wake: n
 
 for (const c of cases) test(`nextWake: ${c.name}`, () => {
   assert.equal(nextWake({ ...idle, ...c.facts }, c.config ?? cfg, NOW), c.wake)
+})
+
+// A failed alarm write must not leave the cache claiming an alarm that does not exist: the next rearm would skip the write.
+test('rearm: the armed cache changes only after the write succeeded', async () => {
+  const calls: string[] = []
+  let failing = true
+  const storage = {
+    setAlarm: async (t: number) => { calls.push(`set ${t}`); if (failing) throw new Error('storage unavailable') },
+    deleteAlarm: async () => { calls.push('delete'); if (failing) throw new Error('storage unavailable') },
+  }
+  let buffered = true
+  const db = {
+    alarmWrites: 0,
+    one: (sql: string) => (sql.includes('FROM chunks ORDER BY id') && buffered ? { t: Date.now() } : undefined),
+    rows: () => [],
+  }
+  const publisher = new Publisher({ storage } as any, {} as any, db as any, cfg, 'prj_0')
+
+  await assert.rejects(publisher.rearm(), /storage unavailable/)
+  assert.equal(publisher.armed, null, 'a failed setAlarm leaves the cache unchanged')
+  assert.equal(db.alarmWrites, 0)
+  failing = false
+  await publisher.rearm()
+  assert.equal(calls.length, 2, 'the next call writes again instead of trusting the cache')
+  assert.notEqual(publisher.armed, null)
+  assert.equal(db.alarmWrites, 1)
+
+  // and the same for clearing: nothing is waiting any more, the delete fails, and the cache still says an alarm is armed
+  buffered = false; failing = true
+  const armed = publisher.armed
+  await assert.rejects(publisher.rearm(), /storage unavailable/)
+  assert.equal(publisher.armed, armed, 'a failed deleteAlarm leaves the cache unchanged')
 })

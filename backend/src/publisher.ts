@@ -62,7 +62,7 @@ export class Publisher {
   armed: number | null = null
   private inflight: Promise<void> | null = null
   /** Test hooks (DEBUG only). */
-  faults = { archive: false, afterPut: false }
+  faults = { archive: false, afterPut: false, alarm: false }
 
   private ctx: DurableObjectState
   private env: Env
@@ -95,23 +95,31 @@ export class Publisher {
     }
   }
 
-  /** Set (or clear) the alarm for `nextWake`. The only place that touches the alarm, and only when the time changes: each write bills a row. */
+  /**
+   * Set (or clear) the alarm for `nextWake`. The only place that touches the alarm, and only when the time changes: each write bills a row.
+   * The cache of what is armed changes only once the platform has accepted the write: a failed write throws and leaves it as it was, so
+   * the next call tries again instead of believing an alarm exists.
+   */
   async rearm(): Promise<void> {
     const now = Date.now()
     const want = nextWake(this.facts(), this.cfg, now)
     const cur = this.armed
     if (want === null) {
       if (cur === null) return
+      await this.alarmWrite(() => this.ctx.storage.deleteAlarm())
       this.armed = null
-      this.db.alarmWrites++
-      await this.ctx.storage.deleteAlarm()
     } else {
       // An alarm that is already due fires at once, so a later "now" needs no second write.
       if (cur === want || (cur !== null && cur <= now && want <= now)) return
+      await this.alarmWrite(() => this.ctx.storage.setAlarm(want))
       this.armed = want
-      this.db.alarmWrites++
-      await this.ctx.storage.setAlarm(want)
     }
+  }
+
+  private async alarmWrite(write: () => Promise<void>): Promise<void> {
+    if (this.faults.alarm) { this.faults.alarm = false; throw new Error('injected alarm failure') }
+    await write()
+    this.db.alarmWrites++
   }
 
   /** Learn what the platform has armed (when the object starts, and as an alarm begins). */
@@ -221,7 +229,8 @@ export class Publisher {
     await this.rearm()
   }
 
-  private fail(error: unknown, now: number) {
+  /** Record a failed publication: count it and schedule the retry (`retry_at`), backing off. */
+  fail(error: unknown, now: number) {
     const failures = Number(this.setting('failures') ?? 0) + 1
     const { archiveRetryMs, sealIntervalMs } = this.cfg
     const delay = Math.min(archiveRetryMs * 2 ** Math.min(failures - 1, 30), Math.max(sealIntervalMs, archiveRetryMs))

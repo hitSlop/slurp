@@ -180,8 +180,14 @@ export class ProjectDO extends DurableObject<Env> {
       for (const item of q) item.done({ ok: false, status: 503, reason: 'unavailable', retryAfter: 5 })
       return
     }
+    // An acknowledged event must have an alarm that will publish it. The chunks are committed, so if the alarm cannot be set the senders
+    // are told to retry; the retry is a duplicate, which the importer drops by (sender, id).
+    try { await this.publisher.rearm() } catch (e) {
+      console.error('the alarm could not be set; the requests were answered 503 so their senders retry', e)
+      for (const item of q) item.done({ ok: false, status: 503, reason: 'unavailable', retryAfter: 5 })
+      return
+    }
     for (const item of q) item.done({ ok: true, accepted: item.lines.length })
-    try { await this.publisher.rearm() } catch (e) { console.error('could not set the alarm', e) }
   }
 
   // ---- archives ----
@@ -196,7 +202,12 @@ export class ProjectDO extends DurableObject<Env> {
   /** Publish everything buffered now, then report where archives stand. Throws if R2 fails. */
   async publish(): Promise<Coverage> {
     await this.flush()
-    await this.publisher.publishAll()
+    try { await this.publisher.publishAll() } catch (e) {
+      // Same as a failed alarm run: back off (`retry_at`) and keep an alarm armed, so the buffered events are retried without a caller.
+      this.publisher.fail(e, Date.now())
+      try { await this.publisher.rearm() } catch (a) { console.error('could not set the alarm after a failed publish', a) }
+      throw e
+    }
     await this.publisher.rearm()
     return this.coverage()
   }
@@ -224,9 +235,10 @@ export class ProjectDO extends DurableObject<Env> {
 
   // ---- test hooks (the DEBUG routes only) ----
 
-  async fault(which: 'flush' | 'archive' | 'after-put', on: boolean): Promise<void> {
+  async fault(which: 'flush' | 'archive' | 'after-put' | 'alarm', on: boolean): Promise<void> {
     if (which === 'flush') this.failFlush = on
     else if (which === 'archive') this.publisher.faults.archive = on
+    else if (which === 'alarm') this.publisher.faults.alarm = on
     else this.publisher.faults.afterPut = on
   }
   async sweep(): Promise<void> { await this.publisher.sweep(); await this.publisher.rearm() }

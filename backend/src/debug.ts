@@ -13,7 +13,7 @@ export async function debugRoute(req: Request, env: Env, auth: Auth | null): Pro
   const stub = projectStub(env, id)
   const ok = () => Response.json({ ok: true })
   const stats = async () => Response.json(await stub.stats())
-  const fault = async (which: 'flush' | 'archive' | 'after-put') => { await stub.fault(which, url.searchParams.get('off') === null); return ok() }
+  const fault = async (which: 'flush' | 'archive' | 'after-put' | 'alarm') => { await stub.fault(which, url.searchParams.get('off') === null); return ok() }
   switch (op) {
     case 'flush': await stub.flush(); return stats()
     case 'publish': await stub.publish(); return stats()
@@ -24,6 +24,7 @@ export async function debugRoute(req: Request, env: Env, auth: Auth | null): Pro
     case 'fail-flush': return fault('flush')
     case 'fail-archive': return fault('archive')
     case 'fail-after-put': return fault('after-put')
+    case 'fail-alarm': return fault('alarm')
     case 'heal-archive': await stub.fault('archive', false); return ok()
     default: return null
   }

@@ -22,7 +22,7 @@ test('saved state has exactly the specified fields: identity, queue, retry deadl
   await client.close()
 })
 
-test('an acknowledged queue is saved empty, and a client that was refused leaves no stop flag', async () => {
+test('an acknowledged queue is saved empty, and a client that was refused keeps its queue and leaves no pause flag', async () => {
   const storage = memoryStorage()
   const ok = createClient({ ...base, storage, fetch: (async () => reply(200)) as any })
   ok.track('a')
@@ -35,7 +35,7 @@ test('an acknowledged queue is saved empty, and a client that was refused leaves
   await refused.close()
   const saved = JSON.parse(storage.getItem(savedAt) as string)
   assert.deepEqual(Object.keys(saved).sort(), ['anonymousId', 'attempts', 'lastActivity', 'queue', 'retryAt', 'sessionId', 'version'])
-  assert.deepEqual(saved.queue, [])
+  assert.equal(saved.queue.length, 1); assert.equal(JSON.parse(saved.queue[0]).event, 'b')
 })
 
 test('page hide sends one keepalive request with ?key=, no Authorization and at most 60 KB', async () => {

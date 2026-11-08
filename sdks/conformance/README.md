@@ -14,20 +14,20 @@ The design rests on one fact: **the Worker does not deduplicate requests, the im
 | `version` | yes | `1` |
 | in-flight count `k` | no | The first `k` lines belong to the request being answered |
 | split limit | no | Most lines the next request may take. Unlimited at start; halved by a 413; unlimited again after a 2xx |
-| stopped | no | Set by a 401 or 403. Lives and dies with this client instance |
+| paused | no | Set by a 401 or 403 (`stopped` in `FlushResult`). Lives and dies with this client instance; the queue it leaves behind is kept and saved |
 | flush timer | no | One timer holding the earliest deadline |
 
-The saved value is `{version: 1, anonymousId, sessionId, lastActivity, userId?, queue: [line…], retryAt, attempts}` and nothing else (no batches, no stop flag), under the key
+The saved value is `{version: 1, anonymousId, sessionId, lastActivity, userId?, queue: [line…], retryAt, attempts}` and nothing else (no batches, no pause flag), under the key
 
 ```
 <id>:v1:<endpoint, with no query, hash or trailing slash>:<project hex>:<source>
 ```
 
-where `<id>` is the SDK's own prefix, and the project hex and source come from the publishable key with `^slurp_pk_([0-9a-f]{16})_([a-z][a-z0-9_]{0,31})_([0-9a-f]{48})$`. A key that does not parse is used whole. So rotating a key (another key for the same source) keeps the queue and the visitor, and two senders sharing a storage never send each other's events. On load, drop saved lines that are not one complete JSON object, and report them as dropped.
+where `<id>` is the SDK's own prefix, and the project hex and source come from the publishable key with `^slurp_pk_([0-9a-f]{16})_([a-z][a-z0-9_]{0,31})_([0-9a-f]{48})$`. A key that does not parse is used whole. So rotating a key (another key for the same source) keeps the queue and the visitor, and delivers what a refused key left queued, and two senders sharing a storage never send each other's events. On load, drop saved lines that are not one complete JSON object, and report them as dropped.
 
 ## States
 
-A client moves Loading, then Idle or Queued; Queued to Sending when a flush starts; Sending back to Sending while lines remain, to Idle when the queue is empty, to Waiting after a retryable failure, or to Stopped when the key is refused; Waiting to Sending once `retryAt` has passed. `close()` leads to Closed from any state.
+A client moves Loading, then Idle or Queued; Queued to Sending when a flush starts; Sending back to Sending while lines remain, to Idle when the queue is empty, to Waiting after a retryable failure, or to Paused when the key is refused; Waiting to Sending once `retryAt` has passed. `close()` leads to Closed from any state.
 
 | State | Meaning |
 |---|---|
@@ -36,16 +36,16 @@ A client moves Loading, then Idle or Queued; Queued to Sending when a flush star
 | Queued | Lines waiting; the flush timer is armed |
 | Sending | One request is in flight with the first `k` lines. At most one request at a time |
 | Waiting | A send failed; nothing is sent before `retryAt`. The lines stay queued |
-| Stopped | The key was refused. Every capture is dropped and reported. Not saved |
+| Paused | The key was refused (401 or 403). Nothing more is sent by this client instance. Captures are still queued and saved within the queue limits. The pause itself is not saved, so the next client on this storage tries once |
 | Closed | `close()` was called: timers, listeners and the request are cancelled and the state is saved once more |
 
 ## Transitions
 
 | Trigger | Does |
 |---|---|
-| capture (`track`, `identify`) | Validate (below), advance the identity, build and append one line, trim, save. Send now if the queue has `flushAt` (default 100) lines and `retryAt` has passed; otherwise arm the flush timer for `flushIntervalMs` (default 5 s), or for `retryAt` if that is later |
+| capture (`track`, `identify`) | Validate (below), advance the identity, build and append one line, trim, save. Send now if the queue has `flushAt` (default 100) lines, `retryAt` has passed and the client is not paused; otherwise arm the flush timer for `flushIntervalMs` (default 5 s), or for `retryAt` if that is later |
 | flush timer, `flush()`, page hide, app backgrounds | Run the send loop. A page hide sends one request only (see rules) |
-| send loop | While there is a line, no `retryAt` in the future, and the client is not stopped or closed: take a request, send it, react to the answer |
+| send loop | While there is a line, no `retryAt` in the future, and the client is not paused or closed: take a request, send it, react to the answer |
 | answer | See the table below |
 | `reset()` | New `anonymousId` and `sessionId`, no `userId`; saves |
 | `close()` | Cancel everything, save, and let a client created later for the same storage wait for that save |
@@ -60,7 +60,7 @@ A client moves Loading, then Idle or Queued; Queued to Sending when a flush star
 | 400 with a JSON body whose `rejected` lists `{line, reason}` | Remove exactly the listed lines (1-based within this request; ignore numbers outside `1..k`). Report them as dropped. The other lines stay queued: send them at once, no waiting. When no listed number is valid, treat it as any other 400 |
 | any other 400, and every 4xx not named in this table | Remove the `k` lines. Report them as dropped. Carry on |
 | 413 | Halve the split limit to `ceil(k / 2)`; the lines stay queued. When `k = 1`, remove and report that single line instead. Carry on |
-| 401, 403 | Remove every queued line and report all of them as dropped. Stop this client instance. Save the (now empty) queue. Nothing about the stop is saved, so the next client on this storage starts normally |
+| 401, 403 | Keep every queued line (release the in-flight marker). Pause this client instance: send nothing more, and `FlushResult.stopped` is true. Report the pause once, with `dropped` 0. Save the queue as usual. Nothing about the pause is saved, so the next client on this storage tries once (and pauses again if the key is still refused); a new key for the same source shares the storage and delivers the queue |
 | 408, 429, 5xx, network error, timeout | Keep the lines. `attempts += 1`. `retryAt = now + delay`, where the delay is the `Retry-After` of a 429 or 503 (digits of seconds, or an HTTP date; a date in the past means 0), and otherwise `min(500 ms · 2^(attempts-1), 60 s)` times a random factor between 0.5 and 1. Save. Stop the loop and arm the timer for `retryAt` |
 
 The request **timeout** (default 30 s) aborts the request and counts as a network error. Release the in-flight marker whenever a request ends without removing its lines.
@@ -74,7 +74,7 @@ The request **timeout** (default 30 s) aborts the request and counts as a networ
 5. **Retries carry the same records.** A line is never rebuilt: same `id`, same bytes every time it is sent. The request around them may differ, because the queue may have changed in between.
 6. **Page hide** (browsers) sends one request with `?key=<publishable key>` in the URL instead of an `Authorization` header (`Content-Type: text/plain`, `keepalive: true`), of at most 60 KB. A first line bigger than that waits for a normal send.
 7. **Validate only what the Worker validates** (see Capturing) and never invent a limit of your own.
-8. **Closed means closed.** After `close()` a capture is dropped and reported.
+8. **Closed means closed.** After `close()` a capture is dropped and reported. A paused client still accepts captures: it queues them (rule 2 still applies) and sends none.
 
 ## Capturing
 

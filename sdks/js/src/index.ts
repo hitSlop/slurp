@@ -44,7 +44,7 @@ export interface FlushResult {
   rejected: number
   pending: number
   retryAt: number | null
-  /** True once the client is closed, or the Worker refused its key (401/403) so this instance stopped. */
+  /** True once the client is closed, or the Worker refused its key (401/403) so this instance paused sending (the queue is kept). */
   stopped: boolean
 }
 
@@ -99,7 +99,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
   let attempts = 0
   let ready = false
   let closed = false
-  let stopped = false // this instance only: a refused key stops sending, but nothing about it is saved
+  let paused = false // this instance only: a refused key (401/403) pauses sending, but the queue is kept and nothing about the pause is saved
   let closing: Promise<void> | undefined
   let stagedCount = 0
   const staged: (() => void)[] = []
@@ -122,7 +122,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
   }
   /** Arm the flush timer. It keeps the earliest deadline, so a stream of captures never postpones a flush. */
   const schedule = (delay: number) => {
-    if (closed || stopped) return
+    if (closed || paused) return
     const at = Date.now() + delay
     if (timerAt <= at) return
     clearTimer()
@@ -226,7 +226,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
   }
   const send = async (keepalive: boolean): Promise<'partial' | void> => {
     await loaded
-    while (!closed && !stopped) {
+    while (!closed && !paused) {
       if (retryAt > Date.now()) { schedule(retryAt - Date.now()); return }
       // A page-hide request must fit a keepalive request; a bigger first line waits for the next load.
       const lines = queue.take(maxBatchEvents, keepalive ? Math.min(maxBatchBytes, KEEPALIVE_BYTES) : maxBatchBytes)
@@ -251,11 +251,12 @@ export function createClient(options: SlurpOptions): SlurpClient {
         await retry(outcome.delayMs)
         return
       }
-      if (outcome.kind === 'stop') {
-        const dropped = queue.clear()
-        stopped = true
+      if (outcome.kind === 'pause') {
+        // Keep every line: the owner can rotate to a new key for the same source, which shares this storage and delivers them.
+        queue.release()
+        paused = true
         clearTimer()
-        report(new Error(`ingest ${reply.status}; client stopped`), dropped)
+        report(new Error(`ingest ${reply.status}; key refused, sending paused until the next launch; ${queue.length} event(s) stay queued`))
         await persist()
         return
       }
@@ -285,10 +286,10 @@ export function createClient(options: SlurpOptions): SlurpClient {
   async function flush(): Promise<FlushResult> {
     clearTimer()
     if (await start(false) === 'partial') await start(false) // a page-hide send stops after one request
-    return { accepted, rejected, pending: pending(), retryAt: retryAt > Date.now() ? retryAt : null, stopped: closed || stopped }
+    return { accepted, rejected, pending: pending(), retryAt: retryAt > Date.now() ? retryAt : null, stopped: closed || paused }
   }
   const onPageHide = () => {
-    if (!sending && !closed && !stopped) { clearTimer(); void start(true) }
+    if (!sending && !closed && !paused) { clearTimer(); void start(true) }
   }
   const onVisibility = () => { if (document.visibilityState === 'hidden') onPageHide() }
   const watchHide = (options.flushOnHide ?? true) && typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -302,7 +303,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
   const capture = (type: 'track' | 'identify', event: string | undefined, data: Record<string, unknown>, overrides: CaptureOptions = {}, identified?: string): string => {
     const now = Date.now()
     const id = uuidv7(now)
-    if (closed || stopped) { report(new Error('client stopped; event dropped'), 1); return id }
+    if (closed) { report(new Error('client closed; event dropped'), 1); return id }
     let payload: Record<string, unknown>
     let eventContext: Record<string, unknown>
     try {
@@ -319,7 +320,6 @@ export function createClient(options: SlurpOptions): SlurpClient {
     stagedCount++
     apply(() => {
       stagedCount--
-      if (stopped) { report(new Error('client stopped; event dropped'), 1); return }
       const next = advance(identity, now, sessionTimeout, identified, () => uuidv7(now))
       const userId = identified ?? overrides.userId ?? next.userId
       const line = JSON.stringify({
@@ -332,7 +332,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
       identity = next
       queue.push(line)
       trim()
-      if (queue.length >= flushAt && retryAt <= Date.now()) void flush()
+      if (queue.length >= flushAt && retryAt <= Date.now() && !paused) void flush()
       else schedule(until())
     })
     return id
@@ -341,7 +341,7 @@ export function createClient(options: SlurpOptions): SlurpClient {
     track: (event, data = {}, overrides) => capture('track', event, data, overrides),
     identify: (userId, data = {}) => capture('identify', undefined, data, {}, userId),
     reset() {
-      if (closed || stopped) return
+      if (closed) return
       apply(() => { identity = resetIdentity(Date.now(), uuidv7) })
     },
     flush,

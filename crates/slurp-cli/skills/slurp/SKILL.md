@@ -28,7 +28,7 @@ For noninteractive work, use explicit `init --connect PROJECT` with a supplied r
 
 ## Collection limits
 
-HTTP 429 and 503 are retryable: honor `Retry-After` and back off; 413 means send fewer records per request. A 400 stores nothing and lists the bad lines: fix them, do not retry the same bytes. HTTP 401 and 403 mean the key is wrong, revoked or not publishable: the JavaScript SDK drops what it had queued and stops for that run (the next launch tries once more), so surface it to the owner instead of creating another key. If the Worker hits Cloudflare's daily request cap on the Free plan, ingestion pauses and the SDK retries; ask the owner before upgrading the Cloudflare plan. `slurp status` shows the local event count, the last archive imported and any problems set aside. Read keys cannot create projects or keys.
+HTTP 429 and 503 are retryable: honor `Retry-After` and back off; 413 means send fewer records per request. A 400 stores nothing and lists the bad lines: fix them, do not retry the same bytes. HTTP 401 and 403 mean the key is wrong, revoked or not publishable: the SDK keeps its queue and pauses for that run (the next launch tries once more), so surface it to the owner, who should rotate to a new key for the same source, which delivers the queued events; do not create keys yourself. If the Worker hits Cloudflare's daily request cap on the Free plan, ingestion pauses and the SDK retries; ask the owner before upgrading the Cloudflare plan. `slurp status` shows the local event count, the last archive imported and any problems set aside. Read keys cannot create projects or keys.
 
 <!-- onboarding:generated -->
 

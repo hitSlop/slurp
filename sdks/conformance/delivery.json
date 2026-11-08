@@ -1,5 +1,5 @@
 {
-  "description": "Delivery scenarios every Slurp SDK must pass; README.md in this folder is the state machine they check. A runner makes a client with the default options plus `options` (the flush timer is long unless a scenario sets flushIntervalMs), a key `slurp_pk_0123456789abcdef_web_<48 hex>` and an endpoint, then runs `steps` in order. Each fetch is one request and is answered from `responses` in order, and with 200 after that. A response is { status, retryAfter?, retryAfterDateSeconds?, rejected?, track? }: status 0 is a network error; retryAfter is the Retry-After header text; retryAfterDateSeconds sends Retry-After as the HTTP date that many seconds from now; rejected is a list of 1-based line numbers answered as a 400 body {\"error\":\"invalid records\",\"rejected\":[{\"line\":n,\"reason\":\"bad record\"}]}; track lists event names the runner tracks on the client while that request is still unanswered. Steps: { track: [names] } records events in order (each carries data.pad of `padBytes` characters when the scenario sets padBytes); { flush: true } flushes and, while events are pending and the client has not stopped, waits for the retry deadline and flushes again; { flushOnce: true } calls flush exactly once; { sleep: ms }; { restart: true } awaits close() and makes a new client on the same storage; { replace: true } calls close() without awaiting it and makes a new client on the same storage at once (what init twice does). A flush or flushOnce step may carry `expect` with any of accepted, rejected, stopped, pending (the FlushResult fields) to check before the next step. `events` is shorthand for steps [{ track: events }, { flush: true }]. After the last step the runner always does one more { flush: true } and checks scenario `expect` against that result: requests is the event names in each request the server saw, in order; accepted, rejected, stopped and pending are the final client's FlushResult (accepted and rejected count only that client instance); sameRecords means every record id that appears in more than one request has the same bytes in all of them (a retry carries the same records, not necessarily the same request bytes); minRetryGapMs is the least time between the first and second request; errorsAtLeast is the least number of onError calls. `storage` makes the client's storage adapter misbehave, and the adapter is shared by every client a scenario makes: { setItem: \"throws\" } makes every save throw; { delayMs: n } makes every operation complete asynchronously after n ms (optional for runners whose storage is a file). Add a scenario here when a delivery bug is found, so every SDK gets the test.",
+  "description": "Delivery scenarios every Slurp SDK must pass; README.md in this folder is the state machine they check. A runner makes a client with the default options plus `options` (the flush timer is long unless a scenario sets flushIntervalMs), a key `slurp_pk_0123456789abcdef_web_<48 hex>` and an endpoint, then runs `steps` in order. Each fetch is one request and is answered from `responses` in order, and with 200 after that. A response is { status, retryAfter?, retryAfterDateSeconds?, rejected?, track? }: status 0 is a network error; retryAfter is the Retry-After header text; retryAfterDateSeconds sends Retry-After as the HTTP date that many seconds from now; rejected is a list of 1-based line numbers answered as a 400 body {\"error\":\"invalid records\",\"rejected\":[{\"line\":n,\"reason\":\"bad record\"}]}; track lists event names the runner tracks on the client while that request is still unanswered. Steps: { track: [names] } records events in order (each carries data.pad of `padBytes` characters when the scenario sets padBytes); { flush: true } flushes and, while events are pending and the client has not stopped, waits for the retry deadline and flushes again; { flushOnce: true } calls flush exactly once; { sleep: ms }; { restart: true } awaits close() and makes a new client on the same storage, and { restart: { key: \"slurp_pk_...\" } } does the same with that publishable key instead (the same project and source with another random part, as after a key rotation); { replace: true } calls close() without awaiting it and makes a new client on the same storage at once (what init twice does). A flush or flushOnce step may carry `expect` with any of accepted, rejected, stopped, pending (the FlushResult fields) to check before the next step. `events` is shorthand for steps [{ track: events }, { flush: true }]. After the last step the runner always does one more { flush: true } and checks scenario `expect` against that result: requests is the event names in each request the server saw, in order; accepted, rejected, stopped and pending are the final client's FlushResult (accepted and rejected count only that client instance); sameRecords means every record id that appears in more than one request has the same bytes in all of them (a retry carries the same records, not necessarily the same request bytes); minRetryGapMs is the least time between the first and second request; errorsAtLeast is the least number of onError calls; keys is the publishable key sent with each request (the Authorization bearer), in order, checked only when present. `storage` makes the client's storage adapter misbehave, and the adapter is shared by every client a scenario makes: { setItem: \"throws\" } makes every save throw; { delayMs: n } makes every operation complete asynchronously after n ms (optional for runners whose storage is a file). Add a scenario here when a delivery bug is found, so every SDK gets the test.",
   "scenarios": [
     { "name": "everything is delivered in one request",
       "events": ["a", "b"], "responses": [],
@@ -35,21 +35,82 @@
     { "name": "another 4xx drops the request",
       "events": ["a", "b"], "responses": [{ "status": 422 }],
       "expect": { "requests": [["a", "b"]], "accepted": 0, "rejected": 2, "stopped": false, "pending": 0 } },
-    { "name": "401 stops the client and drops everything that was waiting",
+    { "name": "401 keeps everything queued and pauses the client",
       "options": { "maxBatchEvents": 2 }, "events": ["a", "b", "c"], "responses": [{ "status": 401 }],
-      "expect": { "requests": [["a", "b"]], "accepted": 0, "rejected": 3, "stopped": true, "pending": 0 } },
-    { "name": "403 stops the client and drops everything that was waiting",
-      "options": { "maxBatchEvents": 2 }, "events": ["a", "b", "c"], "responses": [{ "status": 403 }],
-      "expect": { "requests": [["a", "b"]], "accepted": 0, "rejected": 3, "stopped": true, "pending": 0 } },
-    { "name": "a 401 stop does not survive a restart",
+      "expect": { "requests": [["a", "b"]], "accepted": 0, "rejected": 0, "stopped": true, "pending": 3, "errorsAtLeast": 1 } },
+    { "name": "a restart with the same key after a 401 makes exactly one request and pauses again",
       "steps": [
         { "track": ["a", "b"] },
-        { "flush": true, "expect": { "stopped": true, "rejected": 2, "pending": 0 } },
+        { "flush": true, "expect": { "stopped": true, "rejected": 0, "pending": 2 } },
         { "restart": true },
-        { "track": ["c"] }
+        { "flush": true, "expect": { "stopped": true, "rejected": 0, "pending": 2 } }
+      ],
+      "responses": [{ "status": 401 }, { "status": 401 }],
+      "expect": { "requests": [["a", "b"], ["a", "b"]], "sameRecords": true, "accepted": 0, "rejected": 0, "stopped": true, "pending": 2 } },
+    { "name": "a restart with another key for the same source delivers everything a 401 left queued",
+      "steps": [
+        { "track": ["a", "b"] },
+        { "flush": true, "expect": { "stopped": true, "pending": 2 } },
+        { "restart": { "key": "slurp_pk_0123456789abcdef_web_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2" } },
+        { "flush": true, "expect": { "stopped": false, "accepted": 2, "rejected": 0, "pending": 0 } }
       ],
       "responses": [{ "status": 401 }],
-      "expect": { "requests": [["a", "b"], ["c"]], "accepted": 1, "rejected": 0, "stopped": false, "pending": 0 } },
+      "expect": { "requests": [["a", "b"], ["a", "b"]], "keys": ["slurp_pk_0123456789abcdef_web_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "slurp_pk_0123456789abcdef_web_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"], "sameRecords": true, "accepted": 2, "rejected": 0, "stopped": false, "pending": 0 } },
+    { "name": "403 keeps everything queued and pauses the client",
+      "options": { "maxBatchEvents": 2 }, "events": ["a", "b", "c"], "responses": [{ "status": 403 }],
+      "expect": { "requests": [["a", "b"]], "accepted": 0, "rejected": 0, "stopped": true, "pending": 3, "errorsAtLeast": 1 } },
+    { "name": "a restart with the same key after a 403 makes exactly one request and pauses again",
+      "steps": [
+        { "track": ["a", "b"] },
+        { "flush": true, "expect": { "stopped": true, "rejected": 0, "pending": 2 } },
+        { "restart": true },
+        { "flush": true, "expect": { "stopped": true, "rejected": 0, "pending": 2 } }
+      ],
+      "responses": [{ "status": 403 }, { "status": 403 }],
+      "expect": { "requests": [["a", "b"], ["a", "b"]], "sameRecords": true, "accepted": 0, "rejected": 0, "stopped": true, "pending": 2 } },
+    { "name": "a restart with another key for the same source delivers everything a 403 left queued",
+      "steps": [
+        { "track": ["a", "b"] },
+        { "flush": true, "expect": { "stopped": true, "pending": 2 } },
+        { "restart": { "key": "slurp_pk_0123456789abcdef_web_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2" } },
+        { "flush": true, "expect": { "stopped": false, "accepted": 2, "rejected": 0, "pending": 0 } }
+      ],
+      "responses": [{ "status": 403 }],
+      "expect": { "requests": [["a", "b"], ["a", "b"]], "keys": ["slurp_pk_0123456789abcdef_web_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "slurp_pk_0123456789abcdef_web_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"], "sameRecords": true, "accepted": 2, "rejected": 0, "stopped": false, "pending": 0 } },
+    { "name": "a capture while paused is queued, not sent, and goes out with a new key",
+      "steps": [
+        { "track": ["a"] },
+        { "flush": true, "expect": { "stopped": true, "pending": 1 } },
+        { "track": ["b"] },
+        { "flush": true, "expect": { "stopped": true, "rejected": 0, "pending": 2 } },
+        { "restart": { "key": "slurp_pk_0123456789abcdef_web_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2" } },
+        { "flush": true, "expect": { "stopped": false, "accepted": 2, "pending": 0 } }
+      ],
+      "responses": [{ "status": 401 }],
+      "expect": { "requests": [["a"], ["a", "b"]], "keys": ["slurp_pk_0123456789abcdef_web_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "slurp_pk_0123456789abcdef_web_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"], "accepted": 2, "rejected": 0, "stopped": false, "pending": 0 } },
+    { "name": "a paused client sends nothing even when a capture reaches flushAt",
+      "options": { "flushAt": 2 },
+      "steps": [
+        { "track": ["a", "b"] },
+        { "flush": true, "expect": { "stopped": true, "pending": 2 } },
+        { "track": ["c", "d"] },
+        { "sleep": 50 },
+        { "flush": true, "expect": { "stopped": true, "rejected": 0, "pending": 4 } }
+      ],
+      "responses": [{ "status": 401 }],
+      "expect": { "requests": [["a", "b"]], "accepted": 0, "rejected": 0, "stopped": true, "pending": 4 } },
+    { "name": "a paused client still drops the oldest lines past maxQueue",
+      "options": { "maxQueue": 2 },
+      "steps": [
+        { "track": ["a"] },
+        { "flush": true, "expect": { "stopped": true, "pending": 1 } },
+        { "track": ["b", "c"] },
+        { "flush": true, "expect": { "stopped": true, "rejected": 1, "pending": 2 } },
+        { "restart": { "key": "slurp_pk_0123456789abcdef_web_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2" } },
+        { "flush": true, "expect": { "stopped": false, "accepted": 2, "pending": 0 } }
+      ],
+      "responses": [{ "status": 401 }],
+      "expect": { "requests": [["a"], ["b", "c"]], "accepted": 2, "rejected": 0, "stopped": false, "pending": 0 } },
     { "name": "413 splits the request, first half the larger one, and delivers every event once",
       "events": ["a", "b", "c"], "responses": [{ "status": 413 }],
       "expect": { "requests": [["a", "b", "c"], ["a", "b"], ["c"]], "sameRecords": true, "accepted": 3, "rejected": 0, "stopped": false, "pending": 0 } },

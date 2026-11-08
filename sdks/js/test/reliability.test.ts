@@ -70,7 +70,7 @@ test('the queue is limited by bytes: the oldest lines go and the rest is kept fo
   await client.close()
 })
 
-test('a 401 stop is not saved: the next client on the same storage tries again', async () => {
+test('a 401 pause is not saved: the next client on the same storage tries again and sends what was kept', async () => {
   const storage = memoryStorage()
   const refused = server(() => reply(401))
   const old = createClient({ ...base, fetch: refused.fetch, storage })
@@ -81,20 +81,24 @@ test('a 401 stop is not saved: the next client on the same storage tries again',
   const fresh = createClient({ ...base, fetch: ok.fetch, storage })
   fresh.track('b')
   const result = await fresh.flush()
-  assert.equal(result.stopped, false); assert.equal(result.accepted, 1)
-  assert.deepEqual(ok.bodies.flatMap(names), ['b'], 'what the refused client dropped is gone, not resent')
+  assert.equal(result.stopped, false); assert.equal(result.accepted, 2)
+  assert.deepEqual(ok.bodies.flatMap(names), ['a', 'b'], 'what the refused client kept is sent by the next one')
   await fresh.close()
 })
 
-test('401 and 403 stop the client and report everything that was waiting', async () => {
+test('401 and 403 pause the client, keep everything that was waiting and report the pause once with nothing dropped', async () => {
   for (const status of [401, 403]) {
     const reported: number[] = []
     const s = server(() => reply(status))
-    const client = createClient({ ...base, fetch: s.fetch, storage: memoryStorage(), maxBatchEvents: 2, onError: (_e, d) => { if (d) reported.push(d) } })
+    const client = createClient({ ...base, fetch: s.fetch, storage: memoryStorage(), maxBatchEvents: 2, onError: (_e, d) => { reported.push(d) } })
     for (let i = 0; i < 5; i++) client.track(`e${i}`)
     const result = await client.flush()
-    assert.equal(result.stopped, true, `HTTP ${status}`); assert.equal(result.pending, 0)
-    assert.deepEqual(reported, [5], `HTTP ${status}: all five were waiting, not only the batch that was sent`)
+    assert.equal(result.stopped, true, `HTTP ${status}`); assert.equal(result.pending, 5, `HTTP ${status}: nothing was dropped`)
+    client.track('e5')
+    await client.flush(); await client.flush()
+    assert.equal(client.pending, 6, 'a capture while paused is queued')
+    assert.equal(s.bodies.length, 1, 'and nothing more is sent')
+    assert.deepEqual(reported, [0], `HTTP ${status}: the pause is reported once, with dropped 0`)
     await client.close()
   }
 })

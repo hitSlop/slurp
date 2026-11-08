@@ -56,7 +56,7 @@ export function storageKey(endpoint: string, key: string): string {
   return `@hitslop/slurp-sdk:v1:${base}:${parsed ? `${parsed[1]}:${parsed[2]}` : key}`
 }
 
-/** What is saved: the identity, the lines not yet acknowledged, and the retry deadline. Nothing else (no batches, no stop flag). */
+/** What is saved: the identity, the lines not yet acknowledged, and the retry deadline. Nothing else (no batches, no pause flag). */
 export interface Saved {
   version: 1
   anonymousId: string

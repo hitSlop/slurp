@@ -3,7 +3,7 @@ import { bytes } from './event.ts'
 /**
  * The lines waiting to be sent (one JSON record each, oldest first) and what is on the wire right now. Pure state, no I/O.
  *
- * The first `inFlight` lines belong to the request being answered. They are only ever removed by `ack`, `dropLines`, `halve` and `clear`,
+ * The first `inFlight` lines belong to the request being answered. They are only ever removed by `ack`, `dropLines` and `halve`,
  * which all assume the request is over, so a capture that overflows the queue meanwhile can never discard them.
  * `inFlight` is not persisted: after a restart every line is simply sent again, and the import dedupes by (source, event id).
  */
@@ -84,12 +84,5 @@ export class Queue {
     this.split = Math.ceil(k / 2)
     this.inFlight = 0
     return false
-  }
-
-  /** Remove everything, in flight or not. Returns how many lines there were. */
-  clear(): number {
-    const count = this.lines.length
-    this.load([])
-    return count
   }
 }

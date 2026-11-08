@@ -1,7 +1,7 @@
 /** What to do about one answer from the Worker. See "SDK delivery" in docs/contracts.md. Pure. */
 export type Outcome =
   | { kind: 'ok' }
-  | { kind: 'stop' }
+  | { kind: 'pause' }
   | { kind: 'retry'; delayMs?: number }
   | { kind: 'split' }
   | { kind: 'rejected'; lines: number[]; reasons: string }
@@ -33,7 +33,7 @@ function rejectedLines(body: string, k: number): { lines: number[]; reasons: str
 
 export function classify(status: number, retryAfter: string | null | undefined, body: string, k: number, now: number): Outcome {
   if (status >= 200 && status < 300) return { kind: 'ok' }
-  if (status === 401 || status === 403) return { kind: 'stop' }
+  if (status === 401 || status === 403) return { kind: 'pause' }
   if (status === 408 || status === 429 || status >= 500) {
     return { kind: 'retry', delayMs: status === 429 || status === 503 ? retryAfterMs(retryAfter, now) : undefined }
   }

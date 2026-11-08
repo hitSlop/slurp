@@ -22,7 +22,7 @@ export function runConformance(harness: Harness): void {
   for (const scenario of suite.scenarios) {
     test(`conformance (${harness.name}): ${scenario.name}`, async () => {
       const script: { status: number; retryAfter?: string; retryAfterDateSeconds?: number; rejected?: number[]; track?: string[] }[] = [...scenario.responses]
-      const requests: { lines: string[]; at: number }[] = []
+      const requests: { lines: string[]; at: number; key: string }[] = []
       const errors: { message: string; dropped: number }[] = []
       const pad = scenario.padBytes ? { pad: 'x'.repeat(scenario.padBytes) } : {}
       let client!: SlurpClient
@@ -37,8 +37,8 @@ export function runConformance(harness: Harness): void {
         removeItem: name => memory.removeItem(name),
       }
       const storage = harness.storage ? harness.storage(base) : base
-      const fetch = (async (_url: string, init: { body: string }) => {
-        requests.push({ lines: init.body.trimEnd().split('\n'), at: Date.now() })
+      const fetch = (async (_url: string, init: { body: string; headers: Record<string, string> }) => {
+        requests.push({ lines: init.body.trimEnd().split('\n'), at: Date.now(), key: init.headers.Authorization.replace('Bearer ', '') })
         const next = script.shift() ?? { status: 200 }
         for (const name of next.track ?? []) client.track(name, pad)
         if (next.status === 0) throw new TypeError('network error')
@@ -48,8 +48,8 @@ export function runConformance(harness: Harness): void {
         const body = next.rejected ? JSON.stringify({ error: 'invalid records', rejected: next.rejected.map(line => ({ line, reason: 'bad record' })) }) : ''
         return new Response(next.status === 204 ? null : body, { status: next.status, headers })
       }) as any
-      const make = () => harness.create({
-        key, endpoint: 'https://worker.example/v1/events', flushIntervalMs: 3_600_000, storage, fetch,
+      const make = (withKey = key) => harness.create({
+        key: withKey, endpoint: 'https://worker.example/v1/events', flushIntervalMs: 3_600_000, storage, fetch,
         onError: (error, dropped) => { errors.push({ message: error.message, dropped }) }, ...scenario.options,
       })
       /** Flush, and flush again after each retry delay, until nothing is pending or the client has stopped. */
@@ -75,7 +75,7 @@ export function runConformance(harness: Harness): void {
         else if (step.flush) result = await settle()
         else if (step.flushOnce) result = await client.flush()
         else if (step.sleep !== undefined) await wait(step.sleep)
-        else if (step.restart) { await client.close(); client = make() }
+        else if (step.restart) { await client.close(); client = make(step.restart.key) }
         else if (step.replace) { void client.close(); client = make() }
         else assert.fail(`unknown step ${JSON.stringify(step)}`)
         if (step.expect) { assert.ok(result, 'expect belongs on a flush step'); check(result, step.expect) }
@@ -86,6 +86,7 @@ export function runConformance(harness: Harness): void {
       const names = requests.map(request => request.lines.map(line => JSON.parse(line).event))
       assert.deepEqual(names, expected.requests, 'requests')
       check(result, expected)
+      if (expected.keys) assert.deepEqual(requests.map(request => request.key), expected.keys, 'keys')
       if (expected.sameRecords) {
         const seen = new Map<string, string>()
         for (const { lines } of requests) for (const line of lines) {

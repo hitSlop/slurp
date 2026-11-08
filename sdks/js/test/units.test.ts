@@ -87,8 +87,8 @@ test('response: every status maps to one action', () => {
   const now = 1_000_000
   assert.deepEqual(classify(200, null, '', 2, now), { kind: 'ok' })
   assert.deepEqual(classify(204, null, '', 2, now), { kind: 'ok' })
-  assert.deepEqual(classify(401, null, '', 2, now), { kind: 'stop' })
-  assert.deepEqual(classify(403, null, '', 2, now), { kind: 'stop' })
+  assert.deepEqual(classify(401, null, '', 2, now), { kind: 'pause' })
+  assert.deepEqual(classify(403, null, '', 2, now), { kind: 'pause' })
   assert.deepEqual(classify(413, null, '', 2, now), { kind: 'split' })
   assert.deepEqual(classify(408, null, '', 2, now), { kind: 'retry', delayMs: undefined })
   assert.deepEqual(classify(500, '7', '', 2, now), { kind: 'retry', delayMs: undefined }, 'Retry-After is only read on 429 and 503')

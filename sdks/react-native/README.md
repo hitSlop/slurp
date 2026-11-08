@@ -32,7 +32,7 @@ Queued events are sent:
 - when the app returns to `active`;
 - when the network comes back, if you pass NetInfo.
 
-Failures (408, 429, 5xx, no network, or no answer within `requestTimeoutMs`) back off with jitter and honor `Retry-After`, including across relaunches; the events stay queued and are resent unchanged. Events are never truncated; one larger than 1 MiB is dropped and reported through `onError`. At most `maxQueueBytes` (default **2 MiB** here, 4 MiB on the web) are kept offline, oldest dropped first and reported.
+Failures (408, 429, 5xx, no network, or no answer within `requestTimeoutMs`) back off with jitter and honor `Retry-After`, including across relaunches; the events stay queued and are resent unchanged. Events are never truncated; one larger than 1 MiB is dropped and reported through `onError`. At most `maxQueueBytes` (default **2 MiB** here, 4 MiB on the web) are kept offline, oldest dropped first and reported. A 401 or 403 (a wrong or revoked key) keeps the queue and pauses sending until the next launch, which tries once; a new key for the same source delivers what was kept.
 
 ## Options
 

@@ -192,23 +192,26 @@ test('durable delivery, backpressure, splitting and permanent auth failure leave
   await unauthorized.flush()
   assert.equal(records.length, start + 1)
   assert.equal(records[start].status, 401)
-  assert.equal(unauthorized.pending, 0)
+  assert.equal(unauthorized.pending, 2, 'a 401 keeps the queue')
   unauthorized.track('after_401')
   await unauthorized.flush()
   await unauthorized.flush()
-  assert.equal(records.length, start + 1)
-  assert.deepEqual(drops, [2, 1])
+  assert.equal(unauthorized.pending, 3)
+  assert.equal(records.length, start + 1, 'a paused client sends nothing more')
+  assert.deepEqual(drops, [0], 'the pause is reported once, with nothing dropped')
   console.log('[sdk gateway] phase: read key cannot write')
   const forbiddenDrops: number[] = []
   const forbidden = make({ key: secret.key, onError: (_error: Error, dropped: number) => forbiddenDrops.push(dropped) })
   forbidden.track('read_key_cannot_write')
   await forbidden.flush()
   assert.equal(records.at(-1)!.status, 403)
-  const stoppedAt = records.length
+  assert.equal(forbidden.pending, 1, 'a 403 keeps the queue')
+  const pausedAt = records.length
   forbidden.track('after_403')
   await forbidden.flush()
-  assert.equal(records.length, stoppedAt)
-  assert.deepEqual(forbiddenDrops, [1, 1])
+  assert.equal(forbidden.pending, 2)
+  assert.equal(records.length, pausedAt)
+  assert.deepEqual(forbiddenDrops, [0])
 
   console.log('[sdk gateway] phase: queue limits and invalid events')
   const rejected: number[] = []

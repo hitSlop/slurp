@@ -17,6 +17,47 @@ struct State {
     down: bool,
     /// Answer `ListProjects` with a 500.
     list_projects_fails: bool,
+    /// What `GET /v1/admin/status` does.
+    admin_status: AdminStatus,
+}
+enum AdminStatus {
+    /// A report (the JSON body the Worker sends).
+    Report(String),
+    /// A Worker deployed before the route existed.
+    Missing,
+    /// A Worker that fails the request.
+    Broken,
+}
+
+/// A project as `/v1/admin/status` lists it.
+fn project(name: &str, status: &str, issues: &[(&str, &str)]) -> Value {
+    serde_json::json!({
+        "id": "prj_0123456789abcdef", "name": name, "status": status,
+        "issues": issues.iter().map(|(l, m)| serde_json::json!({"level": l, "message": m})).collect::<Vec<_>>(),
+        "sources": ["default", "web"], "archives": 2, "events": 10, "bytes": 100, "bufferedBytes": 0,
+        "pending": false, "lastArchiveAt": "2026-11-08T00:00:00.000Z",
+    })
+}
+/// The report for these projects, with its summary and issue list worked out as the Worker does.
+fn report(projects: Vec<Value>) -> String {
+    let issues: Vec<Value> = projects
+        .iter()
+        .flat_map(|p| {
+            p["issues"].as_array().unwrap().iter().map(|i| {
+                serde_json::json!({"project": p["name"], "level": i["level"], "message": i["message"]})
+            })
+        })
+        .collect();
+    let count = |level: &str| issues.iter().filter(|i| i["level"] == level).count();
+    serde_json::json!({
+        "generatedAt": "2026-11-08T00:00:00.000Z", "release": env!("CARGO_PKG_VERSION"), "build": null,
+        "summary": {"projects": projects.len(), "errors": count("error"), "warnings": count("warn")},
+        "issues": issues, "projects": projects,
+    })
+    .to_string()
+}
+fn set_admin_status(fake: &Fake, mode: AdminStatus) {
+    fake.state.lock().expect("lock").admin_status = mode;
 }
 type Shared = Arc<Mutex<State>>;
 
@@ -114,6 +155,23 @@ fn fake_worker(purges: Arc<Mutex<Vec<String>>>, state: Shared) -> u16 {
             } else if request_line.contains("/v1/admin/purge") {
                 purges.lock().expect("lock").push(text.clone());
                 r#"{"ok":true,"projects":0,"archives":0,"strays":0}"#.to_owned()
+            } else if request_line.contains("/v1/admin/status") {
+                if !text.to_ascii_lowercase().contains("authorization: bearer ") {
+                    status = "401 Unauthorized";
+                    r#"{"error":"invalid token"}"#.to_owned()
+                } else {
+                    match &state.lock().expect("lock").admin_status {
+                        AdminStatus::Report(body) => body.clone(),
+                        AdminStatus::Missing => {
+                            status = "404 Not Found";
+                            "not found".to_owned()
+                        }
+                        AdminStatus::Broken => {
+                            status = "503 Service Unavailable";
+                            r#"{"error":"storage is unavailable"}"#.to_owned()
+                        }
+                    }
+                }
             } else if request_line.contains("/v1/rpc/ListProjects") {
                 if state.lock().expect("lock").list_projects_fails {
                     status = "500 Internal Server Error";
@@ -170,6 +228,7 @@ fn setup() -> Fake {
         health: current_health(),
         down: false,
         list_projects_fails: false,
+        admin_status: AdminStatus::Report(report(vec![])),
     }));
     let port = fake_worker(purges.clone(), state.clone());
     fake_wrangler(dir.path(), port);
@@ -317,6 +376,128 @@ fn init_applies_settings_and_status_reads_the_receipt() {
             && human.contains(env!("CARGO_PKG_VERSION"))
             && human.contains("API"),
         "{human}"
+    );
+}
+
+fn status_json(fake: &Fake) -> (bool, Value) {
+    let out = slurp(fake, &["cloud", "status", "--json"]);
+    let value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+        .unwrap_or_else(|e| panic!("{e}: {}", text(&out)));
+    (out.status.success(), value)
+}
+
+#[test]
+fn status_with_no_issues_lists_the_projects_and_succeeds() {
+    let fake = deployed_fake();
+    set_admin_status(
+        &fake,
+        AdminStatus::Report(report(vec![project("shop", "ok", &[])])),
+    );
+    let human = slurp(&fake, &["cloud", "status"]);
+    let shown = text(&human);
+    assert!(human.status.success(), "{shown}");
+    assert!(shown.contains("Issues      none"), "{shown}");
+    assert!(
+        shown.contains(
+            "shop [ok] sources: default, web; 2 archives, 10 events; last archive 2026-11-08"
+        ),
+        "{shown}"
+    );
+    let (ok, status) = status_json(&fake);
+    assert!(ok);
+    assert_eq!(status["summary"]["projects"], 1);
+    assert_eq!(status["issues"].as_array().unwrap().len(), 0);
+    assert_eq!(status["issues_note"], Value::Null);
+    let p = &status["projects"][0];
+    assert_eq!(p["name"], "shop");
+    assert_eq!(p["last_archive_at"], "2026-11-08T00:00:00.000Z");
+    assert_eq!(p["sources"], serde_json::json!(["default", "web"]));
+}
+
+#[test]
+fn status_reports_a_failing_project_and_exits_nonzero() {
+    let fake = deployed_fake();
+    let failing = project(
+        "shop",
+        "error",
+        &[("error", "Archiving has failed 3 times in a row.")],
+    );
+    set_admin_status(
+        &fake,
+        AdminStatus::Report(report(vec![project("blog", "ok", &[]), failing])),
+    );
+    let human = slurp(&fake, &["cloud", "status"]);
+    let shown = text(&human);
+    assert!(!human.status.success(), "{shown}");
+    assert!(
+        shown.contains("ERROR shop: Archiving has failed 3 times in a row."),
+        "{shown}"
+    );
+    let (ok, status) = status_json(&fake);
+    assert!(!ok, "problems are a failing status");
+    assert_eq!(status["summary"]["errors"], 1);
+    assert_eq!(status["issues"][0]["project"], "shop");
+    assert_eq!(status["projects"][1]["status"], "error");
+}
+
+#[test]
+fn status_warnings_alone_do_not_fail() {
+    let fake = deployed_fake();
+    set_admin_status(
+        &fake,
+        AdminStatus::Report(report(vec![project(
+            "shop",
+            "warn",
+            &[("warn", "The buffer is 85% full.")],
+        )])),
+    );
+    let human = slurp(&fake, &["cloud", "status"]);
+    let shown = text(&human);
+    assert!(human.status.success(), "{shown}");
+    assert!(
+        shown.contains("warning shop: The buffer is 85% full."),
+        "{shown}"
+    );
+    assert_eq!(status_json(&fake).1["summary"]["warnings"], 1);
+}
+
+#[test]
+fn status_on_a_worker_without_the_report_says_to_upgrade() {
+    let fake = deployed_fake();
+    set_admin_status(&fake, AdminStatus::Missing);
+    let human = slurp(&fake, &["cloud", "status"]);
+    let shown = text(&human);
+    assert!(human.status.success(), "{shown}");
+    assert!(
+        shown.contains("this Worker predates the issue report; run slurp cloud upgrade")
+            && shown.contains("Release"),
+        "{shown}"
+    );
+    let (ok, status) = status_json(&fake);
+    assert!(ok);
+    assert_eq!(status["reachable"], true);
+    assert!(
+        status["issues_note"]
+            .as_str()
+            .unwrap()
+            .contains("slurp cloud upgrade")
+    );
+}
+
+#[test]
+fn status_survives_a_worker_that_fails_the_report() {
+    let fake = deployed_fake();
+    set_admin_status(&fake, AdminStatus::Broken);
+    let human = slurp(&fake, &["cloud", "status"]);
+    let shown = text(&human);
+    assert!(human.status.success(), "{shown}");
+    assert!(
+        shown.contains("not checked: the Worker answered 503"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Reachable"),
+        "the rest of the status is still shown"
     );
 }
 

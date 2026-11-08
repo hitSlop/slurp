@@ -76,6 +76,10 @@ enum Operation {
     /// Check the events for common data problems (spelling variants, bad clocks, bots, double tracking). Changes nothing.
     Health,
     Describe,
+    /// Discover built-in SQL macros and runnable examples; no project is required.
+    Functions {
+        name: Option<String>,
+    },
     /// Download newly published archives into the local database.
     Sync {
         /// First ask the Worker to publish what it has buffered, so events sent a moment ago are included. Needs the admin token.
@@ -211,6 +215,9 @@ fn main() -> std::process::ExitCode {
     }
 }
 fn run(cli: Cli) -> Result<serde_json::Value> {
+    if let Operation::Functions { name } = &cli.command {
+        return slurp_app::functions::lookup(name.as_deref());
+    }
     use serde_json::json;
     let cwd = std::env::current_dir()?;
     match cli.command {

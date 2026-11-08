@@ -68,6 +68,9 @@ jobs:
       # CI is set here, so a native test that cannot find DuckDB fails instead of skipping.
       - run: cargo test --workspace
         if: needs.changes.outputs.full != 'false'
+      - name: Interactive setup in isolated terminals
+        if: needs.changes.outputs.full != 'false'
+        run: python3 scripts/test-setup-terminal.py
       - run: cargo doc --workspace --no-deps
         if: needs.changes.outputs.full != 'false'
 

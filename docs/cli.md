@@ -312,3 +312,7 @@ only after successful verification during this run; false with
 are retained, and `missing` includes `login` only when no backend credentials exist.
 Joining a project with a project secret finishes with sync instructions; creating
 or reopening a project as its admin also provides the SDK quickstart key.
+
+## SQL helper discovery
+
+Run `slurp functions` to list the eight built-in macros, or `slurp functions calendar` for one signature, description, and runnable example. Discovery needs no project, DuckDB, credentials, or network. The MCP `functions` tool accepts the same optional `name`. This catalogue covers Slurp macros; helper views remain listed by `describe_schema`, and behavioral extension functions are documented separately.

@@ -130,13 +130,18 @@ impl Server {
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!(
-                "Slurp gives you this project's product events in a local DuckDB table named events. Start with describe_schema, then run read-only SQL with sql. Use events_with_person.person_id to count people, not user_id. New events arrive about every 10 minutes: call sync to fetch them. Reports: report_check then report_build.{send}"
+                "Slurp gives you this project's product events in a local DuckDB table named events. Start with describe_schema, then run read-only SQL with sql. Use functions for helper signatures and examples. Use events_with_person.person_id to count people, not user_id. New events arrive about every 10 minutes: call sync to fetch them. Reports: report_check then report_build.{send}"
             ),
         })
     }
 
     fn tools(&self) -> Vec<Value> {
         let mut tools = vec![
+            tool(
+                "functions",
+                "Built-in SQL macros with signatures and runnable examples.",
+                json!({"type":"object","properties":{"name":{"type":"string"}}}),
+            ),
             tool(
                 "status",
                 "Project, database path, event count and the last sync.",
@@ -221,6 +226,11 @@ impl Server {
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value> {
         let w = &self.workspace;
         match name {
+            "functions" => crate::functions::lookup(
+                args.get("name")
+                    .map(|v| v.as_str().context("name must be a string"))
+                    .transpose()?,
+            ),
             "status" => w.status(),
             "describe_schema" => describe_schema(w),
             "sql" => {

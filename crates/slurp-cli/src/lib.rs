@@ -19,6 +19,7 @@ pub mod storage;
 pub mod system;
 use error::{ErrorCode, Failure};
 pub use import::ImportStats;
+pub mod functions;
 pub mod health;
 pub mod helpers;
 pub mod import;

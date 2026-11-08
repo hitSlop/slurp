@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Discover built-in SQL macro signatures and examples with `slurp functions [NAME]` or MCP.
+- Added isolated terminal-onboarding checks and deterministic slow-response Swift compatibility coverage.
+
 - Fixed person counts in the MCP summary and health after anonymous visitors identify.
 - Added the `slurp_summary` view for tracked activity, active people, and identity/location coverage.
 - DuckDB sessions default to UTC across SQL, reports, and the interactive shell.

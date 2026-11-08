@@ -77,6 +77,7 @@ Plain variables in `backend/wrangler.jsonc` (`vars`); change and run `wrangler d
 | `GROUP_COMMIT_MS` | `500` | Concurrent requests inside this window share one write. `0` writes each request on its own. Higher saves cost, adds latency to each acknowledgement. |
 | `BUFFER_CAP_BYTES` | `67108864` | Unsealed data per project. Beyond it ingestion answers `429` with `Retry-After`. |
 | `MAX_BODY_BYTES` | `10485760` | Largest accepted request body (`413` beyond). |
+| `ARCHIVE_RETRY_MS` | `5000` | If writing an archive to R2 fails, the first retry comes after this long, then doubles up to `SEAL_INTERVAL_MS` and keeps trying until R2 answers. A quiet project publishes by itself once R2 is back. Not in `wrangler.jsonc`; add it to `vars` to change it. |
 | `RETENTION_DAYS` | `0` | Delete archives older than this many days, even when the project has gone quiet (the Worker wakes itself when the oldest archive expires). `0` keeps everything and the API reports a retention window of 0. |
 
 Secret: `ADMIN_TOKEN` (at least 20 characters). `DEBUG` enables `/__debug` routes for tests; never set it on a real deployment.

@@ -11,6 +11,8 @@ export interface Env {
   GROUP_COMMIT_MS: string
   BUFFER_CAP_BYTES: string
   RETENTION_DAYS: string
+  /** First delay, in milliseconds, before publishing is retried after R2 fails (default 5000); it doubles up to the seal interval. */
+  ARCHIVE_RETRY_MS?: string
   /** Largest accepted ingest body in bytes (default 10 MiB). */
   MAX_BODY_BYTES?: string
   /** Identifies the deployed bundle (set by `slurp cloud init`); lets the CLI tell when an upgrade is available. */

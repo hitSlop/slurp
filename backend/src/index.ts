@@ -318,6 +318,8 @@ export default {
       if (op === 'rotate') { await stub.flush(); return Response.json(await stub.rotate()) }
       if (op === 'sweep') { await stub.sweep(); return Response.json(await stub.stats()) }
       if (op === 'fail-flush') { await stub.failNextFlush(); return Response.json({ ok: true }) }
+      if (op === 'fail-archive' || op === 'heal-archive') { await stub.setFailArchive(op === 'fail-archive'); return Response.json({ ok: true }) }
+      if (op === 'alarm') { await stub.runAlarm(); return Response.json(await stub.stats()) }
       if (op === 'stats') return Response.json(await stub.stats())
     }
     return (await w.serveHealthRpc(healthService, ctx, req))

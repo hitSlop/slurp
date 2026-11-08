@@ -1772,6 +1772,8 @@ var ProjectDO = class extends DurableObject2 {
   recent = /* @__PURE__ */ new Map();
   /** Test hook (DEBUG only): make the next group commit fail once. */
   failNext = false;
+  /** Test hook (DEBUG only): make archive writes to R2 fail until cleared. */
+  failArchive = false;
   /** Rows written by this object since it was last constructed (what Durable Object SQLite bills). */
   rows = 0;
   constructor(ctx, env) {
@@ -2042,10 +2044,26 @@ var ProjectDO = class extends DurableObject2 {
       console.error("flush failed", e);
     }
   }
+  /**
+   * A Durable Object alarm that throws is retried by Cloudflare six times in about two minutes and then not again until something calls
+   * `setAlarm`. A quiet project has nothing that would, so an R2 outage longer than that would leave its events unpublished for good. So
+   * a failure here is caught and a later attempt is scheduled by us: it backs off from `ARCHIVE_RETRY_MS` (5 s) up to the seal interval,
+   * forever, and is logged each time.
+   */
   async alarm() {
     await this.flush();
-    await this.seal();
-    await this.sweep();
+    try {
+      await this.seal();
+      await this.sweep();
+      if (this.meta("archive_failures") !== null) this.w("DELETE FROM meta WHERE k=?", "archive_failures");
+    } catch (e) {
+      const failures = Number(this.meta("archive_failures") ?? 0) + 1;
+      this.setMeta("archive_failures", String(failures));
+      const delay = Math.min(this.num("ARCHIVE_RETRY_MS", 5e3) * 2 ** Math.min(failures - 1, 20), Math.max(this.num("SEAL_INTERVAL_MS", 6e5), this.num("ARCHIVE_RETRY_MS", 5e3)));
+      console.error(`archive publication failed (attempt ${failures}); trying again in ${Math.round(delay / 1e3)} s`, e);
+      await this.ctx.storage.setAlarm(Date.now() + delay);
+      return;
+    }
     this.pruneHookSeen();
     const g = this.gen();
     const left = this.sql.exec(`SELECT COUNT(*) c FROM b_${g}`).one().c;
@@ -2075,7 +2093,10 @@ var ProjectDO = class extends DurableObject2 {
     const sha = await sha256Hex(gz);
     const name = `${pad20(intent.seq)}-${sha}.jsonl.gz`;
     const r2key = `v1/projects/${this.ctx.id.name}/archives/${this.archiveId()}/events/${name}`;
-    await retry(() => this.env.ARCHIVE.put(r2key, gz, { httpMetadata: { contentType: "application/gzip" } }));
+    await retry(async () => {
+      if (this.failArchive) throw new Error("injected archive failure");
+      return this.env.ARCHIVE.put(r2key, gz, { httpMetadata: { contentType: "application/gzip" } });
+    });
     const row = { seq: intent.seq, name, r2key, size: gz.length, sha256: sha, events, created_at: Date.now() };
     this.ctx.storage.transactionSync(() => {
       this.w("INSERT INTO manifest VALUES(?,?,?,?,?,?,?)", row.seq, row.name, row.r2key, row.size, row.sha256, row.events, row.created_at);
@@ -2117,6 +2138,13 @@ var ProjectDO = class extends DurableObject2 {
   /** Test hook (DEBUG only). */
   async failNextFlush() {
     this.failNext = true;
+  }
+  /** Test hooks (DEBUG only): break or heal archive writes, and run the alarm handler now. */
+  async setFailArchive(on) {
+    this.failArchive = on;
+  }
+  async runAlarm() {
+    await this.alarm();
   }
   /** Debug statistics (the DEBUG routes only). */
   async stats() {
@@ -2474,6 +2502,14 @@ var index_default = {
       if (op === "fail-flush") {
         await stub.failNextFlush();
         return Response.json({ ok: true });
+      }
+      if (op === "fail-archive" || op === "heal-archive") {
+        await stub.setFailArchive(op === "fail-archive");
+        return Response.json({ ok: true });
+      }
+      if (op === "alarm") {
+        await stub.runAlarm();
+        return Response.json(await stub.stats());
       }
       if (op === "stats") return Response.json(await stub.stats());
     }

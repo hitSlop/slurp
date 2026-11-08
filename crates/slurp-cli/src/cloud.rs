@@ -306,6 +306,16 @@ pub struct Receipt {
     pub vars: serde_json::Map<String, Value>,
 }
 
+impl Receipt {
+    /// A Worker with a custom domain is served at that domain, which is the address `init` records. Deploying a route makes wrangler
+    /// turn the workers.dev address off, so a receipt that still names workers.dev would fail every readiness check after an upgrade.
+    fn settle_url(&mut self) {
+        if let Some(host) = &self.domain {
+            self.url = format!("https://{host}");
+        }
+    }
+}
+
 fn receipts_dir() -> Result<PathBuf> {
     Ok(slurp_client::config::home()?.join("cloud"))
 }
@@ -345,12 +355,14 @@ fn load_receipts() -> Result<Vec<Receipt>> {
             1,
             "slurp cloud init --worker NEW (or restore a valid receipt for the existing Worker)",
         )?;
-        receipts.push(serde_json::from_slice(&bytes).with_context(|| {
+        let mut receipt: Receipt = serde_json::from_slice(&bytes).with_context(|| {
             format!(
                 "{} is not a valid deployment receipt; fix or delete it",
                 path.display()
             )
-        })?);
+        })?;
+        receipt.settle_url();
+        receipts.push(receipt);
     }
     receipts.sort_by(|a, b| a.worker.cmp(&b.worker));
     Ok(receipts)
@@ -1395,6 +1407,30 @@ async fn destroy(args: &DestroyArgs, ui: &Terminal, machine: bool) -> Result<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn receipt(domain: Option<&str>, url: &str) -> Receipt {
+        Receipt {
+            version: 1,
+            domain: domain.map(str::to_owned),
+            worker: "w".into(),
+            bucket: "b".into(),
+            account_id: None,
+            url: url.into(),
+            build: "x".into(),
+            deployed_at: "2026-11-08T00:00:00Z".into(),
+            vars: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_receipt_with_a_domain_is_served_at_the_domain() {
+        let mut r = receipt(Some("events.example.com"), "https://w.me.workers.dev");
+        r.settle_url();
+        assert_eq!(r.url, "https://events.example.com");
+        let mut plain = receipt(None, "https://w.me.workers.dev");
+        plain.settle_url();
+        assert_eq!(plain.url, "https://w.me.workers.dev");
+    }
 
     #[test]
     fn custom_domain_is_in_the_deployed_configuration() {

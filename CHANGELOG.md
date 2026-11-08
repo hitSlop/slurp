@@ -6,6 +6,7 @@
 
 - The Worker has a dashboard at `/dashboard` that lists your projects and what is wrong with them: failing archive publication, a full ingest buffer, a project that was never set up. The page holds no data and asks for the `ADMIN_TOKEN`; the same report is at `GET /v1/admin/status` (admin token only).
 - `slurp cloud status` lists every project with its issues in one request, and exits 1 when a project has an error. Run `slurp cloud upgrade` first: an older Worker is reported as not checked. Its project lines now show each project's state, sources and last archive (they always read "none yet" before). In `--json`, each project now has `status`, `issues`, `sources`, `archives`, `events`, `buffered_bytes`, `pending` and `last_archive_at` instead of `latest_published`, and `issues`, `summary` and `issues_note` are added at the top level.
+- `slurp cloud upgrade` (and `status`, `doctor`, `destroy`) use a Worker's custom domain as its address when it has one. Before, a saved receipt that still named the `workers.dev` address could report "did not become ready" after a deploy that had worked, because wrangler turns that address off once a domain route is set.
 
 ## 0.2.1
 

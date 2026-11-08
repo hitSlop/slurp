@@ -1,3 +1,4 @@
+mod common;
 use serde_json::{Value, json};
 use slurp_app::{Cancellation, Workspace, system};
 use std::{
@@ -34,7 +35,7 @@ fn value(output: Output) -> Value {
 
 #[test]
 fn system_defaults_and_registry_survive_disconnected_storage() {
-    let Some(engine) = std::env::var_os("SLURP_TEST_DUCKDB") else {
+    let Some(engine) = common::duckdb() else {
         return;
     };
     let user = tempfile::tempdir().expect("user home");

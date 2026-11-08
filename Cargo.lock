@@ -2926,7 +2926,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slurp-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2960,7 +2960,7 @@ dependencies = [
 
 [[package]]
 name = "slurp-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2986,7 +2986,7 @@ dependencies = [
 
 [[package]]
 name = "slurp-document"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ammonia",
  "proptest",
@@ -2998,7 +2998,7 @@ dependencies = [
 
 [[package]]
 name = "slurp-render"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "rquickjs",

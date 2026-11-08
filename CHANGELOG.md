@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - Discover built-in SQL macro signatures and examples with `slurp functions [NAME]` or MCP.
 - Added isolated terminal-onboarding checks and deterministic slow-response Swift compatibility coverage.
-
+- Setup accurately reports whether the Worker connection was verified, including local-only setup.
+- Teammates using project secret keys initialize without admin-only SDK setup requests.
 - Fixed person counts in the MCP summary and health after anonymous visitors identify.
 - Added the `slurp_summary` view for tracked activity, active people, and identity/location coverage.
 - DuckDB sessions default to UTC across SQL, reports, and the interactive shell.

@@ -53,17 +53,11 @@ export type RevokeKeyRequest = { project: string, keyId: string, };
 
 export type RevokeKeyResponse = { key: ApiKey, };
 
-export type RotateWebhookSecretRequest = { project: string, provider: string, };
-
 export type SourceKeyRequest = { project: string, source: string, };
 
 export type SourceKeyResponse = { key: ApiKey, };
 
 export type TokenScope = "admin" | "secret" | "publishable";
-
-export type UpdateProjectRequest = { project: string, name?: string, title?: string, };
-
-export type UpdateProjectResponse = { project: ProjectInfo, };
 
 export type Webhook = { provider: string, url: string, secret: string, sender: string, steps: Array<string>, };
 
@@ -76,13 +70,11 @@ export type Api = {
   CreateProject: { req: CreateProjectRequest; res: CreateProjectResponse };
   GetProject: { req: GetProjectRequest; res: GetProjectResponse };
   ListProjects: { req: ListProjectsRequest; res: ListProjectsResponse };
-  UpdateProject: { req: UpdateProjectRequest; res: UpdateProjectResponse };
   SourceKey: { req: SourceKeyRequest; res: SourceKeyResponse };
   CreateKey: { req: CreateKeyRequest; res: CreateKeyResponse };
   ListKeys: { req: ListKeysRequest; res: ListKeysResponse };
   RevokeKey: { req: RevokeKeyRequest; res: RevokeKeyResponse };
   ConnectWebhook: { req: ConnectWebhookRequest; res: Webhook };
-  RotateWebhookSecret: { req: RotateWebhookSecretRequest; res: Webhook };
   ListArchives: { req: ListArchivesRequest; res: ListArchivesResponse };
   Publish: { req: PublishRequest; res: PublishResponse };
 };

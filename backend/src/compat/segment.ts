@@ -1,14 +1,15 @@
-import { MAX_RECORD_BYTES, validateRecord } from '../canonical.ts'
-import { isoOrUndefined, sha256Hex } from '../util.ts'
-import { type CompatHost, BodyTooLarge, ingestFailure, json, preflight, readBody } from './common.ts'
+import type { Line } from '../record.ts'
+import { isoOrUndefined } from '../util.ts'
+import { type Adapter, type Host, BodyTooLarge, json, preflight, publishable, readBody, requestGeo, submit } from './common.ts'
+import { isObject } from './providers.ts'
 
 /**
- * Segment-compatible ingestion: point an existing Segment SDK at this Worker and events land in the project
- * that owns the key, next to events from the native SDK. Segment's "write key" is a Slurp publishable key.
+ * Segment-compatible ingestion: point an existing Segment SDK at this Worker and events land in the project that owns the key, next to
+ * events from the native SDK. Segment's "write key" is a Slurp publishable key.
  *
- * Written from the SDKs' observable behavior (the HTTP calls they make and the responses they accept).
- * Events are re-serialized as canonical records, not stored byte for byte like the native endpoint, and the
- * translation is deterministic so a retried batch produces identical bytes and dedupes.
+ * Written from the SDKs' observable behavior (the HTTP calls they make and the responses they accept). Events are re-serialized as
+ * records, not stored byte for byte like the native endpoint. Nothing is invented: the id is the SDK's `messageId` and the timestamp is
+ * `timestamp` or `originalTimestamp`; one that is missing is left out.
  */
 
 const SINGLE: Record<string, string> = { t: 'track', i: 'identify', p: 'page', s: 'screen', g: 'group', a: 'alias' }
@@ -25,23 +26,14 @@ export function segmentRoute(method: string, path: string): SegmentRoute | null 
   return null
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const text = (v: unknown): string | undefined => {
   if (typeof v === 'string') return v === '' ? undefined : v
   if (typeof v === 'number' && Number.isFinite(v)) return String(v)
   return undefined
 }
 
-function timestampOf(msg: Record<string, unknown>, sentAt: string | undefined, now: number): string {
-  for (const v of [msg.timestamp, msg.originalTimestamp]) {
-    const iso = isoOrUndefined(v)
-    if (iso) return iso
-  }
-  return isoOrUndefined(sentAt) ?? new Date(now).toISOString()
-}
-
-/** Translate one Segment message into a canonical record line, or explain why it cannot be. */
-export async function translateMessage(raw: unknown, type: string | undefined, sentAt: string | undefined, now: number): Promise<{ line: string } | { reason: string }> {
+/** Translate one Segment message into a record line, or explain why it cannot be. */
+export function translateMessage(raw: unknown, type: string | undefined): { line: string } | { reason: string } {
   if (!isObject(raw)) return { reason: 'message must be an object' }
   const kind = type ?? (typeof raw.type === 'string' ? raw.type : undefined)
   if (!kind || !['track', 'identify', 'page', 'screen', 'group', 'alias'].includes(kind)) return { reason: 'unknown message type' }
@@ -49,7 +41,7 @@ export async function translateMessage(raw: unknown, type: string | undefined, s
   const anonymousId = text(raw.anonymousId)
   const properties = isObject(raw.properties) ? raw.properties : {}
   const traits = isObject(raw.traits) ? raw.traits : isObject((raw.context as any)?.traits) && kind === 'identify' ? (raw.context as any).traits : {}
-  let canonicalType: 'track' | 'identify' = 'track'
+  let recordType: 'track' | 'identify' = 'track'
   let event: string | undefined
   let data: Record<string, unknown>
   switch (kind) {
@@ -59,7 +51,7 @@ export async function translateMessage(raw: unknown, type: string | undefined, s
       data = properties
       break
     case 'identify':
-      if (userId) { canonicalType = 'identify'; data = traits } else { event = 'identify'; data = traits }
+      if (userId) { recordType = 'identify'; data = traits } else { event = 'identify'; data = traits }
       break
     case 'page':
     case 'screen':
@@ -75,12 +67,15 @@ export async function translateMessage(raw: unknown, type: string | undefined, s
       data = { previous_id: text(raw.previousId) ?? null }
   }
   const context: Record<string, unknown> = isObject(raw.context) ? { ...raw.context } : {}
-  delete context.geo // reserved for server enrichment
   if (kind === 'identify') delete context.traits
   context.compat = 'segment'
-  const timestamp = timestampOf(raw, sentAt, now)
-  const id = text(raw.messageId) ?? `segment-${await sha256Hex(JSON.stringify([kind, userId, anonymousId, event, timestamp, data]))}`
-  const record: Record<string, unknown> = { id, type: canonicalType, ...(event !== undefined ? { event } : {}), timestamp }
+  const id = text(raw.messageId)
+  const timestamp = [raw.timestamp, raw.originalTimestamp].map(isoOrUndefined).find(Boolean)
+  const record: Record<string, unknown> = {}
+  if (id) record.id = id
+  record.type = recordType
+  if (event !== undefined) record.event = event
+  if (timestamp) record.timestamp = timestamp
   if (userId) record.user_id = userId
   if (anonymousId) record.anonymous_id = anonymousId
   record.data = data
@@ -99,21 +94,19 @@ function keyFrom(req: Request, body: unknown): string | null {
   return new URL(req.url).searchParams.get('key')
 }
 
-export async function segmentIngest(req: Request, route: SegmentRoute, host: CompatHost): Promise<Response> {
-  const origin = new URL(req.url).origin
-  if (route.kind === 'settings') return settings(req, route.key, origin, host)
-  if (req.method === 'OPTIONS') return preflight(ALLOW_HEADERS)
+async function ingest(req: Request, route: SegmentRoute, host: Host): Promise<Response> {
+  if (route.kind === 'settings') return settings(req, route.key, host)
+  if (req.method === 'OPTIONS') return preflight('POST, GET, OPTIONS', ALLOW_HEADERS)
   if (req.method !== 'POST') return json(405, { error: 'method not allowed' }, { Allow: 'POST, OPTIONS' })
   let bytes: Uint8Array
-  try { bytes = await readBody(req, host.maxBody) } catch (e) {
+  try { bytes = await readBody(req, host.cfg.maxBodyBytes) } catch (e) {
     if (e instanceof BodyTooLarge) return json(413, { error: 'body too large' })
     return json(400, { error: 'unreadable body' })
   }
   let body: unknown
   try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)) } catch { return json(400, { error: 'body must be JSON' }) }
-  const principal = await host.publishable(keyFrom(req, body))
+  const principal = await publishable(host, keyFrom(req, body))
   if (!principal) return json(401, { error: 'invalid write key (use a Slurp publishable key)' })
-  const sentAt = isObject(body) && typeof body.sentAt === 'string' ? body.sentAt : undefined
   let messages: unknown[]
   let type: string | undefined
   if (route.kind === 'batch') {
@@ -123,32 +116,27 @@ export async function segmentIngest(req: Request, route: SegmentRoute, host: Com
     messages = [body]
     type = route.type
   }
-  const now = Date.now()
-  const lines: string[] = []
-  let rejected = 0
-  const encoder = new TextEncoder()
-  for (const m of messages) {
-    const t = await translateMessage(m, type, sentAt, now)
-    // Judge each event on its own: one bad event must not cost the rest of its batch, because Segment SDKs drop a whole 400.
-    if ('reason' in t || 'reason' in validateRecord(t.line) || encoder.encode(t.line).length > MAX_RECORD_BYTES) { rejected++; continue }
-    lines.push(t.line)
-  }
-  if (lines.length === 0) {
-    if (messages.length === 0) return json(200, { success: true, accepted: 0, rejected: 0 })
-    return json(400, { error: 'no valid events in the request', rejected })
-  }
-  const res = await host.ingest(principal, encoder.encode(lines.join('\n') + '\n'), host.geoFor(req, principal.geo))
-  if (!res.ok) return ingestFailure(res)
-  return json(200, { success: true, accepted: lines.length, rejected })
+  const lines: Line[] = messages.map((m, i) => {
+    const t = translateMessage(m, type)
+    return 'reason' in t ? { n: i + 1, error: t.reason } : { n: i + 1, text: t.line }
+  })
+  // Judge each event on its own: one bad event must not cost the rest of its batch, because Segment SDKs drop a whole 400.
+  const result = await submit(host, principal, lines, { invalid: 'skip', geo: requestGeo(req) })
+  if (result instanceof Response) return result
+  if (result.accepted === 0 && messages.length > 0) return json(400, { error: 'no valid events in the request', rejected: messages.length })
+  return json(200, { success: true, accepted: result.accepted, rejected: messages.length - result.accepted })
 }
 
-async function settings(req: Request, key: string, origin: string, host: CompatHost): Promise<Response> {
-  if (req.method === 'OPTIONS') return preflight(ALLOW_HEADERS)
-  if (!(await host.publishable(key))) return json(404, { error: 'unknown project' })
+async function settings(req: Request, key: string, host: Host): Promise<Response> {
+  if (req.method === 'OPTIONS') return preflight('POST, GET, OPTIONS', ALLOW_HEADERS)
+  if (!(await publishable(host, key))) return json(404, { error: 'unknown project' })
+  const origin = new URL(req.url)
   return json(200, {
-    integrations: { 'Segment.io': { apiKey: key, apiHost: `${new URL(origin).host}/v1`, protocol: new URL(origin).protocol === 'http:' ? 'http' : 'https', addBundledMetadata: true, unbundledIntegrations: [] } },
+    integrations: { 'Segment.io': { apiKey: key, apiHost: `${origin.host}/v1`, protocol: origin.protocol === 'http:' ? 'http' : 'https', addBundledMetadata: true, unbundledIntegrations: [] } },
     plan: { track: { __default: { enabled: true, integrations: {} } }, identify: { __default: { enabled: true } }, group: { __default: { enabled: true } } },
     edgeFunction: {}, analyticsNextEnabled: true, middlewareSettings: {}, enabledMiddleware: {}, metrics: { sampleRate: 0 },
     legacyVideoPluginsEnabled: false, remotePlugins: [],
   }, { 'cache-control': 'public, max-age=60' })
 }
+
+export const segment: Adapter<SegmentRoute> = { name: 'segment', match: (method, url) => segmentRoute(method, url.pathname), handle: ingest }

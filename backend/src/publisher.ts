@@ -61,8 +61,6 @@ export class Publisher {
   /** The time the alarm is set to, as far as this object knows. */
   armed: number | null = null
   private inflight: Promise<void> | null = null
-  /** Test hooks (DEBUG only). */
-  faults = { archive: false, afterPut: false, alarm: false }
 
   /** Where archives are stored. A plain field, so a test can put a failing bucket in its place. */
   archive: R2Bucket
@@ -119,7 +117,6 @@ export class Publisher {
   }
 
   private async alarmWrite(write: () => Promise<void>): Promise<void> {
-    if (this.faults.alarm) { this.faults.alarm = false; throw new Error('injected alarm failure') }
     await write()
     this.db.alarmWrites++
   }
@@ -170,10 +167,8 @@ export class Publisher {
     const gz = await this.compress(chunks.map(c => c.id))
     const sha256 = await sha256Hex(gz)
     await retry(async () => {
-      if (this.faults.archive) throw new Error('injected archive failure')
       return this.archive.put(archiveKey(this.project, seq), gz, { httpMetadata: { contentType: 'application/gzip' } })
     })
-    if (this.faults.afterPut) { this.faults.afterPut = false; throw new Error('injected failure after the R2 put') }
     const events = chunks.reduce((n, c) => n + c.events, 0), bytes = chunks.reduce((n, c) => n + c.bytes, 0)
     this.ctx.storage.transactionSync(() => {
       this.db.rows('INSERT INTO manifest(seq, size, sha256, events, created_at) VALUES(?,?,?,?,?)', seq, gz.length, sha256, events, Date.now())
@@ -216,13 +211,13 @@ export class Publisher {
    * that would. So a failure is caught and the retry is scheduled here (`retry_at`): it backs off from ARCHIVE_RETRY_MS up to the seal
    * interval, for ever. Retention does not wait for publication.
    */
-  async alarm(force: boolean): Promise<void> {
+  async alarm(): Promise<void> {
     await this.syncAlarm()
     const now = Date.now()
     let failure: unknown = null
     let published = false
     const due = publicationWake(this.facts(), this.cfg, now)
-    if (force || (due !== null && due <= now)) {
+    if (due !== null && due <= now) {
       try { await this.publish(); published = true } catch (e) { failure = e }
     }
     try { await this.sweep() } catch (e) { failure ??= e }

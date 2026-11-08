@@ -5,7 +5,6 @@ import { hooks } from './compat/hooks.ts'
 import { segment } from './compat/segment.ts'
 import { sentry } from './compat/sentry.ts'
 import { configOf } from './config.ts'
-import { debugRoute } from './debug.ts'
 import { setupPage } from './landing.ts'
 import { native } from './native.ts'
 import type { Env } from './util.ts'
@@ -72,6 +71,6 @@ export default {
       return download(req, ctx, archive[1], archive[2])
     }
     if (path === '/v1/admin/purge') return purge(req, env, ctx)
-    return (await debugRoute(req, env, ctx.auth)) ?? new Response('not found', { status: 404 })
+    return new Response('not found', { status: 404 })
   },
 } satisfies ExportedHandler<Env>

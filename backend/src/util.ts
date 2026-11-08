@@ -4,8 +4,6 @@ export interface Env {
   ARCHIVE: R2Bucket
   /** Admin bearer token for the control plane (a secret). */
   ADMIN_TOKEN: string
-  /** Set to "1" in local dev and tests to enable the /__debug routes. Never set in production. */
-  DEBUG?: string
   /** Identifies the deployed bundle (set by `slurp cloud init`); lets the CLI tell when an upgrade is available. */
   SLURP_BUILD?: string
   // The settings in docs/contracts.md arrive as strings and are parsed by config.ts.

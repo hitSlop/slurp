@@ -36,8 +36,6 @@ export class ProjectDO extends DurableObject<Env> {
   private queue: Queued[] = []
   private queuedBytes = 0
   private timer: ReturnType<typeof setTimeout> | null = null
-  /** Test hook (DEBUG only): make the next group commit fail once. */
-  private failFlush = false
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -168,7 +166,6 @@ export class ProjectDO extends DurableObject<Env> {
     this.queue = []
     this.queuedBytes = 0
     try {
-      if (this.failFlush) { this.failFlush = false; throw new Error('injected flush failure') }
       const chunks: { data: string[]; events: number; bytes: number; atMs: number }[] = []
       let cur: (typeof chunks)[number] | undefined
       for (const item of q) {
@@ -198,11 +195,9 @@ export class ProjectDO extends DurableObject<Env> {
 
   // ---- archives ----
 
-  async alarm(): Promise<void> { await this.runAlarm(false) }
-  /** The alarm's work; `force` publishes even if nothing is due yet (tests). */
-  async runAlarm(force: boolean): Promise<void> {
+  async alarm(): Promise<void> {
     await this.flush()
-    await this.publisher.alarm(force)
+    await this.publisher.alarm()
   }
 
   /** Publish everything buffered now, then report where archives stand. Throws if R2 fails. */
@@ -237,35 +232,5 @@ export class ProjectDO extends DurableObject<Env> {
     this.publisher.armed = null
     this.publisher.bufferedBytes = 0
     return { archives }
-  }
-
-  // ---- test hooks (the DEBUG routes only) ----
-
-  async fault(which: 'flush' | 'archive' | 'after-put' | 'alarm', on: boolean): Promise<void> {
-    if (which === 'flush') this.failFlush = on
-    else if (which === 'archive') this.publisher.faults.archive = on
-    else if (which === 'alarm') this.publisher.faults.alarm = on
-    else this.publisher.faults.afterPut = on
-  }
-  async sweep(): Promise<void> { await this.publisher.sweep(); await this.publisher.rearm() }
-  async stats() {
-    if (!this.ready) return { ready: false, pending: false, rowsWritten: this.db.rowsWritten, alarmWrites: this.db.alarmWrites }
-    const n = (table: string, where = '1') => this.db.one<{ n: number }>(`SELECT COUNT(*) n FROM ${table} WHERE ${where}`)!.n
-    return {
-      ready: true,
-      pending: this.coverage().pending,
-      queued: this.queue.length,
-      bufferedBytes: this.publisher.bufferedBytes,
-      chunks: n('chunks'),
-      intent: this.db.one('SELECT seq, through_chunk FROM intent') ?? null,
-      manifest: n('manifest'),
-      live: n('manifest', 'deleted_at IS NULL'),
-      alarm: await this.ctx.storage.getAlarm(),
-      armed: this.publisher.armed,
-      rowsWritten: this.db.rowsWritten,
-      alarmWrites: this.db.alarmWrites,
-      failures: Number(this.db.one<{ v: string }>("SELECT v FROM settings WHERE k='failures'")?.v ?? 0),
-      retryAt: this.db.one<{ v: string }>("SELECT v FROM settings WHERE k='retry_at'")?.v ?? null,
-    }
   }
 }

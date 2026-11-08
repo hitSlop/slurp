@@ -917,29 +917,12 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
     let receipt = pick_receipt(target.worker.as_deref())?;
     let latest = bundle()?.build;
     let health = health(&receipt.url).await.ok();
-    let mut projects = vec![];
-    if let Ok(token) = crate::login::token(&receipt.url) {
-        use slurp_client::api;
-        let client = slurp_app::project_setup::Api::new(&receipt.url, &token)?;
-        if let Ok(list) = client
-            .call::<api::ListProjects>(&api::ListProjectsRequest {})
-            .await
-        {
-            for project in list.projects {
-                // The coverage rides on every listing; one archive is enough to read it.
-                let coverage = client
-                    .call::<api::ListArchives>(&api::ListArchivesRequest {
-                        project: project.id.clone(),
-                        after: None,
-                        limit: Some(1),
-                    })
-                    .await
-                    .ok()
-                    .map(|page| page.coverage);
-                projects.push(json!({"id": project.id, "name": project.name, "latest_published": coverage.and_then(|c| c.last)}));
-            }
-        }
-    }
+    let report = match crate::login::token(&receipt.url) {
+        Ok(token) => admin_status(&receipt.url, &token).await,
+        Err(_) => IssueReport::NotConnected,
+    };
+    let (projects, issues, summary) = report.parts();
+    let errors = summary["errors"].as_u64().unwrap_or(0);
     let deployed_build = health
         .as_ref()
         .and_then(|h| h["build"].as_str())
@@ -957,6 +940,7 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
         "build": deployed_build, "latest_build": latest,
         "up_to_date": deployed_build.as_deref() == Some(latest.as_str()),
         "deployed_at": receipt.deployed_at, "projects": projects,
+        "issues": issues, "summary": summary, "issues_note": report.note(),
     });
     if machine {
         crate::service::emit(&value)?;
@@ -992,22 +976,137 @@ async fn status(target: &WorkerArg, machine: bool) -> Result<u8> {
             api_version.map_or("unknown".into(), |v| v.to_string()),
         );
         line("Bucket", receipt.bucket.clone());
-        for s in &projects {
+        if let Some(note) = report.note() {
+            line("Issues", format!("not checked: {note}"));
+        } else if issues.is_empty() {
+            line("Issues", "none".into());
+        }
+        for issue in &issues {
             line(
-                "Project",
+                "Issue",
                 format!(
-                    "{} {} (published through seq {})",
-                    s["id"].as_str().unwrap_or(""),
-                    s["name"].as_str().unwrap_or(""),
-                    s["latest_published"].as_str().unwrap_or("none yet")
+                    "{} {}: {}",
+                    if issue["level"] == "error" {
+                        "ERROR"
+                    } else {
+                        "warning"
+                    },
+                    issue["project"].as_str().unwrap_or(""),
+                    issue["message"].as_str().unwrap_or("")
                 ),
             );
         }
-        if projects.is_empty() {
+        for p in &projects {
+            line("Project", project_line(p));
+        }
+        if projects.is_empty() && report.note().is_none() {
             line("Projects", "none yet; run slurp init in an app".into());
         }
     }
-    Ok(0)
+    // Problems the Worker reports are a failing status, so a script or cron job can act on them. Warnings are not.
+    Ok(u8::from(errors > 0))
+}
+
+/// What `GET /v1/admin/status` gave back.
+enum IssueReport {
+    Read(Value),
+    /// No saved admin token for this Worker.
+    NotConnected,
+    /// A Worker deployed before the route existed.
+    TooOld,
+    Failed(String),
+}
+
+impl IssueReport {
+    /// The projects, the issues (worst first) and the summary, with the CLI's own key names. All empty when nothing was read.
+    fn parts(&self) -> (Vec<Value>, Vec<Value>, Value) {
+        let IssueReport::Read(report) = self else {
+            return (vec![], vec![], json!({}));
+        };
+        let list = |key: &str| report[key].as_array().cloned().unwrap_or_default();
+        let projects = list("projects")
+            .iter()
+            .map(|p| {
+                json!({
+                    "id": p["id"], "name": p["name"], "status": p["status"], "issues": p["issues"],
+                    "sources": p["sources"], "archives": p["archives"], "events": p["events"],
+                    "buffered_bytes": p["bufferedBytes"], "pending": p["pending"], "last_archive_at": p["lastArchiveAt"],
+                })
+            })
+            .collect();
+        (projects, list("issues"), report["summary"].clone())
+    }
+
+    /// Why there is no report to show, or `None` when there is one.
+    fn note(&self) -> Option<String> {
+        match self {
+            IssueReport::Read(_) => None,
+            IssueReport::NotConnected => {
+                Some("not connected to this Worker; run slurp connect".into())
+            }
+            IssueReport::TooOld => {
+                Some("this Worker predates the issue report; run slurp cloud upgrade".into())
+            }
+            IssueReport::Failed(why) => Some(why.clone()),
+        }
+    }
+}
+
+/// Every project and what is wrong with it, in one request. Admin token only.
+async fn admin_status(url: &str, token: &str) -> IssueReport {
+    let sent = async {
+        Ok::<_, anyhow::Error>(
+            slurp_client::http_client()?
+                .get(format!("{url}/v1/admin/status"))
+                .bearer_auth(token)
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await?,
+        )
+    };
+    match sent.await {
+        Err(e) => IssueReport::Failed(format!("could not reach the Worker: {e}")),
+        Ok(response) if response.status() == slurp_client::reqwest::StatusCode::NOT_FOUND => {
+            IssueReport::TooOld
+        }
+        Ok(response) if !response.status().is_success() => {
+            IssueReport::Failed(format!("the Worker answered {}", response.status()))
+        }
+        Ok(response) => match response.json().await {
+            Ok(report) => IssueReport::Read(report),
+            Err(e) => IssueReport::Failed(format!("the Worker's answer was not a report: {e}")),
+        },
+    }
+}
+
+/// One project on one line: its state, where it sends from, and how far archiving has got.
+fn project_line(p: &Value) -> String {
+    let last = p["last_archive_at"].as_str().unwrap_or("none yet");
+    format!(
+        "{} {} [{}] sources: {}; {} archives, {} events; last archive {}{}",
+        p["id"].as_str().unwrap_or(""),
+        p["name"].as_str().unwrap_or(""),
+        p["status"].as_str().unwrap_or("unknown"),
+        {
+            let sources: Vec<&str> = p["sources"]
+                .as_array()
+                .map(|s| s.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if sources.is_empty() {
+                "none".to_owned()
+            } else {
+                sources.join(", ")
+            }
+        },
+        p["archives"].as_u64().unwrap_or(0),
+        p["events"].as_u64().unwrap_or(0),
+        last,
+        if p["pending"] == true {
+            " (events waiting)"
+        } else {
+            ""
+        },
+    )
 }
 
 async fn doctor(target: &WorkerArg, machine: bool) -> Result<u8> {

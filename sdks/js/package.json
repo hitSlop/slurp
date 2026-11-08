@@ -53,9 +53,11 @@
     "access": "public"
   },
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "node scripts/test.mjs",
     "typecheck": "tsc -p . --noEmit",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "node scripts/test.mjs unit",
+    "test:integration": "node scripts/test.mjs integration"
   },
   "devDependencies": {
     "jsdom": "^31.0.0",

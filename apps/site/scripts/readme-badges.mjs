@@ -28,6 +28,10 @@ export function badgeUrl(w) {
 }
 
 const groups = [['capture', 'Capture from'], ['keep', 'Keep using'], ['soon', 'Coming']];
+// GitHub fetches README images through a proxy that refuses very long URLs: a badge whose logo is an inline SVG can then show as a broken
+// image on github.com while still working when opened directly. Prefer a Simple Icons `slug` for the README.
+export const MAX_BADGE_URL = 3000;
+
 export function block() {
   const rows = groups.map(([id, label]) => {
     const images = worksWith.filter((w) => w.group === id).map((w) => `<img src="${badgeUrl(w)}" alt="${w.name}: ${w.note}">`);
@@ -47,6 +51,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const to = current.indexOf(END);
   if (from < 0 || to < from) throw new Error('README.md needs the sdk-badges markers');
   const next = `${current.slice(0, from)}${START}\n${block()}\n${current.slice(to)}`;
+  for (const w of worksWith) {
+    const url = badgeUrl(w);
+    if (url.length > MAX_BADGE_URL) {
+      console.error(`${w.name}: its badge URL is ${url.length} characters (limit ${MAX_BADGE_URL}); GitHub would show it broken. Give it a Simple Icons slug.`);
+      process.exit(1);
+    }
+  }
   if (process.argv.includes('--check')) {
     if (next !== current) {
       console.error('README.md badges are out of date: run node apps/site/scripts/readme-badges.mjs');

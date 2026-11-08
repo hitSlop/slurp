@@ -34,7 +34,7 @@ export const worksWith:WorksWith[]=[
  {name:'TypeScript',note:'types included',group:'capture',logo:'typescript',slug:'typescript',color:'3178C6',logoColor:'white'},
  {name:'Web',note:'browser SDK',group:'capture',icon:'globe',slug:'googlechrome',color:'4285F4',logoColor:'white'},
  {name:'Node.js',note:'SDK',group:'capture',logo:'nodejs',slug:'nodedotjs',color:'5FA04E',logoColor:'white'},
- {name:'React Native',note:'preview SDK',group:'capture',logo:'reactnative',color:'61DAFB'},
+ {name:'React Native',note:'preview SDK',group:'capture',logo:'reactnative',slug:'react',color:'61DAFB',logoColor:'white'},
  {name:'Swift',note:'preview SDK',group:'capture',logo:'swift',slug:'swift',color:'F05138',logoColor:'white'},
  {name:'HTTP API',note:'any language',group:'capture',icon:'webhook',slug:'curl',color:'073551',logoColor:'white'},
  {name:'Segment',note:'change the host',group:'keep',logo:'segment',color:'52BD94'},

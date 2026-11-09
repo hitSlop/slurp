@@ -23,8 +23,9 @@ import funnel from '../assets/reports/funnel.png';
 import formatsDark from '../assets/reports/formats-dark.png';
 import byRelease from '../assets/reports/by-release.png';
 import byReleaseSource from '../../../../examples/demo/by-release.md?raw';
+import activatedPeople from '../../../../examples/definitions/activated_people.sql?raw';
 import snippets from '../../../../docs/onboarding/snippets.json';
-const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'},{id:'markdown',label:'Markdown'},{id:'code',label:'In code'},{id:'connections',label:'Connections'},{id:'tools',label:'Your toolkit'}];
+const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'},{id:'markdown',label:'Markdown'},{id:'definitions',label:'Definitions'},{id:'code',label:'In code'},{id:'connections',label:'Connections'},{id:'tools',label:'Your toolkit'}];
 ---
 <Page title="Product analytics for your coding agent" description="See what users do, where they get stuck, and what changed after your last release. Collect events in your own Cloudflare account and let your coding agent investigate." current="home" sections={sections}>
 <header class="hero">
@@ -86,14 +87,31 @@ const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'}
 slurp report build report.md --out ./report --png --pdf
 slurp report open ./report`}/>
 </section>
+<section class="section" id="definitions">
+<span class="section-number">04 / DEFINITIONS</span>
+<h2>Define your numbers once.</h2>
+<p>Who counts as active? Do test accounts count? Write the answer as a small SQL file in your app's repository. Your agent, your reports and your teammates all use it, so the same question gets the same number every time.</p>
+<Code label="slurp/definitions/activated_people.sql" code={activatedPeople.trim()}/>
+<div class="definition-pair">
+<Code label="Any query, report or agent session" code={`SELECT plan, count(*) AS activated
+FROM activated_people(within := INTERVAL 3 DAY)
+GROUP BY plan`}/>
+<ul class="points">
+<li><b>Plain DuckDB SQL.</b> A macro or a view, reviewed in pull requests like the rest of your code.</li>
+<li><b>Everywhere at once.</b> <code>slurp sql</code>, reports, the MCP server and <code>slurp duckdb</code> load them. Nothing is stored in your database.</li>
+<li><b>Checked.</b> <code>slurp definitions</code> lists them and names any file that does not load or would replace a built-in.</li>
+</ul>
+</div>
+<p class="fine">More in the <a href="/docs/#definitions">quickstart</a>. Your agent's skill tells it to reuse definitions and to save the ones you agree on.</p>
+</section>
 <section class="section" id="code">
-<span class="section-number">04 / IN CODE</span>
+<span class="section-number">05 / IN CODE</span>
 <h2>A few lines. Real events.</h2>
 <p>A publishable key sends events. Your read key brings them home.</p>
 <Code label="JavaScript / Node" code={snippets.sdk}/>
 <p class="fine">Install with <code>npm install @hitslop/slurp-sdk</code>. The <a href="/docs/#capture">quickstart</a> has the full snippet, and any language can send events over HTTP.</p>
 </section>
-<section class="section" id="connections"><span class="section-number">05 / CONNECTIONS</span><h2>Bring more of your stack.</h2><p>Use the Slurp SDKs, keep your Segment or Sentry SDK, or send events over HTTP.</p><Connections items={[...current.slice(0,6),...groups.find(g=>g.id==='business')!.items.slice(0,2)]}/><a class="btn" href="/connections/">All connections and ideas ↗</a></section><section class="section" id="tools"><span class="section-number">06 / YOUR TOOLKIT</span><h2>Put your product data to work.</h2><div class="actions"><a class="btn btn-primary" href="/docs/">Get started ↗</a></div></section>
+<section class="section" id="connections"><span class="section-number">06 / CONNECTIONS</span><h2>Bring more of your stack.</h2><p>Use the Slurp SDKs, keep your Segment or Sentry SDK, or send events over HTTP.</p><Connections items={[...current.slice(0,6),...groups.find(g=>g.id==='business')!.items.slice(0,2)]}/><a class="btn" href="/connections/">All connections and ideas ↗</a></section><section class="section" id="tools"><span class="section-number">07 / YOUR TOOLKIT</span><h2>Put your product data to work.</h2><div class="actions"><a class="btn btn-primary" href="/docs/">Get started ↗</a></div></section>
 </Page>
 <style>
 .hero{padding-bottom:6px}
@@ -138,5 +156,10 @@ slurp report open ./report`}/>
 .source-output figure{margin:0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:#fff}
 .source-output figure :global(img){display:block;width:100%;height:auto}
 .source-output figcaption{padding:9px 14px;font:600 11.5px var(--body);color:var(--muted);border-top:1px solid var(--rule)}
-@media(max-width:1000px){.hero-grid,.source-output{grid-template-columns:1fr}.gallery{grid-template-columns:1fr}}
+.definition-pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start;margin:0 0 6px}
+.definition-pair :global(.codebox){margin:0}
+.points{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.points li{padding-left:16px;border-left:2px solid var(--red);font-size:14.5px;line-height:1.5}
+.points b{color:var(--ink)}
+@media(max-width:1000px){.hero-grid,.source-output,.definition-pair{grid-template-columns:1fr}.gallery{grid-template-columns:1fr}}
 </style>

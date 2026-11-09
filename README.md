@@ -215,6 +215,31 @@ claude mcp add slurp -- slurp mcp --project "$PWD" # or MCP: Claude Code, Cursor
 
 `slurp mcp` lets an AI client describe the schema, run read-only SQL (in a sandbox that cannot read local files), sync and build reports; `--allow-send` also lets it send events, with `sender = 'mcp'` (filter them out with `WHERE sender <> 'mcp'`). To post results to your team, `slurp notify slack --channel C0123ABCD --file report/report.png --text "Weekly report"` (Slack bot token) or `slurp notify discord ...` (webhook), run from cron for a scheduled report. Tools, config for each client and a schedule recipe: [docs/integrations.md](docs/integrations.md).
 
+## Define your numbers once
+
+Who counts as active? Do test accounts count? When you and your agent settle what a number means, save it as a definition: a plain DuckDB SQL file in `slurp/definitions/`, committed with your app. Every `slurp sql` query, report, MCP query and `slurp duckdb` session can call it, so the same question gets the same number for every teammate and every agent.
+
+```sql
+-- People who completed an export within `within` of signing up
+-- (7 days unless given), and when they first did.
+-- Unit: person. Eligible: everyone in signups. Times in UTC.
+-- Excludes events sent by the MCP tools.
+CREATE OR REPLACE TEMP MACRO activated_people(within := INTERVAL 7 DAY) AS TABLE
+SELECT s.person_id, s.plan, s.signed_up_at, min(e.timestamp) AS activated_at
+FROM signups s
+JOIN events_with_person e ON e.person_id = s.person_id
+WHERE e.event = 'export_completed' AND e.sender <> 'mcp'
+  AND e.timestamp BETWEEN s.signed_up_at AND s.signed_up_at + within
+GROUP BY s.person_id, s.plan, s.signed_up_at;
+```
+
+```sh
+slurp definitions     # list them and check that they all load
+slurp sql "SELECT plan, count(*) AS activated FROM activated_people(within := INTERVAL 3 DAY) GROUP BY plan"
+```
+
+A definition creates one `TEMP` macro or view named after its file, its leading comments are the description your agent reads, and it may build on another definition (this one uses [`signups`](examples/definitions/signups.sql)). Nothing is stored in your database, and a file that does not load or would replace a built-in is named in the error. Examples: [examples/definitions](examples/definitions). Details: [Project definitions](docs/cli.md#project-definitions).
+
 ## Community
 
 Questions, ideas and show-and-tell: [Discord](https://discord.gg/jprRVWSRdn). Bugs and feature requests: [GitHub issues](https://github.com/hitSlop/slurp/issues). The site is [slurp.run](https://slurp.run).

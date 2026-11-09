@@ -28,6 +28,33 @@ pub const FOLDER: &str = "slurp/definitions";
 /// Starts the guard's error message, so the message can be shown without DuckDB's prefix.
 const GUARD_MARKER: &str = "slurp_definitions:";
 
+/// A project's live definition files or an immutable operation snapshot.
+#[derive(Debug, Clone)]
+pub struct Source {
+    root: PathBuf,
+    snapshot: Option<std::sync::Arc<[Definition]>>,
+}
+impl Source {
+    pub(crate) fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_owned(),
+            snapshot: None,
+        }
+    }
+    pub(crate) fn load(&self) -> Result<std::sync::Arc<[Definition]>> {
+        match &self.snapshot {
+            Some(definitions) => Ok(definitions.clone()),
+            None => Ok(read(&self.root)?.into()),
+        }
+    }
+    pub(crate) fn snapshot(&self) -> Result<Self> {
+        Ok(Self {
+            root: self.root.clone(),
+            snapshot: Some(self.load()?),
+        })
+    }
+}
+
 /// One definition file.
 #[derive(Debug, Clone)]
 pub struct Definition {
@@ -196,57 +223,21 @@ fn ordered(mut definitions: Vec<Definition>) -> Vec<Definition> {
 /// The lowercase names SQL refers to: its identifiers, `"quoted"` ones included, but nothing inside a comment (`--`,
 /// `/* */`) or a string literal (`'...'`, `$$...$$`, `$tag$...$tag$`).
 fn references(sql: &str) -> HashSet<String> {
-    let mut names = HashSet::new();
-    let mut rest = sql;
-    while let Some(c) = rest.chars().next() {
-        if let Some(after) = rest.strip_prefix("--") {
-            rest = after.find('\n').map_or("", |end| &after[end..]);
-        } else if let Some(after) = rest.strip_prefix("/*") {
-            rest = after.find("*/").map_or("", |end| &after[end + 2..]);
-        } else if let Some(after) = rest.strip_prefix('\'') {
-            rest = closing(after, '\'').map_or("", |end| &after[end + 1..]);
-        } else if let Some(after) = rest.strip_prefix('"') {
-            let end = closing(after, '"').unwrap_or(after.len());
-            names.insert(after[..end].replace("\"\"", "\"").to_ascii_lowercase());
-            rest = after.get(end + 1..).unwrap_or_default();
-        } else if let Some((tag, after)) = dollar_tag(rest) {
-            rest = after.find(tag).map_or("", |end| &after[end + tag.len()..]);
-        } else if c.is_ascii_alphabetic() || c == '_' {
-            let end = rest
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .unwrap_or(rest.len());
-            names.insert(rest[..end].to_ascii_lowercase());
-            rest = &rest[end..];
-        } else {
-            rest = &rest[c.len_utf8()..];
-        }
-    }
-    names
-}
-
-/// The byte index of the `quote` that closes a quoted token whose opening quote was just read; a doubled quote stands
-/// for itself.
-fn closing(text: &str, quote: char) -> Option<usize> {
-    let mut from = 0;
-    loop {
-        let at = from + text[from..].find(quote)?;
-        if text[at + 1..].starts_with(quote) {
-            from = at + 2;
-        } else {
-            return Some(at);
-        }
-    }
-}
-
-/// A dollar-quoted string's opening `$tag$` (the tag may be empty) and the text after it.
-fn dollar_tag(text: &str) -> Option<(&str, &str)> {
-    let after = text.strip_prefix('$')?;
-    let end = after
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(after.len());
-    after[end..]
-        .starts_with('$')
-        .then(|| (&text[..end + 2], &after[end + 1..]))
+    crate::sql::tokens(sql)
+        .into_iter()
+        .filter_map(|token| {
+            let text = &sql[token.range];
+            match token.kind {
+                crate::sql::Kind::Identifier => Some(text.to_ascii_lowercase()),
+                crate::sql::Kind::QuotedIdentifier => Some(
+                    text.trim_matches('"')
+                        .replace("\"\"", "\"")
+                        .to_ascii_lowercase(),
+                ),
+                crate::sql::Kind::Parameter => None,
+            }
+        })
+        .collect()
 }
 
 /// The SQL that creates every definition, in the given order. Each file is closed with its own `;`, so a file may end
@@ -336,7 +327,9 @@ fn loading(w: &Workspace, definitions: &[Definition]) -> Workspace {
 /// - anything else is the caller's own failure and is returned as it was.
 pub(crate) fn execute(w: &Workspace, definitions: &[Definition], sql: &str) -> Result<Value> {
     let w = loading(w, definitions);
-    let run = |order: &[Definition]| w.execute_script(&script(order, sql), true, false);
+    let run = |order: &[Definition]| {
+        w.execute_script(&script(order, sql), crate::duckdb::Access::ReadOnly, false)
+    };
     let mut result = run(definitions);
     if let Err(error) = &result
         && install_missing(&w, error)?
@@ -453,7 +446,12 @@ fn load(w: &Workspace, order: &[Definition]) -> Load {
         let _ = write!(script, "\n;\nSELECT {i} AS slurp_definition;\n");
     }
     script.push_str(&guard(order));
-    let run = match w.run_raw(&script, true, false, QUERY_TIMEOUT) {
+    let run = match w.run_raw(
+        &script,
+        crate::duckdb::Access::ReadOnly,
+        false,
+        QUERY_TIMEOUT,
+    ) {
         Ok(run) => run,
         Err(error) => return Load::Problem(format!("could not check the definitions: {error:#}")),
     };
@@ -567,9 +565,9 @@ pub fn show(w: &Workspace, name: &str) -> Result<Entry> {
 fn catalog(w: &Workspace) -> Result<(Vec<Definition>, Vec<CatalogRow>)> {
     let root = w
         .definitions
-        .as_deref()
+        .as_ref()
         .context("definitions belong to a project; run this inside one")?;
-    let definitions = read(root)?;
+    let definitions = root.load()?.to_vec();
     if definitions.is_empty() {
         return Ok((definitions, Vec::new()));
     }
@@ -578,7 +576,11 @@ fn catalog(w: &Workspace) -> Result<(Vec<Definition>, Vec<CatalogRow>)> {
     }
     let w = loading(w, &definitions);
     let definitions = resolve(&w, &definitions).map_err(invalid)?;
-    let rows = w.execute_script(&script(&definitions, CATALOG), true, false)?;
+    let rows = w.execute_script(
+        &script(&definitions, CATALOG),
+        crate::duckdb::Access::ReadOnly,
+        false,
+    )?;
     Ok((definitions, serde_json::from_value(rows)?))
 }
 

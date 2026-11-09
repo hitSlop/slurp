@@ -383,3 +383,105 @@ fn a_broken_or_unsafe_definition_is_named() {
         "{error}"
     );
 }
+
+#[test]
+fn a_snapshot_keeps_definitions_stable_until_the_next_operation() {
+    let Some((temp, w)) = seeded() else { return };
+    define(
+        temp.path(),
+        "sample.sql",
+        "CREATE TEMP MACRO sample() AS TABLE SELECT 1 AS value;",
+    );
+    let live = w.with_definitions(temp.path());
+    let frozen = live.snapshot_definitions().unwrap();
+    define(
+        temp.path(),
+        "sample.sql",
+        "CREATE TEMP MACRO sample() AS TABLE SELECT 2 AS changed;",
+    );
+    assert_eq!(
+        frozen.query("SELECT * FROM sample()").unwrap()["rows"],
+        json!([[1]])
+    );
+    let fresh = live.query("SELECT * FROM sample()").unwrap();
+    assert_eq!(fresh["columns"][0]["name"], "changed");
+    assert_eq!(fresh["rows"], json!([[2]]));
+}
+
+#[test]
+fn report_check_rejects_a_broken_selected_project() {
+    let Some((temp, _)) = seeded() else { return };
+    let report = temp.path().join("report.md");
+    std::fs::write(
+        &report,
+        "# Report\n\n```sql q\nSELECT missing FROM missing_table\n```\n",
+    )
+    .unwrap();
+    std::fs::write(temp.path().join("slurp/slurp.toml"), "invalid TOML").unwrap();
+    let error = failure(&slurp(
+        temp.path(),
+        &["report", "check", report.to_str().unwrap()],
+    ));
+    assert!(error.contains("--project"), "{error}");
+}
+
+/// The definitions published in `examples/definitions` load as they are and give the answer their README promises.
+#[test]
+fn the_published_example_definitions_answer_the_readme_query() {
+    let Some((temp, w)) = seeded() else { return };
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/definitions");
+    for entry in std::fs::read_dir(&examples).unwrap() {
+        let file = entry.unwrap().path();
+        if file.extension().is_some_and(|e| e == "sql") {
+            std::fs::copy(
+                &file,
+                temp.path()
+                    .join("slurp/definitions")
+                    .join(file.file_name().unwrap()),
+            )
+            .unwrap();
+        }
+    }
+    // u1 (pro) exports a day after signing up; u2 (free) only after ten days, outside the default week.
+    w.execute(
+        "INSERT INTO events(sender, id, type, event, user_id, timestamp, data) VALUES \
+         ('web', 'x1', 'track', 'export_completed', 'u1', TIMESTAMPTZ '2026-11-03 10:00:00+00', NULL), \
+         ('web', 'x2', 'track', 'signed_up', 'u2', TIMESTAMPTZ '2026-11-02 10:00:00+00', '{\"plan\":\"free\"}'), \
+         ('web', 'x3', 'track', 'export_completed', 'u2', TIMESTAMPTZ '2026-11-12 10:00:00+00', NULL)",
+        false,
+    )
+    .unwrap();
+    let readme = std::fs::read_to_string(examples.join("README.md")).unwrap();
+    let query = readme
+        .split("```sql\n")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("the README has a sql block");
+    // A query that starts with a `--` comment goes through --file (as an argument it would read as a flag).
+    let file = temp.path().join("activation.sql");
+    std::fs::write(&file, query).unwrap();
+    let result = ok(&slurp(
+        temp.path(),
+        &["sql", "--file", file.to_str().unwrap()],
+    ));
+    let rows: Vec<(String, f64)> = result["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row[0].as_str().unwrap().to_owned(),
+                row[1].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(rows, [("free".to_owned(), 0.0), ("pro".to_owned(), 100.0)]);
+    let week_and_a_half = ok(&slurp(
+        temp.path(),
+        &[
+            "sql",
+            "SELECT count(*) AS n FROM activated_people(within := INTERVAL 11 DAY)",
+        ],
+    ));
+    assert_eq!(week_and_a_half["rows"], json!([[2]]));
+}

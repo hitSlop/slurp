@@ -246,7 +246,7 @@ pub fn build_with_params(
     let text = fs::read_to_string(file)?;
     let mut doc = parse(&text)?;
     let (style, theme) = resolve_look(&doc, look, file)?;
-    let w = &w.with_extensions(&doc.extensions)?;
+    let w = &w.with_extensions(&doc.extensions)?.snapshot_definitions()?;
     let palette = theme.palette();
     let extra_css = match &look.css {
         Some(path) => {
@@ -701,95 +701,18 @@ pub(crate) fn param_preamble(params: &BTreeMap<String, Value>) -> Result<String>
 /// to the end of the line, `/* ... */` (which nests, as in DuckDB), and `$$...$$` or `$tag$...$tag$`. The rest of the SQL is
 /// untouched, so error positions still point at the author's own text.
 pub(crate) fn bind_variables(sql: &str, params: &BTreeMap<String, Value>) -> Result<String> {
-    let chars: Vec<char> = sql.chars().collect();
     let mut out = String::with_capacity(sql.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        match c {
-            '\'' | '"' => {
-                // A quoted string or identifier; a doubled quote is an escaped quote.
-                out.push(c);
-                i += 1;
-                while i < chars.len() {
-                    out.push(chars[i]);
-                    if chars[i] == c {
-                        if chars.get(i + 1) == Some(&c) {
-                            out.push(c);
-                            i += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    i += 1;
-                }
-                i += 1;
-            }
-            '-' if next == Some('-') => {
-                while i < chars.len() && chars[i] != '\n' {
-                    out.push(chars[i]);
-                    i += 1;
-                }
-            }
-            '/' if next == Some('*') => {
-                let mut depth = 0;
-                while i < chars.len() {
-                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
-                        depth += 1;
-                        out.push_str("/*");
-                        i += 2;
-                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
-                        depth -= 1;
-                        out.push_str("*/");
-                        i += 2;
-                        if depth == 0 {
-                            break;
-                        }
-                    } else {
-                        out.push(chars[i]);
-                        i += 1;
-                    }
-                }
-            }
-            '$' => {
-                let mut end = i + 1;
-                while chars
-                    .get(end)
-                    .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
-                {
-                    end += 1;
-                }
-                let name: String = chars[i + 1..end].iter().collect();
-                if chars.get(end) == Some(&'$') && !name.starts_with(|c: char| c.is_ascii_digit()) {
-                    // `$$` or `$tag$` opens a dollar-quoted string that runs to the same marker (or to the end).
-                    let marker: Vec<char> = chars[i..=end].to_vec();
-                    let mut j = end + 1;
-                    while j < chars.len()
-                        && chars[j..].len() >= marker.len()
-                        && chars[j..j + marker.len()] != marker[..]
-                    {
-                        j += 1;
-                    }
-                    let stop = if j < chars.len() {
-                        j + marker.len()
-                    } else {
-                        chars.len()
-                    };
-                    out.extend(&chars[i..stop]);
-                    i = stop;
-                } else {
-                    anyhow::ensure!(params.contains_key(&name), "missing parameter {name}");
-                    out.push_str(&format!("getvariable('{name}')"));
-                    i = end;
-                }
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
+    let mut copied = 0;
+    for token in crate::sql::tokens(sql) {
+        if token.kind == crate::sql::Kind::Parameter {
+            let name = &sql[token.range.start + 1..token.range.end];
+            anyhow::ensure!(params.contains_key(name), "missing parameter {name}");
+            out.push_str(&sql[copied..token.range.start]);
+            out.push_str(&format!("getvariable('{name}')"));
+            copied = token.range.end;
         }
     }
+    out.push_str(&sql[copied..]);
     Ok(out)
 }
 

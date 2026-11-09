@@ -300,6 +300,8 @@ fn is_numeric(duckdb_type: &str) -> bool {
 /// # Errors
 /// Returns an error only when the check itself cannot run; problems with the report are returned as [`Problem`]s.
 pub fn validate(doc: &Document, workspace: Option<&Workspace>) -> Result<Vec<Problem>> {
+    let snapshot = workspace.map(Workspace::snapshot_definitions).transpose()?;
+    let workspace = snapshot.as_ref();
     let mut problems = doc.problems.clone();
     let mut used: BTreeSet<String> = BTreeSet::new();
     // (block index, kind, spec) of blocks whose YAML is usable.

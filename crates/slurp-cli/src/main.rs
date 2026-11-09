@@ -320,14 +320,17 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             let doc = slurp_app::report::parse(&std::fs::read_to_string(&file)?)?;
             slurp_app::report::resolve_look(&doc, &slurp_app::report::Look::default(), &file)?;
             // With a project (and its database) the queries are checked for real; without one only the structure is.
-            let workspace = slurp_app::project::resolve(&cwd, cli.workspace.as_deref())
-                .ok()
-                .and_then(|root| {
-                    Workspace::load(&root)
-                        .ok()
-                        .map(|w| w.with_definitions(&root))
+            let root = match cli.workspace.as_deref() {
+                Some(path) => Some(slurp_app::project::resolve(&cwd, Some(path))?),
+                None => slurp_app::project::discover(&cwd)?,
+            };
+            let workspace = root
+                .map(|root| {
+                    Workspace::load(&root)?
+                        .with_definitions(&root)
+                        .with_extensions(&doc.extensions)
                 })
-                .and_then(|w| w.with_extensions(&doc.extensions).ok());
+                .transpose()?;
             let problems = report_check::validate(&doc, workspace.as_ref())?;
             if let Some(summary) = report_check::error_summary(&problems) {
                 return Err(Failure::new(ErrorCode::InvalidInput, summary).into());

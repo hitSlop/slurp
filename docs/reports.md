@@ -77,7 +77,7 @@ the report has 2 problems:
   line 31, metric (query `headline`): unknown key `feild`, it is ignored. Did you mean `field`?
 ```
 
-Inside a project it also runs each query's `DESCRIBE` (no data is read) to check the SQL, the columns that metrics, tables and charts use, and compiles each chart spec. Outside a project it checks the structure only. `build` runs the same check first, and a query that only fails when it runs (a bad cast) is reported by name and line. Warnings (unused queries, unknown keys, low-contrast themes, characters the PNG font cannot draw) do not stop a build; they are returned in the build output.
+Inside a project it also runs each query's `DESCRIBE` (no data is read) to check the SQL, the columns that metrics, tables and charts use, and compiles each chart spec. Outside a project it checks the structure only; inside a project that is not set up on this computer it stops and asks you to run `slurp init`, so a report is never passed without its SQL being checked. `build` runs the same check first, and a query that only fails when it runs (a bad cast) is reported by name and line. Warnings (unused queries, unknown keys, low-contrast themes, characters the PNG font cannot draw) do not stop a build; they are returned in the build output.
 
 ## HTML, PNG and PDF
 

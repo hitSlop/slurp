@@ -160,6 +160,7 @@ fn registry_updates_are_serialized_and_corrupt_indexes_are_preserved() {
                     cancellation: Cancellation::default(),
                     extensions: Vec::new(),
                     sandbox: false,
+                    definitions: None,
                 };
                 system::register(home, &root, &workspace).expect("register concurrently");
             });

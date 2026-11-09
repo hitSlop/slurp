@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub mod agent_notes;
+pub mod definitions;
 pub mod drives;
 pub mod error;
 pub mod project;
@@ -43,6 +44,12 @@ impl Cancellation {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
+}
+/// What one DuckDB process printed, whether or not it succeeded.
+struct RawRun {
+    success: bool,
+    stdout: Vec<u8>,
+    stderr: String,
 }
 /// Structured progress independent of terminal presentation.
 #[derive(Debug, Serialize)]
@@ -79,6 +86,10 @@ pub struct Workspace {
     /// local file is a feature; on for the MCP server (see [`Workspace::sandboxed`]).
     #[serde(skip)]
     pub sandbox: bool,
+    /// The project root whose `slurp/definitions/*.sql` are loaded into read-only sessions run through this value (see
+    /// [`Workspace::with_definitions`]). Read again on every run, so an edited definition applies at once.
+    #[serde(skip)]
+    pub definitions: Option<PathBuf>,
 }
 /// Replace the bare `Infinity`, `-Infinity` and `NaN` words DuckDB writes for non-finite doubles with `null`, leaving
 /// everything inside strings alone.
@@ -118,6 +129,10 @@ CREATE TABLE events(sender VARCHAR, id VARCHAR, type VARCHAR, event VARCHAR, tim
 /// The local database's migration steps. Step `i` takes schema `i` to `i + 1`. Steps are only ever appended: a shipped step is
 /// never edited (`docs/contracts.md`, "Versions and upgrades").
 const MIGRATIONS: &[&str] = &[V1];
+/// The settings every Slurp-managed DuckDB session starts with, before any SQL runs (`docs/cli.md`).
+pub const SESSION_SETTINGS: &str = "SET TimeZone = 'UTC';";
+/// How long an ordinary query may run.
+pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a command waits for another Slurp process that holds DuckDB's write lock before it reports `Busy`.
 const BUSY_WAIT: Duration = Duration::from_secs(10);
 /// What a migration run is allowed: copying a large database takes longer than an ordinary query.
@@ -267,6 +282,7 @@ impl Workspace {
             cancellation: Cancellation::default(),
             extensions: Vec::new(),
             sandbox: false,
+            definitions: None,
         };
         w.execute_inner(
             &format!(
@@ -341,6 +357,7 @@ impl Workspace {
             cancellation: Cancellation::default(),
             extensions: Vec::new(),
             sandbox: false,
+            definitions: None,
         };
         storage::require_database(&workspace.database)?;
         let (_, schema) = workspace.read_schema()?;
@@ -415,9 +432,24 @@ impl Workspace {
         Ok(w)
     }
     /// A copy whose read-only queries cannot touch files outside the database (see the `sandbox` field).
+    #[must_use]
     pub fn sandboxed(&self) -> Self {
         let mut w = self.clone();
         w.sandbox = true;
+        w
+    }
+    /// A copy whose read-only queries first load the project's definitions from `root` (see [`definitions`]).
+    #[must_use]
+    pub fn with_definitions(&self, root: &Path) -> Self {
+        let mut w = self.clone();
+        w.definitions = Some(root.to_path_buf());
+        w
+    }
+    /// A copy that does not load project definitions, for checks that must work while a definition is broken.
+    #[must_use]
+    pub fn without_definitions(&self) -> Self {
+        let mut w = self.clone();
+        w.definitions = None;
         w
     }
     /// Load and verify a workspace without creating missing storage. A database made by an older schema is backed up and
@@ -458,6 +490,7 @@ impl Workspace {
             cancellation: Cancellation::default(),
             extensions: Vec::new(),
             sandbox: false,
+            definitions: None,
         };
         storage::require_database(&w.database)?;
         setup::check_engine(&w.duckdb)?;
@@ -594,12 +627,25 @@ impl Workspace {
             .prefix(".slurp-tmp-")
             .tempdir_in(self.database.parent().context("database parent")?)?)
     }
-    /// Run SQL, waiting up to [`BUSY_WAIT`] for another Slurp process that holds DuckDB's write lock.
+    /// Run SQL, after the project's definitions when this is a read-only run of a workspace that loads them.
     fn execute_inner(&self, sql: &str, readonly: bool, initializing: bool) -> Result<Value> {
+        if let Some(root) = &self.definitions
+            && readonly
+            && !initializing
+        {
+            let loaded = definitions::read(root)?;
+            if !loaded.is_empty() {
+                return definitions::execute(self, &loaded, sql);
+            }
+        }
+        self.execute_script(sql, readonly, initializing)
+    }
+    /// Run SQL, waiting up to [`BUSY_WAIT`] for another Slurp process that holds DuckDB's write lock.
+    fn execute_script(&self, sql: &str, readonly: bool, initializing: bool) -> Result<Value> {
         let start = Instant::now();
         let mut pause = Duration::from_millis(50);
         let bytes = loop {
-            match self.run_once(sql, readonly, initializing, Duration::from_secs(60)) {
+            match self.run_once(sql, readonly, initializing, QUERY_TIMEOUT) {
                 Err(error)
                     if is_busy(&error)
                         && start.elapsed() + pause < BUSY_WAIT
@@ -633,6 +679,29 @@ impl Workspace {
         initializing: bool,
         timeout: Duration,
     ) -> Result<Vec<u8>> {
+        let run = self.run_raw(sql, readonly, initializing, timeout)?;
+        if !run.success {
+            let message = run.stderr;
+            let code = if message.contains("delivery_conflict") {
+                ErrorCode::DeliveryConflict
+            } else if message.contains("Could not set lock") {
+                ErrorCode::Busy
+            } else {
+                ErrorCode::QueryFailed
+            };
+            bail!(Failure::new(code, format!("DuckDB: {message}")))
+        }
+        Ok(run.stdout)
+    }
+    /// One DuckDB process run that keeps what it printed even when it fails (with `-bail`, the results of the statements
+    /// before the failing one), so a caller can tell how far a script got.
+    fn run_raw(
+        &self,
+        sql: &str,
+        readonly: bool,
+        initializing: bool,
+        timeout: Duration,
+    ) -> Result<RawRun> {
         if !initializing {
             storage::require_database(&self.database)?;
         }
@@ -646,7 +715,7 @@ impl Workspace {
         let mut cmd = Command::new(&self.duckdb);
         cmd.args(["-no-agent", "-init", "/dev/null", "-bail", "-json"]);
         cmd.arg("-cmd").arg(format!(
-            "SET TimeZone = 'UTC'; SET temp_directory = {};",
+            "{SESSION_SETTINGS} SET temp_directory = {};",
             literal(&scratch.path().join("spill").to_string_lossy())
         ));
         for name in &self.extensions {
@@ -693,16 +762,6 @@ impl Workspace {
         err.rewind()?;
         let mut message = String::new();
         err.take(8192).read_to_string(&mut message)?;
-        if !status.success() {
-            let code = if message.contains("delivery_conflict") {
-                ErrorCode::DeliveryConflict
-            } else if message.contains("Could not set lock") {
-                ErrorCode::Busy
-            } else {
-                ErrorCode::QueryFailed
-            };
-            bail!(Failure::new(code, format!("DuckDB: {message}")))
-        }
         let mut out = stdout;
         out.rewind()?;
         let mut bytes = Vec::new();
@@ -710,7 +769,11 @@ impl Workspace {
         if bytes.len() > 32 * 1024 * 1024 {
             bail!("query output exceeds 32 MiB")
         }
-        Ok(bytes)
+        Ok(RawRun {
+            success: status.success(),
+            stdout: bytes,
+            stderr: message,
+        })
     }
     /// Read a bounded query result. Raw JSON numbers are parsed without float conversion.
     pub fn query(&self, sql: &str) -> Result<Value> {

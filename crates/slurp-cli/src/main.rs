@@ -80,6 +80,10 @@ enum Operation {
     Functions {
         name: Option<String>,
     },
+    /// List this project's shared SQL definitions (slurp/definitions/*.sql) and check that they load. Name one to see its SQL.
+    Definitions {
+        name: Option<String>,
+    },
     /// Download newly published archives into the local database.
     Sync {
         /// First ask the Worker to publish what it has buffered, so events sent a moment ago are included. Needs the admin token.
@@ -318,7 +322,11 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             // With a project (and its database) the queries are checked for real; without one only the structure is.
             let workspace = slurp_app::project::resolve(&cwd, cli.workspace.as_deref())
                 .ok()
-                .and_then(|root| Workspace::load(&root).ok())
+                .and_then(|root| {
+                    Workspace::load(&root)
+                        .ok()
+                        .map(|w| w.with_definitions(&root))
+                })
                 .and_then(|w| w.with_extensions(&doc.extensions).ok());
             let problems = report_check::validate(&doc, workspace.as_ref())?;
             if let Some(summary) = report_check::error_summary(&problems) {
@@ -393,12 +401,24 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         Operation::Doctor | Operation::Status => w.status(),
         Operation::Health => slurp_app::health::run(&w),
         Operation::Describe => w.execute("DESCRIBE events", true),
+        Operation::Definitions { name } => {
+            let w = w.with_definitions(&root);
+            match name {
+                Some(name) => Ok(serde_json::to_value(slurp_app::definitions::show(
+                    &w, &name,
+                )?)?),
+                None => Ok(json!({
+                    "folder": slurp_app::definitions::FOLDER,
+                    "definitions": slurp_app::definitions::list(&w)?,
+                })),
+            }
+        }
         Operation::Sql {
             query,
             file,
             extensions,
         } => {
-            let w = &w.with_extensions(&extensions)?;
+            let w = &w.with_extensions(&extensions)?.with_definitions(&root);
             let sql = match file {
                 Some(path) => std::fs::read_to_string(path)?,
                 None => query.ok_or_else(|| anyhow::anyhow!("provide a query or --file"))?,
@@ -406,8 +426,23 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             w.query(sql.trim().trim_end_matches(';'))
         }
         Operation::Duckdb => {
-            let status = std::process::Command::new(&w.duckdb)
-                .args(["-cmd", "SET TimeZone = 'UTC';"])
+            let mut shell = std::process::Command::new(&w.duckdb);
+            // The project's definitions load through an -init script, so they exist when the prompt appears. The file
+            // lives until the shell exits.
+            let _init = match slurp_app::definitions::shell_init(&w, &root)? {
+                Some(script) => {
+                    let file = tempfile::Builder::new()
+                        .prefix("slurp-definitions-")
+                        .suffix(".sql")
+                        .tempfile()?;
+                    std::fs::write(file.path(), script)?;
+                    shell.arg("-init").arg(file.path());
+                    Some(file)
+                }
+                None => None,
+            };
+            let status = shell
+                .args(["-cmd", slurp_app::SESSION_SETTINGS])
                 .arg("-readonly")
                 .arg(&w.database)
                 .status()?;
@@ -448,7 +483,15 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                     chrono::Utc::now().timestamp_millis()
                 ))
             });
-            slurp_app::report::build_with_params(&w, &file, &out, &look, png, pdf, &values)
+            slurp_app::report::build_with_params(
+                &w.with_definitions(&root),
+                &file,
+                &out,
+                &look,
+                png,
+                pdf,
+                &values,
+            )
         }
         _ => unreachable!(),
     }

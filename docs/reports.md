@@ -85,6 +85,8 @@ The HTML is the primary output: it adapts to narrow screens and prints cleanly, 
 
 Chart compiler warnings and notices about data removed by chart transforms are returned by `build`, with the chart name and its source line. Labels are measured using the bundled fonts before chart layout, and ordinary PDF chart lines, shapes and text remain vector graphics.
 
+Report SQL can call the project's shared definitions from `slurp/definitions/` like any macro or view, for example `SELECT count(*) AS active FROM active_people()`; see [Project definitions](cli.md#project-definitions).
+
 ## Starter overview
 
 New projects get `slurp/reports/overview.md`: active people, tracked events, a 30-day UTC activity chart, top tracked events, and identity/location coverage. Existing report files are kept unchanged.

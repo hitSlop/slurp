@@ -29,7 +29,8 @@ Tools:
 
 | Tool | What it does |
 | --- | --- |
-| `describe_schema` | The `events` columns, every event name with its count and first and last time, event types, and the helper views and macros. Call this first. |
+| `describe_schema` | The `events` columns, every event name with its count and first and last time, event types, the helper views and macros, and the project's shared definitions. Call this first. |
+| `definitions` | The project's shared definitions from `slurp/definitions/` (TEMP macros and views loaded into every `sql` call and report), with parameters and descriptions; pass `name` for one definition's SQL. Names the file of a definition that does not load. See [Project definitions](cli.md#project-definitions). |
 | `sql` | One read-only DuckDB statement; up to 1000 rows (`truncated` says if there were more); 60 second limit. |
 | `status` | Project, database, event count and the last sync. |
 | `sync` | Download new archives from your Worker (events are readable about 10 minutes after they are sent). `now: true` asks the Worker to publish what it has buffered first (needs the admin token). Events the import set aside are counted in its output. |

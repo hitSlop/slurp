@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
 use tokio::io::AsyncWriteExt;
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum RemoteError {
     #[error(
         "unauthenticated: key rejected or revoked; ask an admin for a new project secret and run slurp init --token-stdin, or reconnect with the admin token (slurp connect)"
@@ -22,11 +22,14 @@ pub enum RemoteError {
     ArchiveMissing(u64),
     #[error("transport: {0}")]
     Transport(String),
+    #[error("archive staging failed at {path}")]
+    Io {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("protocol: {0}")]
     Protocol(String),
-}
-fn io_error(_: std::io::Error) -> RemoteError {
-    RemoteError::Transport("staging or directory I/O failed".into())
 }
 
 #[async_trait::async_trait]
@@ -197,7 +200,13 @@ impl Remote for HttpRemote {
             let mut delay = None;
             let result = match response {
                 Ok(response) if response.status().is_success() => {
-                    let mut file = tokio::fs::File::create(dest).await.map_err(io_error)?;
+                    let mut file =
+                        tokio::fs::File::create(dest)
+                            .await
+                            .map_err(|source| RemoteError::Io {
+                                path: dest.to_owned(),
+                                source,
+                            })?;
                     let mut stream = response.bytes_stream();
                     let mut hash = Sha256::new();
                     let mut bytes = 0u64;
@@ -212,7 +221,12 @@ impl Remote for HttpRemote {
                                         archive.seq
                                     )));
                                 }
-                                file.write_all(&chunk).await.map_err(io_error)?;
+                                file.write_all(&chunk)
+                                    .await
+                                    .map_err(|source| RemoteError::Io {
+                                        path: dest.to_owned(),
+                                        source,
+                                    })?;
                                 hash.update(&chunk);
                             }
                             Err(_) => {
@@ -222,7 +236,10 @@ impl Remote for HttpRemote {
                         }
                     }
                     if !interrupted {
-                        file.flush().await.map_err(io_error)?;
+                        file.flush().await.map_err(|source| RemoteError::Io {
+                            path: dest.to_owned(),
+                            source,
+                        })?;
                         return Ok((hex::encode(hash.finalize()), bytes));
                     }
                     RemoteError::Transport("archive body interrupted".into())

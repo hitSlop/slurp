@@ -44,7 +44,8 @@ impl Failure {
                         ErrorCode::InvalidInput
                     }
                 }),
-            message: error.to_string(),
+            // `{:#}` keeps the causes under each context (`reading slurp/definitions: Permission denied`).
+            message: format!("{error:#}"),
         }
     }
 }

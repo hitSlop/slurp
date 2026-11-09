@@ -536,8 +536,8 @@ mod tests {
             return;
         }
         let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(
-            on_disk == generated,
+        assert_eq!(
+            on_disk, generated,
             "backend/src/api.gen.ts is stale: run `SLURP_UPDATE_BINDINGS=1 cargo test -p slurp-client api_bindings`"
         );
     }

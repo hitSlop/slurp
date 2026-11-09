@@ -102,7 +102,11 @@ async fn a_404_on_a_listed_archive_names_its_sequence_and_401_403_are_not_retrie
             .download(&info(9, b"x"), &dir.path().join("a.gz"))
             .await
             .unwrap_err();
-        assert_eq!(error, expected);
+        assert_eq!(
+            std::mem::discriminant(&error),
+            std::mem::discriminant(&expected)
+        );
+        assert_eq!(error.to_string(), expected.to_string());
         assert_eq!(seen.lock().unwrap().len(), 1, "status {status} is final");
     }
 }
@@ -137,4 +141,25 @@ async fn a_busy_worker_is_retried_and_listing_goes_through_the_control_api() {
         seen.iter()
             .all(|(line, _)| line == "POST /v1/rpc/ListArchives HTTP/1.1")
     );
+}
+
+#[tokio::test]
+async fn staging_errors_keep_the_path_and_io_cause() {
+    use std::error::Error;
+    let (url, _) = serve(|_| (200, b"body".to_vec()));
+    let remote = HttpRemote::new(&url, "prj_test", "test").unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("missing/events.gz");
+    let error = remote
+        .download(&info(1, b"body"), &destination)
+        .await
+        .unwrap_err();
+    match &error {
+        RemoteError::Io { path, source } => {
+            assert_eq!(path, &destination);
+            assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected staging error, got {other}"),
+    }
+    assert!(error.source().is_some());
 }

@@ -1,42 +1,23 @@
 ---
 purpose: Do new users reach their first export, and how fast
-extensions: [behavioral]
 ---
 
 # Do new users reach their first export?
 
-A funnel with a clock on it. `window_funnel()` follows each user through signup, first project, first export started and first export completed, and only counts a step if it happens within seven days of signing up. Sample data from a fictional app, written by a coding agent.
+A funnel with a clock on it, built from the project's shared definitions in [`examples/definitions`](https://github.com/hitSlop/slurp/tree/master/examples/definitions): `signups` is each person's signup and plan, `activated_people()` is everyone who completed an export within a week of signing up, and `signup_funnel()` follows each person through signup, first project, export started and export completed, counting a step only if it comes in order within seven days. Sample data from a fictional app, written by a coding agent.
 
 ```sql steps
-WITH signup AS (
-  SELECT user_id, any_value(data->>'$.plan') AS plan FROM events WHERE event = 'signed_up' GROUP BY 1
-),
-per_user AS (
-  SELECT e.user_id, s.plan,
-         window_funnel(INTERVAL 7 DAY, timezone('UTC', e.timestamp)::TIMESTAMP,
-           e.event = 'signed_up', e.event = 'project_created', e.event = 'export_started', e.event = 'export_completed') AS level
-  FROM events e JOIN signup s USING (user_id)
-  GROUP BY e.user_id, s.plan
-)
 SELECT step, n, plan, round(100.0 * count(*) FILTER (WHERE level >= n) / count(*))::INT AS pct
-FROM per_user, (VALUES (1, 'Signed up'), (2, 'Project'), (3, 'Started'), (4, 'Exported')) steps(n, step)
+FROM signup_funnel(), (VALUES (1, 'Signed up'), (2, 'Project'), (3, 'Started'), (4, 'Exported')) steps(n, step)
 GROUP BY step, n, plan
 ORDER BY n, plan
 ```
 
 ```sql headline
-WITH signup AS (SELECT user_id, min(timestamp) AS at FROM events WHERE event = 'signed_up' GROUP BY 1),
-first_export AS (SELECT user_id, min(timestamp) AS at FROM events WHERE event = 'export_completed' GROUP BY 1),
-funnel AS (
-  SELECT window_funnel(INTERVAL 7 DAY, timezone('UTC', timestamp)::TIMESTAMP,
-           event = 'signed_up', event = 'project_created', event = 'export_started', event = 'export_completed') AS level
-  FROM events WHERE user_id IN (SELECT user_id FROM signup) GROUP BY user_id)
-SELECT
-  (SELECT round(100.0 * count(*) FILTER (WHERE level >= 4) / count(*))::INT FROM funnel) AS activated,
-  round(median(epoch(f.at - s.at) / 60.0))::INT AS median_minutes,
-  round(100.0 * count(*) FILTER (WHERE f.at - s.at <= INTERVAL 1 HOUR) / count(*))::INT AS within_hour
-FROM signup s JOIN first_export f USING (user_id)
-WHERE f.at >= s.at
+SELECT round(100.0 * count(*) / (SELECT count(*) FROM signups))::INT AS activated,
+       round(median(epoch(activated_at - signed_up_at) / 60.0))::INT AS median_minutes,
+       round(100.0 * count(*) FILTER (WHERE activated_at - signed_up_at <= INTERVAL 1 HOUR) / count(*))::INT AS within_hour
+FROM activated_people()
 ```
 
 ```metric
@@ -65,7 +46,7 @@ width: third
 
 ```chart
 query: steps
-title: Share of new users reaching each step, by plan
+title: Share of new users reaching each step in order, by plan
 width: half
 spec:
   height: 260
@@ -78,22 +59,21 @@ spec:
 ```
 
 ```sql speed
-WITH signup AS (SELECT user_id, min(timestamp) AS at FROM events WHERE event = 'signed_up' GROUP BY 1),
-first_export AS (SELECT user_id, min(timestamp) AS at FROM events WHERE event = 'export_completed' GROUP BY 1)
-SELECT bucket, n, count(*) AS users FROM (
+SELECT bucket, n, count(*) AS people FROM (
   SELECT CASE
-           WHEN f.at - s.at < INTERVAL 5 MINUTE THEN '<5 min'
-           WHEN f.at - s.at < INTERVAL 1 HOUR THEN '<1 h'
-           WHEN f.at - s.at < INTERVAL 1 DAY THEN '<1 day'
-           WHEN f.at - s.at < INTERVAL 7 DAY THEN '<1 week'
+           WHEN activated_at - signed_up_at < INTERVAL 5 MINUTE THEN '<5 min'
+           WHEN activated_at - signed_up_at < INTERVAL 1 HOUR THEN '<1 h'
+           WHEN activated_at - signed_up_at < INTERVAL 1 DAY THEN '<1 day'
+           WHEN activated_at - signed_up_at < INTERVAL 7 DAY THEN '<1 week'
            ELSE '1 week+' END AS bucket,
          CASE
-           WHEN f.at - s.at < INTERVAL 5 MINUTE THEN 1
-           WHEN f.at - s.at < INTERVAL 1 HOUR THEN 2
-           WHEN f.at - s.at < INTERVAL 1 DAY THEN 3
-           WHEN f.at - s.at < INTERVAL 7 DAY THEN 4
+           WHEN activated_at - signed_up_at < INTERVAL 5 MINUTE THEN 1
+           WHEN activated_at - signed_up_at < INTERVAL 1 HOUR THEN 2
+           WHEN activated_at - signed_up_at < INTERVAL 1 DAY THEN 3
+           WHEN activated_at - signed_up_at < INTERVAL 7 DAY THEN 4
            ELSE 5 END AS n
-  FROM signup s JOIN first_export f USING (user_id) WHERE f.at >= s.at)
+  -- Every first export in the 90 days of data, not only those in the first week.
+  FROM activated_people(within := INTERVAL 90 DAY))
 GROUP BY bucket, n ORDER BY n
 ```
 
@@ -106,26 +86,22 @@ spec:
   mark: {type: bar, cornerRadiusEnd: 2}
   encoding:
     x: {field: bucket, type: nominal, title: null, sort: {field: n, op: min}, axis: {labelAngle: 0}}
-    y: {field: users, type: quantitative, title: "Users"}
+    y: {field: people, type: quantitative, title: "People"}
 ```
 
 ```sql counts
-WITH signup AS (SELECT user_id, any_value(data->>'$.plan') AS plan FROM events WHERE event = 'signed_up' GROUP BY 1),
-per_user AS (
-  SELECT e.user_id, s.plan,
-         window_funnel(INTERVAL 7 DAY, timezone('UTC', e.timestamp)::TIMESTAMP,
-           e.event = 'signed_up', e.event = 'project_created', e.event = 'export_started', e.event = 'export_completed') AS level
-  FROM events e JOIN signup s USING (user_id) GROUP BY e.user_id, s.plan)
-SELECT plan AS "Plan", count(*) AS "Signups",
-       count(*) FILTER (WHERE level >= 2) AS "Created a project",
-       count(*) FILTER (WHERE level >= 3) AS "Started an export",
-       count(*) FILTER (WHERE level >= 4) AS "Completed an export"
-FROM per_user GROUP BY plan ORDER BY plan
+SELECT f.plan AS "Plan", count(*) AS "Signups",
+       count(*) FILTER (WHERE f.level >= 2) AS "Created a project",
+       count(*) FILTER (WHERE f.level >= 3) AS "Then started an export",
+       count(*) FILTER (WHERE f.level >= 4) AS "Then completed one",
+       count(a.person_id) AS "Exported in week one, any path"
+FROM signup_funnel() f LEFT JOIN activated_people() a ON a.person_id = f.person_id
+GROUP BY f.plan ORDER BY f.plan
 ```
 
 ```table
 query: counts
-title: Users at each step
+title: People at each step
 ```
 
-> Finding: about 69% of new users complete an export in their first week, and the first one comes quickly: the typical new user exports four minutes after signing up. The biggest drop is between signing up and creating a project (82% continue); after that, pro users are more likely than free users to start (77% against 73%) and to finish (74% against 68%). Next: look at what the 18% who never create a project saw on their first screen.
+> Finding: 85% of new users complete an export in their first week (84% on free, 91% on pro), and quickly: the typical new user exports four minutes after signing up, and 90% of first exports come within the hour. Only 69% get there through every step in order, because creating a project is optional: 1,048 people exported in their first week without creating a project first, and a funnel that requires that step counts them as not activated. Next: decide whether a project belongs in the activation path, and look at what the 18% who skip it do instead.

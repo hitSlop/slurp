@@ -42,7 +42,7 @@ impl Server {
     /// `root` is the project folder, `exe` the `slurp` binary to run for `sync` and for sending events.
     pub fn new(workspace: &Workspace, root: PathBuf, exe: PathBuf, allow_send: bool) -> Self {
         Self {
-            workspace: workspace.sandboxed(),
+            workspace: workspace.sandboxed().with_definitions(&root),
             root,
             exe,
             allow_send,
@@ -130,7 +130,7 @@ impl Server {
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!(
-                "Slurp gives you this project's product events in a local DuckDB table named events. Start with describe_schema, then run read-only SQL with sql. Use functions for helper signatures and examples. Use events_with_person.person_id to count people, not user_id. New events arrive about every 10 minutes: call sync to fetch them. Reports: report_check then report_build.{send}"
+                "Slurp gives you this project's product events in a local DuckDB table named events. Start with describe_schema, then run read-only SQL with sql. Use functions for helper signatures and examples. This project's shared business definitions (active people, activation, revenue...) are SQL macros and views from slurp/definitions/: call definitions before computing a business number and reuse them, so every answer counts the same way. Use events_with_person.person_id to count people, not user_id. New events arrive about every 10 minutes: call sync to fetch them. Reports: report_check then report_build.{send}"
             ),
         })
     }
@@ -140,6 +140,11 @@ impl Server {
             tool(
                 "functions",
                 "Built-in SQL macros with signatures and runnable examples.",
+                json!({"type":"object","properties":{"name":{"type":"string"}}}),
+            ),
+            tool(
+                "definitions",
+                "This project's shared business definitions (slurp/definitions/*.sql): TEMP macros and views you can call in sql and reports, with their parameters and descriptions. Pass name to see one definition's SQL. Fails, naming the file, when a definition does not load.",
                 json!({"type":"object","properties":{"name":{"type":"string"}}}),
             ),
             tool(
@@ -225,13 +230,25 @@ impl Server {
 
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value> {
         let w = &self.workspace;
+        // Checks that must keep working while a definition file is broken skip the definitions.
+        let plain = &w.without_definitions();
         match name {
             "functions" => crate::functions::lookup(
                 args.get("name")
                     .map(|v| v.as_str().context("name must be a string"))
                     .transpose()?,
             ),
-            "status" => w.status(),
+            "definitions" => match args.get("name") {
+                Some(name) => Ok(serde_json::to_value(crate::definitions::show(
+                    w,
+                    name.as_str().context("name must be a string")?,
+                )?)?),
+                None => Ok(json!({
+                    "folder": crate::definitions::FOLDER,
+                    "definitions": crate::definitions::list(w)?,
+                })),
+            },
+            "status" => plain.status(),
             "describe_schema" => describe_schema(w),
             "sql" => {
                 let query = string_arg(args, "query")?;
@@ -242,7 +259,7 @@ impl Server {
                 let command: &[&str] = if now { &["sync", "--now"] } else { &["sync"] };
                 self.run_cli(command, None)
             }
-            "health" => health::run(w),
+            "health" => health::run(plain),
             "report_check" => self.report_check(&path_arg(args, "file")?),
             "report_build" => self.report_build(args),
             "send_event" | "identify" if !self.allow_send => {
@@ -354,9 +371,10 @@ impl Server {
     }
 }
 
-fn describe_schema(w: &Workspace) -> Result<Value> {
+fn describe_schema(with_definitions: &Workspace) -> Result<Value> {
+    let w = &with_definitions.without_definitions();
     w.require_helper("slurp_summary")?;
-    Ok(json!({
+    let mut schema = json!({
         "columns": w.execute("DESCRIBE events", true)?,
         "summary": w.execute("SELECT * FROM slurp_summary", true)?,
         "types": w.execute("SELECT type, count(*) AS count FROM events GROUP BY type ORDER BY count DESC", true)?,
@@ -369,7 +387,18 @@ fn describe_schema(w: &Workspace) -> Result<Value> {
             "errors lists Sentry-style error events with exception, top frame, release and a group_key.",
             "Macros: pct(part, total), share(x), calendar(start, end), biz_date(ts), session_start(ts, previous_ts, gap_minutes).",
         ],
-    }))
+    });
+    // The project's definitions, briefly; a broken one is reported here instead of failing the whole description.
+    match crate::definitions::list(with_definitions) {
+        Ok(entries) => {
+            schema["definitions"] = entries
+                .iter()
+                .map(|d| json!({"name": d.name, "kind": d.kind, "parameters": d.parameters, "description": d.description}))
+                .collect();
+        }
+        Err(error) => schema["definition_problem"] = json!(format!("{error:#}")),
+    }
+    Ok(schema)
 }
 
 /// One event or identify record. The source is not in the record: `slurp send --source mcp` sends it with the `mcp` key.

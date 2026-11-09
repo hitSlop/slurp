@@ -77,13 +77,15 @@ the report has 2 problems:
   line 31, metric (query `headline`): unknown key `feild`, it is ignored. Did you mean `field`?
 ```
 
-Inside a project it also runs each query's `DESCRIBE` (no data is read) to check the SQL, the columns that metrics, tables and charts use, and compiles each chart spec. Outside a project it checks the structure only. `build` runs the same check first, and a query that only fails when it runs (a bad cast) is reported by name and line. Warnings (unused queries, unknown keys, low-contrast themes, characters the PNG font cannot draw) do not stop a build; they are returned in the build output.
+Inside a project it also runs each query's `DESCRIBE` (no data is read) to check the SQL, the columns that metrics, tables and charts use, and compiles each chart spec. Outside a project it checks the structure only; inside a project that is not set up on this computer it stops and asks you to run `slurp init`, so a report is never passed without its SQL being checked. `build` runs the same check first, and a query that only fails when it runs (a bad cast) is reported by name and line. Warnings (unused queries, unknown keys, low-contrast themes, characters the PNG font cannot draw) do not stop a build; they are returned in the build output.
 
 ## HTML, PNG and PDF
 
 The HTML is the primary output: it adapts to narrow screens and prints cleanly, and hovering (or tapping) a chart mark shows its data in a small tooltip, with a plain browser tooltip as the fallback when scripts are blocked. The tooltip text comes from the mark's description, which Vega-Lite builds from the fields you encode; set `description:` in a mark's `encoding` to write your own. A whole line is one mark, so to hover its points use `mark: {type: line, point: true}` or add a point layer. The only script in the file is allowed by its SHA-256 in the report's Content-Security-Policy; the PNG and PDF carry none of this. The PNG and PDF are laid out at 840 px (the PNG is drawn at twice that density, 1680 px wide, so it stays sharp on high-density screens and in chat) with the fonts bundled in Slurp (Geist and Geist Mono), so characters they do not contain (CJK, Arabic, emoji) appear as empty boxes there; `build` warns when it sees any, and the HTML is not affected. Long text and wide tables wrap instead of being cut off.
 
 Chart compiler warnings and notices about data removed by chart transforms are returned by `build`, with the chart name and its source line. Labels are measured using the bundled fonts before chart layout, and ordinary PDF chart lines, shapes and text remain vector graphics.
+
+Report SQL can call the project's shared definitions from `slurp/definitions/` like any macro or view, for example `SELECT count(*) AS active FROM active_people()`; see [Project definitions](cli.md#project-definitions).
 
 ## Starter overview
 

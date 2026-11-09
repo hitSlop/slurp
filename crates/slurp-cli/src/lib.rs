@@ -6,15 +6,17 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 pub mod agent_notes;
+pub mod definitions;
 pub mod drives;
+mod duckdb;
 pub mod error;
 pub mod project;
 pub mod project_setup;
 pub mod skills;
+mod sql;
 pub mod storage;
 pub mod system;
 use error::{ErrorCode, Failure};
@@ -79,6 +81,11 @@ pub struct Workspace {
     /// local file is a feature; on for the MCP server (see [`Workspace::sandboxed`]).
     #[serde(skip)]
     pub sandbox: bool,
+    /// The project root whose `slurp/definitions/*.sql` are loaded into read-only sessions run through this value (see
+    /// [`Workspace::with_definitions`]). Read once per operation (see [`Workspace::snapshot_definitions`]), so an edit
+    /// applies from the next query or report on, including in a running MCP server.
+    #[serde(skip)]
+    pub definitions: Option<definitions::Source>,
 }
 /// Replace the bare `Infinity`, `-Infinity` and `NaN` words DuckDB writes for non-finite doubles with `null`, leaving
 /// everything inside strings alone.
@@ -118,6 +125,10 @@ CREATE TABLE events(sender VARCHAR, id VARCHAR, type VARCHAR, event VARCHAR, tim
 /// The local database's migration steps. Step `i` takes schema `i` to `i + 1`. Steps are only ever appended: a shipped step is
 /// never edited (`docs/contracts.md`, "Versions and upgrades").
 const MIGRATIONS: &[&str] = &[V1];
+/// The settings every Slurp-managed DuckDB session starts with, before any SQL runs (`docs/cli.md`).
+pub const SESSION_SETTINGS: &str = "SET TimeZone = 'UTC';";
+/// How long an ordinary query may run.
+pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a command waits for another Slurp process that holds DuckDB's write lock before it reports `Busy`.
 const BUSY_WAIT: Duration = Duration::from_secs(10);
 /// What a migration run is allowed: copying a large database takes longer than an ordinary query.
@@ -155,9 +166,8 @@ fn discard_attempt(directory: &Path, error: anyhow::Error) -> anyhow::Error {
             directory.display()
         );
     }
-    let message =
-        format!("database migration failed; this attempt did not change its schema: {error}");
-    error.context(message)
+    // The cause follows in the error chain (`{:#}`), so the context does not repeat it.
+    error.context("database migration failed; this attempt did not change its schema")
 }
 
 /// Quote SQL data; identifiers in generated SQL are fixed by Slurp.
@@ -267,6 +277,7 @@ impl Workspace {
             cancellation: Cancellation::default(),
             extensions: Vec::new(),
             sandbox: false,
+            definitions: None,
         };
         w.execute_inner(
             &format!(
@@ -341,6 +352,7 @@ impl Workspace {
             cancellation: Cancellation::default(),
             extensions: Vec::new(),
             sandbox: false,
+            definitions: None,
         };
         storage::require_database(&workspace.database)?;
         let (_, schema) = workspace.read_schema()?;
@@ -415,9 +427,35 @@ impl Workspace {
         Ok(w)
     }
     /// A copy whose read-only queries cannot touch files outside the database (see the `sandbox` field).
+    #[must_use]
     pub fn sandboxed(&self) -> Self {
         let mut w = self.clone();
         w.sandbox = true;
+        w
+    }
+    /// A copy whose read-only queries first load the project's definitions from `root` (see [`definitions`]).
+    #[must_use]
+    pub fn with_definitions(&self, root: &Path) -> Self {
+        let mut w = self.clone();
+        w.definitions = Some(definitions::Source::new(root));
+        w
+    }
+    /// Freeze definition files for one operation; later operations can read edits again.
+    ///
+    /// # Errors
+    /// Returns an error if a definition file cannot be read or its metadata is invalid.
+    pub fn snapshot_definitions(&self) -> Result<Self> {
+        let mut w = self.clone();
+        if let Some(source) = &self.definitions {
+            w.definitions = Some(source.snapshot()?);
+        }
+        Ok(w)
+    }
+    /// A copy that does not load project definitions, for checks that must work while a definition is broken.
+    #[must_use]
+    pub fn without_definitions(&self) -> Self {
+        let mut w = self.clone();
+        w.definitions = None;
         w
     }
     /// Load and verify a workspace without creating missing storage. A database made by an older schema is backed up and
@@ -458,6 +496,7 @@ impl Workspace {
             cancellation: Cancellation::default(),
             extensions: Vec::new(),
             sandbox: false,
+            definitions: None,
         };
         storage::require_database(&w.database)?;
         setup::check_engine(&w.duckdb)?;
@@ -556,7 +595,7 @@ impl Workspace {
             join_steps(&steps[from..]),
             steps.len()
         );
-        let result = self.run_once(&script, false, false, MIGRATION_TIMEOUT);
+        let result = self.run_once(&script, duckdb::Access::ReadWrite, false, MIGRATION_TIMEOUT);
         match result {
             Ok(_) => {
                 eprintln!(
@@ -576,7 +615,7 @@ impl Workspace {
                     Err(discard_attempt(&directory, error))
                 } else {
                     let message = format!(
-                        "database migration did not finish; attempt files retained at {} (the copy may be incomplete): {error}",
+                        "database migration did not finish; attempt files retained at {} (the copy may be incomplete)",
                         directory.display()
                     );
                     Err(error.context(message))
@@ -594,129 +633,30 @@ impl Workspace {
             .prefix(".slurp-tmp-")
             .tempdir_in(self.database.parent().context("database parent")?)?)
     }
-    /// Run SQL, waiting up to [`BUSY_WAIT`] for another Slurp process that holds DuckDB's write lock.
+    /// Run SQL, after the project's definitions when this is a read-only run of a workspace that loads them.
     fn execute_inner(&self, sql: &str, readonly: bool, initializing: bool) -> Result<Value> {
-        let start = Instant::now();
-        let mut pause = Duration::from_millis(50);
-        let bytes = loop {
-            match self.run_once(sql, readonly, initializing, Duration::from_secs(60)) {
-                Err(error)
-                    if is_busy(&error)
-                        && start.elapsed() + pause < BUSY_WAIT
-                        && !self.cancellation.is_cancelled() =>
-                {
-                    std::thread::sleep(pause);
-                    pause = (pause * 2).min(Duration::from_millis(1000));
-                }
-                other => break other?,
+        if let Some(source) = &self.definitions
+            && readonly
+            && !initializing
+        {
+            let loaded = source.load()?;
+            if !loaded.is_empty() {
+                return definitions::execute(self, &loaded, sql);
             }
-        };
-        if bytes.is_empty() {
-            Ok(json!([]))
+        }
+        let access = if readonly {
+            duckdb::Access::ReadOnly
         } else {
-            match serde_json::from_slice(&bytes) {
-                Ok(value) => Ok(value),
-                Err(error) => {
-                    // DuckDB writes a non-finite double (1.0 / 0, a NaN ratio) as the bare words Infinity and NaN, which is
-                    // not JSON. Show those as null (there is no JSON number for them) rather than failing the whole query.
-                    let text = String::from_utf8(bytes).map_err(|_| error)?;
-                    Ok(serde_json::from_str(&null_non_finite(&text))?)
-                }
-            }
-        }
-    }
-    /// One DuckDB process run, with no retry: its standard output, or the failure it reported.
-    fn run_once(
-        &self,
-        sql: &str,
-        readonly: bool,
-        initializing: bool,
-        timeout: Duration,
-    ) -> Result<Vec<u8>> {
-        if !initializing {
-            storage::require_database(&self.database)?;
-        }
-        let scratch = tempfile::Builder::new()
-            .prefix(".slurp-query-")
-            .tempdir_in(self.database.parent().context("database parent")?)?;
-        let mut input = tempfile::NamedTempFile::new_in(scratch.path())?;
-        input.write_all(sql.as_bytes())?;
-        let stdout = tempfile::tempfile_in(scratch.path())?;
-        let stderr = tempfile::tempfile_in(scratch.path())?;
-        let mut cmd = Command::new(&self.duckdb);
-        cmd.args(["-no-agent", "-init", "/dev/null", "-bail", "-json"]);
-        cmd.arg("-cmd").arg(format!(
-            "SET TimeZone = 'UTC'; SET temp_directory = {};",
-            literal(&scratch.path().join("spill").to_string_lossy())
-        ));
-        for name in &self.extensions {
-            // Names were checked against the allow-list in `with_extensions`.
-            cmd.arg("-cmd").arg(format!("LOAD {name};"));
-        }
-        if readonly && self.sandbox {
-            // After the extensions are loaded (loading needs file access), and before any user SQL runs.
-            cmd.arg("-cmd")
-                .arg("SET enable_external_access = false; SET lock_configuration = true;");
-        }
-        if readonly {
-            cmd.arg("-readonly");
-        }
-        let mut child = cmd
-            .arg(&self.database)
-            .stdin(fs::File::open(input.path())?)
-            .stdout(Stdio::from(stdout.try_clone()?))
-            .stderr(Stdio::from(stderr.try_clone()?))
-            .spawn()
-            .context("DuckDB not found; run setup or supply --duckdb")?;
-        let start = Instant::now();
-        let status = loop {
-            if let Some(s) = child.try_wait()? {
-                break s;
-            }
-            if self.cancellation.is_cancelled() {
-                child.kill()?;
-                child.wait()?;
-                bail!(Failure::new(ErrorCode::Cancelled, "cancelled"))
-            }
-            if start.elapsed() > timeout {
-                child.kill()?;
-                child.wait()?;
-                bail!(Failure::new(
-                    ErrorCode::QueryTimeout,
-                    format!("DuckDB exceeded {} seconds", timeout.as_secs())
-                ))
-            }
-            std::thread::sleep(Duration::from_millis(20));
+            duckdb::Access::ReadWrite
         };
-        use std::io::{Read, Seek};
-        let mut err = stderr;
-        err.rewind()?;
-        let mut message = String::new();
-        err.take(8192).read_to_string(&mut message)?;
-        if !status.success() {
-            let code = if message.contains("delivery_conflict") {
-                ErrorCode::DeliveryConflict
-            } else if message.contains("Could not set lock") {
-                ErrorCode::Busy
-            } else {
-                ErrorCode::QueryFailed
-            };
-            bail!(Failure::new(code, format!("DuckDB: {message}")))
-        }
-        let mut out = stdout;
-        out.rewind()?;
-        let mut bytes = Vec::new();
-        out.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > 32 * 1024 * 1024 {
-            bail!("query output exceeds 32 MiB")
-        }
-        Ok(bytes)
+        self.execute_script(sql, access, initializing)
     }
     /// Read a bounded query result. Raw JSON numbers are parsed without float conversion.
     pub fn query(&self, sql: &str) -> Result<Value> {
+        let w = self.snapshot_definitions()?;
         let start = Instant::now();
-        let columns = self.execute(&format!("DESCRIBE SELECT * FROM ({sql})"), true)?;
-        let data = self.execute(&format!("SELECT * FROM ({sql}) LIMIT 1001"), true)?;
+        let columns = w.execute(&format!("DESCRIBE SELECT * FROM ({sql})"), true)?;
+        let data = w.execute(&format!("SELECT * FROM ({sql}) LIMIT 1001"), true)?;
         let columns: Vec<Value> = columns
             .as_array()
             .context("column descriptions")?

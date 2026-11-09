@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Shared definitions: write what a business number means once, as a plain DuckDB SQL file in `slurp/definitions/` (a TEMP macro, table macro or view), commit it with the app, and every `slurp sql` query, MCP query, report and `slurp duckdb` session can use it. `slurp definitions [NAME]` (and the MCP `definitions` tool) lists them and checks that they load; a broken one is named by its file. Nothing is stored in the database. The agent skills tell agents to reuse definitions and to save the ones they agree with you.
+
 ## 0.3.0
 
 **Upgrade:** run `slurp cloud upgrade`. `slurp cloud status` needs the new Worker to report issues, and its `--json` output changed (below).

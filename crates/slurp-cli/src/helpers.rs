@@ -21,9 +21,12 @@ impl Workspace {
             .and_then(|rows| rows[0]["v"].as_u64());
         if current != Some(u64::from(VERSION)) {
             // Optional writes should not wait for other readers to close.
-            if let Err(error) =
-                self.run_once(&script(), false, false, std::time::Duration::from_secs(60))
-            {
+            if let Err(error) = self.run_once(
+                &script(),
+                crate::duckdb::Access::ReadWrite,
+                false,
+                crate::QUERY_TIMEOUT,
+            ) {
                 let cause = error
                     .to_string()
                     .split_whitespace()

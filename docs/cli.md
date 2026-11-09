@@ -294,7 +294,7 @@ Successful init registers the project by its canonical folder path. Listing uses
 
 ## The slurp folder
 
-Commit `slurp/slurp.toml` and report sources in `slurp/reports/`. The binding contains only `version`, `name`, `backend`, and the stable `project` ID. Report builds default to `slurp/out/`, which is gitignored.
+Commit `slurp/slurp.toml`, report sources in `slurp/reports/` and shared SQL definitions in `slurp/definitions/` (below). The binding contains only `version`, `name`, `backend`, and the stable `project` ID. Report builds default to `slurp/out/`, which is gitignored.
 
 Each machine keeps credentials, its database location, and its DuckDB executable under its own Slurp home. Default databases live at `<library>/<name>-<project ID>/events.duckdb`; the default library is `~/.slurp/library`. A second checkout reuses a verified database for the same project.
 
@@ -312,6 +312,32 @@ only after successful verification during this run; false with
 are retained, and `missing` includes `login` only when no backend credentials exist.
 Joining a project with a project secret finishes with sync instructions; creating
 or reopening a project as its admin also provides the SDK quickstart key.
+
+## Project definitions
+
+Write what your business numbers mean once, and every query, report and agent counts the same way. A definition is a plain DuckDB SQL file in `slurp/definitions/`, committed with the app, that creates one TEMP macro, table macro or view named after the file. For example, `slurp/definitions/active_people.sql`:
+
+```sql
+-- People who completed an export in [since, until). Unit: person (events_with_person.person_id).
+-- Excludes events sent by the MCP tools and internal accounts. UTC days.
+CREATE OR REPLACE TEMP MACRO active_people(since := current_date - 28, until := current_date) AS TABLE
+SELECT person_id, min(timestamp) AS first_seen
+FROM events_with_person
+WHERE event = 'export_completed' AND sender <> 'mcp' AND NOT is_internal(person_id)
+  AND timestamp >= since AND timestamp < until
+GROUP BY person_id;
+```
+
+```sh
+slurp definitions                        # list them (kind, parameters, description) and check that they all load
+slurp definitions active_people          # one definition, with its SQL
+slurp sql "SELECT count(*) FROM active_people(since := DATE '2026-10-01')"
+```
+
+- **Where they work.** Slurp loads the definitions into every read-only session it starts: `slurp sql`, the MCP `sql` tool, `slurp report check` and `build`, and `slurp duckdb`. Each query or report uses one snapshot of the definition files for validation and execution. The next operation reads edits again, including in a running MCP server. The MCP server lists them in `describe_schema` and has a `definitions` tool.
+- **Nothing is stored.** TEMP objects exist only in that DuckDB session, so two checkouts on different branches can share one database file and each see its own definitions. A definition that is not TEMP is refused, because the session is read-only.
+- **The file.** The leading `--` lines are its description: state eligibility, unit, window, timezone and exclusions. `-- extensions: behavioral` loads the behavioral extension for SQL that uses its functions (installed once, online). A definition may use other definitions; Slurp loads a file after the definitions it refers to, and when that order is wrong, uses the order DuckDB's errors point to. A file may only create its object (no queries), and may not replace a built-in: a Slurp helper such as `pct` or `events_with_person`, the `events` table, or a DuckDB function. Every session checks this after loading the definitions.
+- **When one is broken.** Queries fail with the file's name and DuckDB's error until it is fixed (`slurp sql`, reports and MCP queries alike); `describe_schema`, `status` and `health` keep working. Run `slurp definitions` before committing a change.
 
 ## SQL helper discovery
 

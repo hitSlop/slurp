@@ -4,7 +4,7 @@ Use this reference when choosing what to instrument or improve. Preserve the use
 
 Start with the job people hire the product to do. Record the valuable outcome, intended audience, natural usage cadence, and whether the analysis unit is a person, account, project, or attempt. Inspect the product and existing events before asking questions.
 
-Maintain a small project-owned product context, metric definitions, and dated decision records. A metric definition states eligibility, unit, numerator/denominator, event mapping, window, timezone, observation cutoff, and smallest worthwhile improvement. Keep credentials and raw user data out of these files.
+Maintain a small project-owned product context, metric definitions, and dated decision records. Metric definitions live in `slurp/definitions/` as SQL macros or views (see the main skill), so every query and report computes them the same way; the file's leading comment states eligibility, unit, numerator/denominator, event mapping, window, timezone, observation cutoff, and smallest worthwhile improvement. Keep credentials and raw user data out of these files.
 
 Choose the cheapest credible method: reproduce a deterministic bug; observe a user attempting a confusing task; inspect behavioral evidence to locate an obstacle; use interviews to investigate why; prepare a randomized experiment when a causal question and traffic warrant it. Correlation between activation and retention does not establish which activation step causes retention.
 

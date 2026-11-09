@@ -13,6 +13,7 @@ fn binding(root: &Path, project: &str) {
         cancellation: Cancellation::default(),
         extensions: Vec::new(),
         sandbox: false,
+        definitions: None,
     };
     fs::write(
         root.join("slurp/slurp.toml"),

@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
-- Shared definitions: write what a business number means once, as a plain DuckDB SQL file in `slurp/definitions/` (a TEMP macro, table macro or view), commit it with the app, and every `slurp sql` query, MCP query, report and `slurp duckdb` session can use it. `slurp definitions [NAME]` (and the MCP `definitions` tool) lists them and checks that they load; a broken one is named by its file. Nothing is stored in the database. The agent skills tell agents to reuse definitions and to save the ones they agree with you.
+- Shared definitions: write what a business number means once, as a plain DuckDB SQL file in `slurp/definitions/` (a TEMP macro, table macro or view), commit it with the app, and every `slurp sql` query, MCP query, report and `slurp duckdb` session can use it. `slurp definitions [NAME]` (and the MCP `definitions` tool) lists them and checks that they load; a broken one is named by its file. Nothing is stored in the database. The agent skills tell agents to reuse definitions and to save the ones they agree with you. Examples: `examples/definitions`.
+- Error messages now include their cause, such as the I/O error behind "reading slurp/definitions" or behind a failed archive download during `slurp sync`.
+- `slurp report check` no longer passes with only a structure check when the project cannot be used: a broken `--project`, a project not set up on this computer (run `slurp init`) or an extension that cannot be installed is now an error.
 
 ## 0.3.0
 

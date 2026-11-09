@@ -1475,7 +1475,7 @@ async function collectStatus(env, cfg, meta) {
 __name(collectStatus, "collectStatus");
 
 // src/version.ts
-var RELEASE = "0.3.0";
+var RELEASE = "0.3.1";
 
 // src/registry.ts
 import { DurableObject } from "cloudflare:workers";

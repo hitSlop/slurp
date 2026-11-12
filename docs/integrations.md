@@ -44,11 +44,17 @@ Tools:
 
 Protocol: the server speaks MCP versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. If a client asks for another version it is answered with 2025-11-25 and the client decides whether to continue; requests that are not valid JSON-RPC 2.0 get a protocol error, and tools are refused until the client has sent `initialize`. It does not yet act on a client's cancel notification: a running query or report finishes first. The newer stateless protocol version (2026-07-28) is not implemented.
 
-Tested: the server is exercised end to end over stdio in this repository's tests and with the official MCP Inspector client. The configuration snippets for Claude Code, Claude Desktop, Cursor, Windsurf and Codex follow those tools' documented formats but have not been run here. Not available yet: an HTTP transport, which cloud-hosted agents (for example xAI's Grok API) would need because their servers cannot reach a local stdio process.
+Tested: the server is exercised end to end over stdio in this repository's tests and with the official MCP Inspector client. The configuration snippets for Claude Code, Claude Desktop, Cursor, Windsurf and Codex follow those tools' documented formats but have not been run here. Not available yet: an HTTP transport, which cloud-hosted agents (for example xAI's Grok API) would need because their servers cannot reach a local stdio process. Bots with their own terminal can instead install and run the CLI on their own machine.
 
 ### Bots that run commands
 
 An agent that can run a shell (Claude Code, Codex, a Grok or Muse bot with a sandbox) does not need MCP: give it its own revocable read key, and it uses the CLI. See [bot access](cli.md).
+
+## Goal-driven improvement
+
+The public [agent guides](https://slurp.run/agents/) cover local coding agents and CLI workspace recipes for Grok Bot and Meta's personal Muse agent. Install the skill bundle with `slurp agent setup --out .agents/skills/slurp --all` and ask your agent to read the Slurp skill.
+
+For improvement work, the skill asks for missing product priorities and keeps agreed goals, measurement plans, dated learnings, and the next check in `slurp/GOALS.md`. SQL definitions and full reports remain in their existing folders. Each invocation resumes from that file; recurring execution belongs to the agent's routines or an external scheduler. Repository access and release permissions are configured separately from Slurp analytics access.
 
 ## Slack and Discord
 

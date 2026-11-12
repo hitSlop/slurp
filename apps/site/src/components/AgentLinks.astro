@@ -1,0 +1,25 @@
+---
+import Icon from './Icon.astro';
+import claude from '../../../../packages/web-shared/logos/claude.svg?url';
+import codex from '../../../../packages/web-shared/logos/codex.svg?url';
+import cursor from '../../../../packages/web-shared/logos/cursor.svg?url';
+import grok from '../../../../packages/web-shared/logos/grok-bot.png?url';
+import muse from '../../../../packages/web-shared/logos/muse.png?url';
+const marks: Record<string, string> = { 'claude-code': claude, codex, cursor, grok, muse };
+const symbols: Record<string, string> = { other: 'code' };
+export const agents = [
+  ['Claude Code', 'claude-code'], ['Codex', 'codex'], ['Cursor', 'cursor'],
+  ['Grok Bot', 'grok'], ['Muse', 'muse'], ['Other agents', 'other'],
+];
+---
+<nav class="agent-links" aria-label="Agent setup guides">
+<span>Works with your agent</span>
+<ul>{agents.map(([name, id]) => <li><a href={`/agents/#${id}`}>
+{marks[id] ? <img src={marks[id]} width="18" height="18" alt=""/> : <Icon name={symbols[id]}/>}
+{name}<span aria-hidden="true">↗</span></a></li>)}</ul>
+</nav>
+<style>
+.agent-links{margin:24px 0 4px}.agent-links>span{font:700 11px var(--body);text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+ul{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:9px 0 0}a{display:inline-flex;align-items:center;gap:12px;min-height:44px;padding:0 12px;border:1px solid var(--rule);border-radius:8px;text-decoration:none;font:650 13px var(--body);background:#fff}a:hover{color:var(--red);border-color:var(--red)}a span{color:var(--muted)}
+a img,a :global(.icon){width:18px;height:18px;flex:none;object-fit:contain}a :global(.icon){color:var(--muted)}
+</style>

@@ -2,7 +2,10 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "slurp-site",
   "compatibility_date": "2026-10-01",
+  "main": "./worker.mjs",
   "assets": {
+    "binding": "ASSETS",
+    "run_worker_first": ["/"],
     "directory": "./dist"
   },
   "routes": [

@@ -1,0 +1,23 @@
+<button type="button" class="feedback-float" data-feedback-open>Feedback</button>
+<dialog id="site-feedback" aria-labelledby="feedback-title" aria-describedby="feedback-description">
+  <button type="button" class="feedback-close" aria-label="Close feedback" data-feedback-close>×</button>
+  <p class="eyebrow">A direct line to our agents</p>
+  <h2 id="feedback-title">What should we improve?</h2>
+  <p id="feedback-description">Your feedback goes straight into Slurp for our agents to read.</p>
+  <form>
+    <label for="feedback-message">Your message</label>
+    <textarea id="feedback-message" name="message" required maxlength="5000" rows="4" placeholder="What’s confusing, missing, or worth improving?"></textarea>
+    <fieldset><legend>How does Slurp look so far? <span>(optional)</span></legend>
+      <div class="ratings">{[1,2,3,4,5].map(n=><label><input type="radio" name="rating" value={n}/><span>{n}</span></label>)}</div>
+    </fieldset>
+    <p class="feedback-error" role="alert" hidden></p>
+    <div class="feedback-actions"><button type="button" class="btn" data-feedback-close>Cancel</button><button type="submit" class="btn btn-primary">Send feedback ↗</button></div>
+    <p class="fine">Feedback stays private. Our agents can read it alongside product usage; an instant reply isn’t promised.</p>
+  </form>
+  <div class="feedback-success" role="status" hidden><p></p><button type="button" class="btn" data-feedback-close>Done</button></div>
+</dialog>
+<style>
+.feedback-float{position:fixed;right:20px;bottom:20px;z-index:20;border:0;border-radius:999px;background:var(--red);color:#fff;padding:12px 18px;font:700 14px var(--body);cursor:pointer;box-shadow:0 6px 20px #e8002a26}
+dialog{width:min(520px,calc(100% - 32px));box-sizing:border-box;max-height:calc(100dvh - 32px);overflow:auto;border:1px solid var(--rule);border-radius:16px;padding:32px;color:var(--ink);background:var(--surface,#fff);box-shadow:0 24px 80px #17191c33}dialog::backdrop{background:#17191c88}h2{font-size:30px;margin:0 0 12px}p{line-height:1.5}.eyebrow{color:var(--red);margin-top:0}.feedback-close{position:absolute;right:12px;top:8px;min-width:44px;min-height:44px;border:0;background:none;color:var(--muted);font-size:28px;cursor:pointer}form>label,legend{font-size:14px;font-weight:650}textarea{display:block;box-sizing:border-box;width:100%;margin:8px 0 18px;padding:12px;border:1px solid var(--rule);border-radius:8px;color:var(--ink);background:#fff;font:400 16px/1.5 var(--body);resize:vertical}fieldset{border:0;padding:0;margin:0 0 20px}legend span{font-weight:400;color:var(--muted)}.ratings{display:flex;gap:8px;margin-top:10px}.ratings label{position:relative;cursor:pointer}.ratings input{position:absolute;opacity:0}.ratings span{display:grid;place-items:center;width:44px;height:44px;border:1px solid var(--rule);border-radius:8px;font-weight:650}.ratings input:checked+span{border-color:var(--red);background:#fff0f3;color:var(--red)}.ratings input:focus-visible+span,textarea:focus-visible,button:focus-visible{outline:2px solid var(--red);outline-offset:3px}.feedback-actions{display:flex;justify-content:flex-end;gap:10px}.btn{min-height:44px;cursor:pointer}.feedback-error{color:#a40024}.feedback-success p{font-size:18px}.fine{font-size:12px;color:var(--muted)}[hidden]{display:none!important}
+@media(max-width:900px){.feedback-float{display:none}}@media(max-width:560px){dialog{padding:28px 20px}}
+</style>

@@ -15,7 +15,7 @@ This folder is that setup, kept as a worked example.
 | `page_view` | Once per page load | `path`, `referrer` (origin and path only), `utm_source`, `utm_medium`, `utm_campaign` if present |
 | `deploy_clicked` | The Deploy to Cloudflare button | `where` (which page) |
 | `install_copied` | An install command's Copy button | none |
-| `feedback` | The feedback widget's form | `message`, `rating`, `path` |
+| `feedback` | The custom feedback form | `message`, `rating`, `path` |
 
 Every event also carries the SDK's context: user agent, language, time zone, the page's address **without its query string or fragment**, and a random `anonymous_id` the SDK keeps in the browser's local storage. There is no cookie, no fingerprinting, no IP address stored (Cloudflare's coarse country and city are added by the Worker), and no text a visitor typed except in the feedback form. Feedback messages are read by the maintainers and are not published; the report shows only their count and average rating.
 
@@ -32,3 +32,5 @@ slurp report build slurp/reports/site.md --out slurp/out/$(date +%F) --png
 ```
 
 To measure your own site the same way, see [the JavaScript SDK](../../../docs/sdks.md) and `mountFeedback`.
+
+The site uses a custom modal with the existing SDK track API. Local previews simulate submission and send nothing; production confirmation means queued, not confirmed delivery.

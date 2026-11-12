@@ -1,0 +1,40 @@
+---
+import Code from './Code.astro';
+import { connectPrompt } from '../lib/agent-prompts.mjs';
+---
+<button type="button" class="btn" data-connect-agent aria-haspopup="dialog">Connect your agent ↗</button>
+<dialog id="connect-agent-dialog" aria-labelledby="connect-agent-title" aria-describedby="connect-agent-description">
+  <button class="close" type="button" aria-label="Close agent prompt">×</button>
+  <p class="eyebrow">Your agent can take it from here</p>
+  <h2 id="connect-agent-title">Give this to your agent.</h2>
+  <p id="connect-agent-description">Paste this into your agent’s chat. It will check your setup, find the right skill, and help connect your app.</p>
+  <p class="clipboard-status" role="status" aria-live="polite"></p>
+  <Code label="Setup prompt · copy and paste into your agent" code={connectPrompt}/>
+  <p class="fine">No credentials belong in this prompt. Your agent will guide you through private setup if needed. <a href="/agents/">Read the setup guides ↗</a></p>
+</dialog>
+<script>
+const dialog = document.querySelector<HTMLDialogElement>('#connect-agent-dialog');
+if (dialog) {
+  let opener: HTMLElement | null = null;
+  document.querySelector('[data-connect-agent]')?.addEventListener('click', event => {
+    opener = event.currentTarget as HTMLElement;
+    if (!dialog.open) dialog.showModal();
+    const status = dialog.querySelector<HTMLElement>('.clipboard-status')!;
+    status.textContent = 'Copy the prompt below, then paste it into your agent.';
+    const text = dialog.querySelector('pre code')!.textContent!;
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).then(() => {
+        status.textContent = 'Copied to clipboard. Paste it into your agent to get started.';
+      }).catch(() => {
+        status.textContent = 'Automatic copy wasn’t available. Use Copy below, or select the prompt directly.';
+      });
+    }
+  });
+  dialog.querySelector('.close')?.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', event => { if (event.target === dialog) { const r=dialog.getBoundingClientRect(); const e=event as MouseEvent; if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close(); } });
+  dialog.addEventListener('close', () => opener?.focus());
+}
+</script>
+<style>
+.btn{cursor:pointer}dialog{box-sizing:border-box;width:min(740px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;border:1px solid var(--rule);border-radius:14px;padding:32px;color:var(--ink);background:var(--surface,#fff);box-shadow:0 24px 80px #17191c33}dialog::backdrop{background:#17191c88}.close{position:absolute;top:8px;right:10px;min-width:44px;min-height:44px;border:0;background:none;font-size:28px;color:var(--muted);cursor:pointer}h2{font-size:clamp(28px,4vw,40px);margin:0 0 14px}.eyebrow{margin-top:0;padding-right:32px}.clipboard-status{color:var(--red);font-weight:650;font-size:14px}dialog :global(pre){white-space:pre-wrap;overflow-wrap:anywhere;max-height:38dvh;overflow:auto}button:focus-visible{outline:2px solid var(--red);outline-offset:3px}@media(max-width:560px){dialog{padding:28px 18px}}
+</style>

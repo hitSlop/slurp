@@ -7,7 +7,8 @@ import Code from '../components/Code.astro';
 import DeployButton from '../components/DeployButton.astro';
 import Workbench from '../components/Workbench.astro';
 import DuckDb from '../components/DuckDb.astro';
-import WorksWith from '../components/WorksWith.astro';
+import ConnectAgent from '../components/ConnectAgent.astro';
+import AgentLinks from '../components/AgentLinks.astro';
 import {githubUrl,discordUrl} from '../lib/links.mjs';
 import PriceStrip from '../components/PriceStrip.astro';
 import {count,freePlanEventsPerMonth} from '../lib/pricing.mjs';
@@ -25,19 +26,19 @@ import byRelease from '../assets/reports/by-release.png';
 import byReleaseSource from '../../../../examples/demo/by-release.md?raw';
 import activatedPeople from '../../../../examples/definitions/activated_people.sql?raw';
 import snippets from '../../../../docs/onboarding/snippets.json';
-const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'},{id:'markdown',label:'Markdown'},{id:'definitions',label:'Definitions'},{id:'code',label:'In code'},{id:'connections',label:'Connections'},{id:'tools',label:'Your toolkit'}];
+const sections=[{id:'loop',label:'The improvement loop'},{id:'reports',label:'Reports'},{id:'markdown',label:'Markdown'},{id:'definitions',label:'Definitions'},{id:'code',label:'In code'},{id:'connections',label:'Connections'},{id:'tools',label:'Your toolkit'}];
 ---
-<Page title="Product analytics for your coding agent" description="See what users do, where they get stuck, and what changed after your last release. Collect events in your own Cloudflare account and let your coding agent investigate." current="home" sections={sections}>
+<Page title="Let your agent improve your app" description="Set the goals. Your agent chooses what to track, learns from real usage, improves your product, and measures what happens next. Your data stays in your Cloudflare account." current="home" sections={sections}>
 <header class="hero">
 <ul class="diff" aria-label="What makes Slurp different"><li><Icon name="code"/>Open source</li><li><Icon name="cloud"/>Your own Cloudflare account</li><li class="duck"><DuckDb size={17}/>Local analysis with DuckDB</li></ul>
 <div class="hero-grid">
 <div class="copy">
-<h1>Product analytics for<br/><span class="hot">your coding agent.</span></h1>
-<p class="lede">See what users do, where they get stuck, and what changed after your last release. Slurp collects your events so your coding agent can investigate, build reports and help you improve your product.</p>
+<h1>Let your agent autonomously<br/><span class="hot">improve your app.</span></h1>
+<p class="lede">Set the goals. Your agent figures out what to track, learns from real usage, and keeps improving your product. Slurp gives it the data to see what worked—and what to try next.</p>
 <aside class="free" id="start" aria-labelledby="free-title"><span class="free-mark" aria-hidden="true"><Icon name="cloud"/></span><div><h2 id="free-title">Start free.</h2><p>Cloudflare's free plan covers about <strong>{count(freePlanEventsPerMonth())} events a month</strong>. Slurp itself costs nothing.</p></div></aside>
-<div class="actions"><DeployButton id="home" cli={false}/><a class="btn" href="#loop">See how it works</a><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
+<div class="actions"><DeployButton id="home" cli={false}/><ConnectAgent/><span class="hero-links">{[{icon:'github',label:'GitHub',href:githubUrl},{icon:'discord',label:'Discord',href:discordUrl}].filter(l=>l.href).map(l=><a href={l.href} rel="noopener" aria-label={l.label} title={l.label}><Icon name={l.icon}/></a>)}</span></div>
 <p class="free-note">Prefer a terminal? <button type="button" class="free-cli" data-deploy-open="home">Install with the CLI instead ↗</button></p>
-<WorksWith/>
+<AgentLinks/><button class="feedback-hero" type="button" data-feedback-open>Tell our agents what to improve ↗</button>
 </div>
 <a class="snapshot" href="/reports/export-health/" aria-label="Open the live sample report: Why do large exports fail?">
 <figure><div class="crop"><Image src={flagship} width={1680} widths={[640,920,1260,1680]} sizes="(min-width: 1100px) 460px, 92vw" format="webp" quality={92} alt="A report written by a coding agent: export completion by week drops from 94% to 79% when v1.2.4 ships, then recovers" loading="eager"/></div><figcaption><span>Written by an agent from your data</span><span>Sample data · Open the live report ↗</span></figcaption></figure>
@@ -46,18 +47,14 @@ const sections=[{id:'loop',label:'The workbench'},{id:'reports',label:'Reports'}
 <PriceStrip/>
 </header>
 <section class="section" id="loop">
-<span class="section-number">01 / THE WORKBENCH</span>
-<h2>From user signal to shipped fix.</h2>
-<p>Give your coding agent the context to investigate problems, improve your code and check the results.</p>
+<span class="section-number">01 / THE IMPROVEMENT LOOP</span>
+<h2>You set the goal. Your agent works the loop.</h2>
+<p>More revenue. More people getting value. Fewer failed exports. Give your agent an outcome to work toward, and let real usage guide the next change.</p>
 <Workbench/>
-<h3 class="how">How it works</h3>
-<div class="steps four">
-<div><h3><Icon name="code"/><span class="hot">1.</span> Collect</h3><p>Capture events and feedback with an SDK or plain HTTP.</p><code>{"track('feedback', { message });"}</code></div>
-<div><h3><Icon name="sync"/><span class="hot">2.</span> Pull</h3><p>Sync new events from your Cloudflare account to your machine.</p><code>slurp sync</code></div>
-<div><h3><Icon name="report"/><span class="hot">3.</span> Analyze</h3><p>Ask your agent to investigate your data and build a report.</p><code>slurp sql 'SELECT …'</code></div>
-<div><h3><Icon name="agent"/><span class="hot">4.</span> Act</h3><p>Use its findings to improve your product and track the results.</p><code>slurp project key create</code></div>
-</div>
+<p class="fine">Goals and dated learnings live in <code>slurp/GOALS.md</code>, alongside your code. Your agent picks up where it left off each time it runs. For recurring work, use your agent’s routines or an external scheduler.</p>
+<a class="btn" href="/agents/#first-run">Start your first improvement loop ↗</a>
 </section>
+<section class="feedback-demo" id="feedback"><div><p class="eyebrow">Real feedback. Real product learning.</p><h2>Tell our agents what to improve.</h2><p>Slurp captures what people say alongside what they do. This form uses Slurp too—your message becomes feedback our agents can investigate.</p></div><button type="button" class="btn btn-primary" data-feedback-open>Try it out here ↗</button></section>
 <section class="section" id="reports">
 <span class="section-number">02 / REPORTS</span>
 <h2>What your agent hands back.</h2>
@@ -114,6 +111,8 @@ GROUP BY plan`}/>
 <section class="section" id="connections"><span class="section-number">06 / CONNECTIONS</span><h2>Bring more of your stack.</h2><p>Use the Slurp SDKs, keep your Segment or Sentry SDK, or send events over HTTP.</p><Connections items={[...current.slice(0,6),...groups.find(g=>g.id==='business')!.items.slice(0,2)]}/><a class="btn" href="/connections/">All connections and ideas ↗</a></section><section class="section" id="tools"><span class="section-number">07 / YOUR TOOLKIT</span><h2>Put your product data to work.</h2><div class="actions"><a class="btn btn-primary" href="/docs/">Get started ↗</a></div></section>
 </Page>
 <style>
+.feedback-demo{display:flex;align-items:center;gap:32px;justify-content:space-between;margin:48px 0;padding:32px;border:1px solid #f6b8c3;border-radius:14px;background:#fff5f7}.feedback-demo h2{font-size:clamp(26px,3vw,36px);margin:0 0 12px}.feedback-demo p{max-width:620px}.feedback-demo .btn{flex:none;min-height:44px;cursor:pointer}.feedback-hero{border:0;background:none;color:var(--red);font:650 13px var(--body);padding:12px 0;min-height:44px;cursor:pointer;text-decoration:underline;text-underline-offset:4px}@media(max-width:700px){.feedback-demo{align-items:flex-start;flex-direction:column;padding:24px;gap:12px}}
+
 .hero{padding-bottom:6px}
 .diff{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0 0 22px;padding:0}
 .diff li{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border:1px solid var(--rule);border-radius:999px;font:650 12px var(--body);letter-spacing:.01em;background:#fff}

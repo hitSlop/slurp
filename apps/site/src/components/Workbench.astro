@@ -1,90 +1,22 @@
 ---
-// "From user signal to shipped fix": what flows into your Cloudflare account, and what your coding agent does with it.
-// The input cards get a "soon" chip from the same statuses the Connections page uses, so the two cannot disagree.
-import Icon from './Icon.astro';
-import DuckDb from './DuckDb.astro';
-import {current,groups} from '../lib/connections.ts';
-const known=[...current,...groups.flatMap(g=>g.items)];
-const soon=(name:string)=>!known.some(c=>c.name===name&&c.status!=='Exploring');
-const inputs=[
-  {label:'JavaScript SDK',icon:'code',name:'JavaScript / TypeScript'},
-  {label:'HTTP, any language',icon:'globe',name:'HTTP API'},
-  {label:'Feedback widget',icon:'help',name:'Feedback widget'},
-  {label:'Live chat',icon:'connections',name:'Customer chat'},
-  {label:'Sentry errors',icon:'report',name:'Sentry'},
-  {label:'Segment events',icon:'report',name:'Segment'},
-  {label:'Swift and React Native',icon:'code',name:'Swift'},
-  {label:'Python and Rust SDKs',icon:'code',name:'Python'},
-].map(i=>({...i,soon:soon(i.name)}));
+const steps = [
+ ['Set the goal', 'You choose the outcome.', 'Help more people complete their first export.'],
+ ['Choose what to track', 'Your agent makes the measurement plan.', 'Reuse existing events; add missing starts, completions, and failures.'],
+ ['Pull the learnings', 'Find the obstacle in real usage.', 'Compare releases and file sizes. Check feedback and error patterns.'],
+ ['Improve the product', 'Turn evidence into a scoped change.', 'Prepare a fix for large exports, with tests and a clear hypothesis.'],
+ ['Measure and repeat', 'Keep what works. Learn from the rest.', 'Check completion after release, record the result, and choose the next step.'],
+];
 ---
-<figure class="wb" aria-label="From user signal to shipped fix: your connections send events to Cloudflare R2, your coding agent syncs them to DuckDB, analyzes them, reports, ships a fix and updates tracking, which collects new signals.">
-<span class="wb-rail" aria-hidden="true"></span>
-<div class="wb-top">
-<div class="wb-card wb-inputs"><h3>Connections</h3><ul>{inputs.map(i=><li class={i.soon?'is-soon':''}><Icon name={i.icon}/><span>{i.label}</span>{i.soon&&<em>soon</em>}</li>)}</ul></div>
-<span class="wb-arrow" aria-hidden="true">→</span>
-<div class="wb-card wb-r2"><svg viewBox="0 0 64 32" aria-hidden="true"><path d="M50 26H15a9 9 0 0 1-1.5-17.9A12 12 0 0 1 36.6 6.6 9 9 0 0 1 50 14.5 6 6 0 0 1 50 26Z" fill="#f6821f"/><path d="M52 14c3 0 6 2.4 6 5.5S55 26 52 26h-9l1-3.4c.4-1.4 1.7-2.6 3.3-2.6H52" fill="#fbad41"/></svg><strong>Cloudflare R2</strong><small>your account</small></div>
-</div>
-<div class="wb-agent">
-<div class="wb-agent-head"><Icon name="agent"/><div><strong>Your coding agent</strong><p>Owns the whole span, from pulling data to updating code and tracking.</p></div></div>
-<ol class="wb-steps">
-<li class="wb-card"><h4>Local DuckDB</h4><DuckDb class="wb-db" size={44}/><code>slurp sync</code></li>
-<li class="wb-card hot"><h4>Run SQL analysis</h4><div class="wb-term"><i></i><i></i><i></i><code>SELECT …</code></div></li>
-<li class="wb-card hot"><h4>Generate report</h4><svg class="wb-chart" viewBox="0 0 120 70" aria-hidden="true"><path d="M6 8v54h108" fill="none" stroke="#c9ced6" stroke-width="1.5"/><polyline points="10,46 34,34 58,35 82,38 106,12" fill="none" stroke="#0a67d9" stroke-width="2.2"/><polyline points="10,38 34,45 58,50 82,48 106,56" fill="none" stroke="#e8002a" stroke-width="2.2"/><g fill="#0a67d9"><circle cx="34" cy="34" r="3"/><circle cx="58" cy="35" r="3"/><circle cx="82" cy="38" r="3"/><circle cx="106" cy="12" r="3"/></g><g fill="#e8002a"><circle cx="34" cy="45" r="3"/><circle cx="58" cy="50" r="3"/><circle cx="82" cy="48" r="3"/><circle cx="106" cy="56" r="3"/></g></svg></li>
-<li class="wb-card hot"><h4>Ship product fix</h4><div class="wb-diff"><code class="del">− return err</code><code class="add">+ return nil</code></div></li>
-<li class="wb-card"><h4>Update tracking</h4><code class="wb-chip">track(…)</code></li>
-</ol>
-</div>
-<div class="wb-loop"><span>Collect new signals</span></div>
+<figure class="loop" aria-labelledby="loop-caption">
+<figcaption id="loop-caption"><span>One goal, from intent to evidence</span><a href="/reports/export-health/">Illustrative example · explore the report ↗</a></figcaption>
+<ol>{steps.map(([title, lead, example], i) => <li><span class="number">0{i + 1}</span><div><h3>{title}</h3><p class="lead">{lead}</p><p>{example}</p></div></li>)}</ol>
+<div class="return"><span aria-hidden="true">↻</span> The next run starts with what you learned.</div>
 </figure>
 <style>
-.wb{position:relative;margin:26px 0 8px;padding:0 0 0 34px;display:grid;gap:18px;--line:var(--red)}
-.wb h3,.wb h4{font-family:var(--heading);margin:0}
-.wb-card{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:14px 16px}
-.wb-card.hot{border:1.5px solid var(--red)}
-.wb-top{display:grid;grid-template-columns:minmax(0,1.5fr) auto minmax(0,.9fr);gap:14px;align-items:center}
-.wb-arrow{font-size:22px;color:var(--ink);line-height:1}
-.wb-inputs h3{font-size:19px;margin-bottom:10px}
-.wb-inputs ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
-.wb-inputs li{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--rule);border-radius:8px;font:550 13px var(--body);background:#fff;min-width:0}
-.wb-inputs li span{min-width:0;overflow-wrap:anywhere}
-.wb-inputs li .icon{width:16px;height:16px;flex:none;color:var(--muted)}
-.wb-inputs li em{margin-left:auto;flex:none;font:600 10px var(--body);font-style:normal;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);border:1px solid var(--rule);border-radius:999px;padding:1px 7px;background:#f7f8fa}
-.wb-inputs li.is-soon{color:var(--muted)}
-.wb-top{margin-bottom:14px}
-.wb-r2{position:relative;border:1.5px solid #f6821f;background:#fffaf5;display:grid;justify-items:center;gap:4px;text-align:center;padding:18px 12px}
-.wb-r2::after{content:'↓';position:absolute;left:50%;bottom:-31px;transform:translateX(-50%);font-size:22px;line-height:1;color:var(--ink)}
-.wb-r2 svg{width:64px;height:32px}.wb-r2 strong{font:700 15px var(--heading)}.wb-r2 small{color:var(--muted);font-size:12px}
-.wb-agent{background:var(--rail);border:1px solid var(--rail-rule);border-radius:14px;padding:18px}
-.wb-agent-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:14px}
-.wb-agent-head .icon{width:30px;height:30px;color:var(--red);flex:none;margin-top:2px}
-.wb-agent-head strong{font:800 24px/1.1 var(--display);font-stretch:75%;color:var(--red)}
-.wb-agent-head p{margin:4px 0 0;font:500 12.5px var(--mono);color:var(--ink)}
-.wb-steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:20px;counter-reset:none}
-.wb-steps>li{position:relative;display:flex;flex-direction:column;gap:10px;min-height:128px}
-.wb-steps>li:not(:last-child)::after{content:'→';position:absolute;right:-17px;top:50%;transform:translateY(-50%);font-size:17px;color:var(--ink);line-height:1}
-.wb-steps h4{font-size:15px;line-height:1.15}
-.wb-db{width:44px;height:44px;margin:2px 0}
-.wb-chip,.wb-steps>li>code{align-self:flex-start;font:600 12px var(--mono);background:#e8f1fb;color:#17334f;border-radius:6px;padding:5px 9px}
-.wb-term{background:#1f2327;color:#fff;border-radius:7px;padding:9px 10px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
-.wb-term i{width:8px;height:8px;border-radius:50%;background:#ff5f57}.wb-term i:nth-child(2){background:#febc2e}.wb-term i:nth-child(3){background:#28c840}
-.wb-term code{flex-basis:100%;margin-top:4px;font:600 13px var(--mono);color:#fff;background:none;padding:0}
-.wb-chart{width:100%;height:auto;max-height:84px}
-.wb-diff{display:grid;gap:4px}
-.wb-diff code{font:600 11.5px var(--mono);border-radius:5px;padding:5px 8px;white-space:nowrap}
-.wb-diff .del{background:#fde4e8;color:#8e1530}.wb-diff .add{background:#dcf5e4;color:#15603a}
-.wb-rail{position:absolute;left:8px;top:30px;bottom:42px;border-left:3px solid var(--line)}
-.wb-rail::before{content:'';position:absolute;left:-3px;top:-1.5px;width:15px;border-top:3px solid var(--line)}
-.wb-rail::after{content:'';position:absolute;left:11px;top:-8px;border:7px solid transparent;border-left:10px solid var(--line);border-right:0}
-.wb-loop{position:relative;height:42px;margin:-6px 10% 0 -26px;border:3px solid var(--line);border-top:0;border-radius:0 0 20px 20px}
-.wb-loop span{position:absolute;left:50%;bottom:0;transform:translate(-50%,50%);background:#fff;border:3px solid var(--line);border-radius:999px;padding:6px 20px;font:700 16px var(--heading);color:var(--red);white-space:nowrap}
-@media(max-width:1180px){.wb-steps{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:26px}.wb-steps>li:nth-child(3)::after{display:none}.wb-steps>li:nth-child(5)::after{content:none}}
-@media(max-width:760px){
- .wb{padding-left:0}.wb-rail{display:none}
- .wb-top{grid-template-columns:1fr}.wb-arrow{transform:rotate(90deg);justify-self:center}.wb-r2::after{content:'↓';bottom:-33px}
- .wb-inputs ul{grid-template-columns:1fr}
- .wb-steps{grid-template-columns:1fr;row-gap:30px}
- .wb-steps>li{min-height:0}.wb-steps>li:not(:last-child)::after{content:'↓';right:auto;left:50%;top:auto;bottom:-27px;transform:translateX(-50%)}
- .wb-steps>li:nth-child(3)::after{display:block}
- .wb-loop{margin:0;height:auto;border:0;border-radius:0;display:grid;place-items:center}.wb-loop span{position:static;transform:none;font-size:15px}
-}
+.loop{margin:28px 0 24px;border-block:1px solid var(--rule);padding:20px 0}
+figcaption{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)}figcaption>span{font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+ol{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));list-style:none;padding:0;margin:28px 0;gap:22px}
+li{min-width:0}.number{display:block;color:var(--red);font:800 30px var(--display);margin-bottom:18px}h3{font-size:18px;line-height:1.2;margin:0 0 10px}p{font-size:13px;line-height:1.5;margin:0;color:var(--muted)}p.lead{color:var(--ink);font-weight:650;margin-bottom:8px}
+.return{display:flex;align-items:center;gap:10px;background:var(--rail);padding:12px 16px;font:650 14px var(--body);border-radius:8px}.return span{color:var(--red);font-size:24px}
+@media(max-width:1100px){ol{grid-template-columns:1fr}li{display:flex;gap:20px;border-bottom:1px solid var(--rule);padding-bottom:18px}.number{margin:0;min-width:40px}li:last-child{border:0;padding:0}}
 </style>

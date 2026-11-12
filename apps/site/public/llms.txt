@@ -1,0 +1,8 @@
+# Slurp
+> Open-source product analytics for coding agents. Capture real usage, investigate problems, prepare improvements, and measure outcomes.
+
+## Start here
+- [Agent brief](https://slurp.run/index.md): Capabilities, setup commands, costs, limitations, and next steps.
+- [Agent guides](https://slurp.run/agents/): Connect local coding agents and cloud bots.
+- [Quickstart](https://slurp.run/docs/): Deploy, instrument, sync, and report.
+- [CLI reference](https://github.com/hitSlop/slurp/blob/master/docs/cli.md): Command details and noninteractive setup.

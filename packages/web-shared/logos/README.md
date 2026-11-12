@@ -5,6 +5,7 @@ Marks used on the site and in the README to show which tools Slurp works with. T
 | File | Source | Collection license |
 | --- | --- | --- |
 | `javascript`, `typescript`, `nodejs`, `swift`, `segment`, `python`, `rust`, `kotlin` | [SVG Logos](https://github.com/gilbarbara/logos) by Gil Barbara, fetched from `api.iconify.design/logos/<name>.svg` | CC0 1.0 for the collection (not for the brands) |
+| `grok-bot.png`, `muse.png` | Images supplied by the project owner for the agent compatibility links | Vendor brand marks |
 | `reactnative` | [Devicon](https://devicon.dev), `api.iconify.design/devicon/reactnative.svg` | MIT |
 | `revenuecat` | [Simple Icons](https://simpleicons.org), `api.iconify.design/simple-icons/revenuecat.svg` | CC0 1.0 for the collection (not for the brand) |
 | `sentry`, `claude`, `codex`, `cursor`, `github`, `linear`, `slack`, `stripe` | The vendors' public brand marks, added earlier | The vendors' own terms |

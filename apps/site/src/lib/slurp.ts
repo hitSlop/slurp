@@ -1,4 +1,4 @@
-// slurp.run measures itself with Slurp: one `page_view` per load, the feedback widget, and two clicks (the Deploy to Cloudflare button
+// slurp.run measures itself with Slurp: one `page_view` per load, the custom feedback form, and two clicks (the Deploy to Cloudflare button
 // and copying an install command). Events go to the Worker at events.slurp.run in the project's own Cloudflare account. An empty key in
 // links.mjs turns all of it off. See apps/site/slurp/README.md.
 import { init, track } from '@hitslop/slurp-sdk';
@@ -17,27 +17,48 @@ if (slurpKey) {
     const click = clickEvent(target);
     if (click) record(click.event, click.properties);
   }, true);
-  // The widget is not needed to read the page, so it loads after it. On a phone its floating button would sit on top of the text, so
-  // there it is hidden and the "Feedback" entry in the header opens the same form.
-  const compact = matchMedia('(max-width: 900px)');
-  let widget: { open(): void; destroy(): void } | undefined;
-  const mount = () => import('@hitslop/slurp-sdk/feedback').then(({ mountFeedback }) => {
-    widget?.destroy();
-    widget = mountFeedback({
-      accent: '#e8002a',
-      theme: 'light', // the site is always light, whatever the visitor's system setting
-      title: 'Send feedback about Slurp',
-      placeholder: 'What is confusing, missing or broken?',
-      thankYou: 'Thank you. Our agent reads every message.',
-      data: () => ({ path: location.pathname }),
-      client: { track: record },
-      button: !compact.matches,
-    });
-    for (const entry of document.querySelectorAll<HTMLElement>('[data-feedback-open]')) entry.hidden = !compact.matches;
+ }
+
+const dialog = document.querySelector<HTMLDialogElement>('#site-feedback');
+if (dialog) {
+  const form = dialog.querySelector<HTMLFormElement>('form')!;
+  const message = form.querySelector<HTMLTextAreaElement>('textarea')!;
+  const error = form.querySelector<HTMLElement>('[role="alert"]')!;
+  const success = dialog.querySelector<HTMLElement>('.feedback-success')!;
+  let opener: HTMLElement | null = null;
+  let submitted = false;
+  document.addEventListener('click', event => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-feedback-open]') : null;
+    if (!target) return;
+    opener = target;
+    if (submitted) { form.reset(); form.hidden = false; success.hidden = true; submitted = false; }
+    error.hidden = true;
+    if (!dialog.open) dialog.showModal();
+    message.focus();
   });
-  void mount();
-  compact.addEventListener('change', () => void mount());
-  document.addEventListener('click', (event) => {
-    if (event.target instanceof Element && event.target.closest('[data-feedback-open]')) widget?.open();
+  for (const button of dialog.querySelectorAll('[data-feedback-close]')) button.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', () => opener?.focus());
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    if (submitted) return;
+    const text = message.value.trim();
+    if (!text) { error.textContent = 'Please write a few words first.'; error.hidden = false; message.focus(); return; }
+    const rating = new FormData(form).get('rating');
+    try {
+      if (production) {
+        if (!slurpKey) throw new Error('Feedback is unavailable. Please try again later.');
+        track('feedback', { message: text.slice(0, 5000), ...(rating ? { rating: Number(rating) } : {}), path: location.pathname });
+      }
+      submitted = true;
+      form.hidden = true;
+      success.querySelector('p')!.textContent = production
+        ? 'Thanks—your feedback is queued for our agents to read.'
+        : 'Demo complete. Nothing was sent from this local preview.';
+      success.hidden = false;
+      success.querySelector('button')!.focus();
+    } catch {
+      error.textContent = 'Could not queue your feedback. Please try again.';
+      error.hidden = false;
+    }
   });
 }
